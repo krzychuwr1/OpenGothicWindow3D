@@ -46,7 +46,9 @@ MainWindow::MainWindow(Device& device)
     player(dialogs,inventory) {
   if(auto xr = XrWindow::inst()) {
     const auto sz = xr->resolution();
-    xrTarget = device.attachment(TextureFormat::RGBA8, uint32_t(sz.w), uint32_t(sz.h));
+    for(auto& t:xrTarget)
+      t = device.attachment(TextureFormat::RGBA8, uint32_t(sz.w), uint32_t(sz.h));
+    xr->setVerticalFov(Gothic::options().cameraFov);
     } else {
     swapchain.emplace(device,hwnd());
     }
@@ -1249,11 +1251,11 @@ void MainWindow::setFullscreen(bool fs) {
   }
 
 uint32_t MainWindow::outW() const {
-  return swapchain ? swapchain->w() : uint32_t(xrTarget.w());
+  return swapchain ? swapchain->w() : uint32_t(xrTarget[0].w());
   }
 
 uint32_t MainWindow::outH() const {
-  return swapchain ? swapchain->h() : uint32_t(xrTarget.h());
+  return swapchain ? swapchain->h() : uint32_t(xrTarget[0].h());
   }
 
 bool MainWindow::padMenuContext() const {
@@ -1297,7 +1299,7 @@ void MainWindow::render(){
         xr->submit(nullptr);
         throw;
         }
-      xr->submit(&xrTarget);
+      xr->submit(&xrTarget[0], &xrTarget[1]);
       return;
       }
     renderFrame(false);
@@ -1342,45 +1344,60 @@ void MainWindow::renderFrame(bool xr) {
   updateAnimation(dt);
   tickCamera(dt);
 
-  auto& sync = fence[cmdId];
-  if(xr) {
-    // The runtime paces frames; never skip one that has already begun
-    sync.wait();
-    }
-  else if(!sync.wait(0)) {
-    // GPU rendering is not done, pass to next frame
-    std::this_thread::yield();
-    return;
-    }
-  Resources::resetRecycled(cmdId);
+  // XR draws the scene once per eye, each eye in its own frame slot; the interface is painted once
+  const int views = xr ? 2 : 1;
+  for(int view=0; view<views; ++view) {
+    auto& sync = fence[cmdId];
+    if(xr) {
+      // The runtime paces frames; never skip one that has already begun
+      sync.wait();
+      }
+    else if(!sync.wait(0)) {
+      // GPU rendering is not done, pass to next frame
+      std::this_thread::yield();
+      return;
+      }
+    Resources::resetRecycled(cmdId);
 
-  auto& backbuf = xr ? xrTarget : swapchain->acquire();
+    auto& backbuf = xr ? xrTarget[view] : swapchain->acquire();
 
-  if(video.isActive()) {
-    video.paint(device,cmdId);
-    uiLayer.clear();
-    PaintEvent p(uiLayer,atlas,this->w(),this->h());
-    video.paintEvent(p);
+    if(view==0) {
+      if(video.isActive()) {
+        video.paint(device,cmdId);
+        uiLayer.clear();
+        PaintEvent p(uiLayer,atlas,this->w(),this->h());
+        video.paintEvent(p);
+        }
+      else if(needToUpdate() || Gothic::inst().checkLoading()!=Gothic::LoadState::Idle) {
+        dispatchPaintEvent(uiLayer,atlas);
+
+        numOverlay.clear();
+        PaintEvent p(numOverlay,atlas,this->w(),this->h());
+        inventory.paintNumOverlay(p);
+        }
+      }
+    uiMesh [cmdId].update(device,uiLayer);
+    numMesh[cmdId].update(device,numOverlay);
+
+    // Each eye looks through the window from its own tracked position
+    Camera*         camera = xr ? Gothic::inst().camera() : nullptr;
+    Camera::EyeView eye;
+    const bool      stereo = camera!=nullptr && XrWindow::inst()->eyeView(uint8_t(view), Gothic::options().cameraFov, eye);
+    if(stereo)
+      camera->setEyeView(&eye);
+
+    CommandBuffer& cmd = commands[cmdId];
+    {
+    auto enc = cmd.startEncoding(device);
+    renderer.draw(backbuf,enc,cmdId,uiMesh[cmdId],numMesh[cmdId],inventory,video);
     }
-  else if(needToUpdate() || Gothic::inst().checkLoading()!=Gothic::LoadState::Idle) {
-    dispatchPaintEvent(uiLayer,atlas);
-
-    numOverlay.clear();
-    PaintEvent p(numOverlay,atlas,this->w(),this->h());
-    inventory.paintNumOverlay(p);
+    if(stereo)
+      camera->setEyeView(nullptr);
+    sync = device.submit(cmd);
+    if(!xr)
+      device.present(*swapchain);
+    cmdId = (cmdId+1u)%Resources::MaxFramesInFlight;
     }
-  uiMesh [cmdId].update(device,uiLayer);
-  numMesh[cmdId].update(device,numOverlay);
-
-  CommandBuffer& cmd = commands[cmdId];
-  {
-  auto enc = cmd.startEncoding(device);
-  renderer.draw(backbuf,enc,cmdId,uiMesh[cmdId],numMesh[cmdId],inventory,video);
-  }
-  sync = device.submit(cmd);
-  if(!xr)
-    device.present(*swapchain);
-  cmdId = (cmdId+1u)%Resources::MaxFramesInFlight;
 
   auto t = Application::tickCount();
   auto frameTime = xr ? 0 : maxFpsInv;

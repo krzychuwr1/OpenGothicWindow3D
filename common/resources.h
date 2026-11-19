@@ -45,7 +45,12 @@ class Resources final {
       };
 
     enum {
+#if defined(OPENGOTHIC_XR)
+      // Each XR frame renders two eyes; every eye has its own slot so per-frame data never collides
+      MaxFramesInFlight = 4,
+#else
       MaxFramesInFlight = 2,
+#endif
       ShadowLayers      = 2,
       };
 

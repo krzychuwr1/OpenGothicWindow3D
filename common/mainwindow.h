@@ -122,7 +122,7 @@ class MainWindow : public Tempest::Window {
 
     Tempest::Device&      device;
     std::optional<Tempest::Swapchain> swapchain;
-    Tempest::Attachment   xrTarget;
+    Tempest::Attachment   xrTarget[2];
     GamepadInput          pad;
     Tempest::PointF       padLook;
     uint64_t              padTime = 0;

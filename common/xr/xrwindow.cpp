@@ -48,6 +48,8 @@ static V3 rotate(const XrQuaternionf& q, const V3& v) {
   return v + t*q.w + c;
   }
 
+static XrQuaternionf conjugate(const XrQuaternionf& q) { return {-q.x, -q.y, -q.z, q.w}; }
+
 // Orientation whose +Z points along `back` (from the window towards the viewer), without roll.
 static XrQuaternionf facing(const V3& back) {
   const V3    b     = normalize(back);
@@ -105,11 +107,11 @@ struct XrWindow::Impl {
   XrPassthroughFB          passthrough      = XR_NULL_HANDLE;
   XrPassthroughLayerFB     passthroughLayer = XR_NULL_HANDLE;
 
-  // Window image
+  // Window image, one swapchain per eye
   uint32_t                 width  = 1600;
   uint32_t                 height = 900;
-  XrSwapchain              swapchain = XR_NULL_HANDLE;
-  std::vector<VkImage>     images;
+  XrSwapchain              swapchain[2] = {};
+  std::vector<VkImage>     images[2];
   VkCommandPool            pool = VK_NULL_HANDLE;
   static constexpr uint32_t Ring = 3;
   VkCommandBuffer          cmd  [Ring] = {};
@@ -123,10 +125,13 @@ struct XrWindow::Impl {
   // Frame
   XrFrameState             frame = {XR_TYPE_FRAME_STATE};
   bool                     frameBegun = false;
+  bool                     eyesValid  = false;
+  V3                       eyeInWindow[2];   // metres, window space: +x right, +y up, +z towards the viewer
 
   // Window placement (local space)
-  XrPosef                  windowPose = {{0,0,0,1},{0,0,-1.6f}};
-  float                    windowWidth = 1.6f;
+  XrPosef                  windowPose = {{0,0,0,1},{0,0,-1.5f}};
+  float                    windowWidth = 2.4f;
+  float                    verticalFov = 67.5f;
   bool                     placed      = false;
   int                      grabbedBy   = -1;
   XrPosef                  grabOffset  = {{0,0,0,1},{0,0,0}};
@@ -156,7 +161,8 @@ struct XrWindow::Impl {
   void updateInput();
   void placeWindow();
   void fillCursor();
-  bool copyImage(const Attachment& img);
+  bool copyImage(uint8_t eye, const Attachment& img);
+  void locateEyes();
   XrPath path(const char* p) const { XrPath r = XR_NULL_PATH; xrStringToPath(instance, p, &r); return r; }
   float  windowHeight() const { return windowWidth*float(height)/float(width); }
   };
@@ -193,8 +199,9 @@ XrWindow::Impl::~Impl() {
     xrDestroyPassthrough(passthrough);
   if(cursorSwapchain!=XR_NULL_HANDLE)
     xrDestroySwapchain(cursorSwapchain);
-  if(swapchain!=XR_NULL_HANDLE)
-    xrDestroySwapchain(swapchain);
+  for(auto sw:swapchain)
+    if(sw!=XR_NULL_HANDLE)
+      xrDestroySwapchain(sw);
   if(session!=XR_NULL_HANDLE)
     xrDestroySession(session);
   if(instance!=XR_NULL_HANDLE)
@@ -407,14 +414,15 @@ void XrWindow::Impl::createSwapchains() {
   info.faceCount   = 1;
   info.arraySize   = 1;
   info.mipCount    = 1;
-  if(!ok(xrCreateSwapchain(session, &info, &swapchain), "window swapchain"))
-    throw std::runtime_error("OpenXR swapchain");
-
-  xrEnumerateSwapchainImages(swapchain, 0, &count, nullptr);
-  std::vector<XrSwapchainImageVulkan2KHR> img(count, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR});
-  xrEnumerateSwapchainImages(swapchain, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(img.data()));
-  for(auto& i:img)
-    images.push_back(i.image);
+  for(int eye=0; eye<2; ++eye) {
+    if(!ok(xrCreateSwapchain(session, &info, &swapchain[eye]), "window swapchain"))
+      throw std::runtime_error("OpenXR swapchain");
+    xrEnumerateSwapchainImages(swapchain[eye], 0, &count, nullptr);
+    std::vector<XrSwapchainImageVulkan2KHR> img(count, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR});
+    xrEnumerateSwapchainImages(swapchain[eye], count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(img.data()));
+    for(auto& i:img)
+      images[eye].push_back(i.image);
+    }
 
   info.createFlags = XR_SWAPCHAIN_CREATE_STATIC_IMAGE_BIT;
   info.width       = 16;
@@ -571,7 +579,8 @@ void XrWindow::Impl::placeWindow() {
   V3 fwd = rotate(head.pose.orientation, V3{0,0,-1});
   fwd.y  = 0;
   fwd    = normalize(fwd);
-  const float distance = 1.6f;
+  // The sweet spot: the window covers exactly the game's field of view, so nothing is cropped
+  const float distance = std::clamp(windowHeight()*0.5f/std::tan(verticalFov*0.5f*float(M_PI)/180.f), 0.6f, 3.f);
   const V3    pos      = headPos + fwd*distance + V3{0,-0.1f,0};
   windowPose.position    = toXr(pos);
   windowPose.orientation = facing(headPos - pos);
@@ -704,6 +713,51 @@ void XrWindow::Impl::updateInput() {
   padState.buttons[PadState::RightStick] = getB(aStickClick, hands[1].path);
   }
 
+void XrWindow::Impl::locateEyes() {
+  XrViewLocateInfo info = {XR_TYPE_VIEW_LOCATE_INFO};
+  info.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+  info.displayTime           = frame.predictedDisplayTime;
+  info.space                 = localSpace;
+  XrViewState st = {XR_TYPE_VIEW_STATE};
+  XrView      views[2] = {{XR_TYPE_VIEW},{XR_TYPE_VIEW}};
+  uint32_t    count = 0;
+  eyesValid = XR_SUCCEEDED(xrLocateViews(session, &info, &st, 2, &count, views)) && count==2 &&
+              (st.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT);
+  if(!eyesValid)
+    return;
+  const XrQuaternionf inv = conjugate(windowPose.orientation);
+  for(int i=0; i<2; ++i)
+    eyeInWindow[i] = rotate(inv, toV3(views[i].pose.position) - toV3(windowPose.position));
+  }
+
+bool XrWindow::eyeView(uint8_t eye, float verticalFovDeg, Camera::EyeView& out) const {
+  auto& s = *impl;
+  if(!s.eyesValid || eye>1)
+    return false;
+  // Life size: one metre in the room is one metre (100 units) in the game. The window maps onto a
+  // plane in front of the game camera, placed so that an eye at the matching distance sees exactly
+  // the game's own field of view; any other eye position sees the scene through the window with
+  // parallax. Geometry between the eye and that plane is clipped, so nothing pokes through the frame.
+  const float units = 100.f;
+  const float halfW = s.windowWidth*0.5f*units;
+  const float halfH = s.windowHeight()*0.5f*units;
+  const float plane = halfH/std::tan(verticalFovDeg*0.5f*float(M_PI)/180.f);
+
+  V3 e = s.eyeInWindow[eye];
+  e.z  = std::max(e.z, 0.05f);   // behind or inside the window: hold the eye just in front of it
+  // View space of the game camera: +x right, +y down (Vulkan), +z forward
+  const float ex = e.x*units;
+  const float ey = -e.y*units;
+  const float dz = e.z*units;    // eye distance to the window plane
+  out.offset = Tempest::Vec3(ex, ey, plane-dz);
+  out.zNear  = dz;
+  out.left   = -halfW - ex;
+  out.right  =  halfW - ex;
+  out.bottom = -halfH - ey;
+  out.top    =  halfH - ey;
+  return true;
+  }
+
 bool XrWindow::beginFrame() {
   auto& s = *impl;
   s.pollEvents();
@@ -726,6 +780,7 @@ bool XrWindow::beginFrame() {
 
   s.placeWindow();
   s.updateInput();
+  s.locateEyes();
 
   if(!s.frame.shouldRender) {
     submit(nullptr);
@@ -784,18 +839,18 @@ void XrWindow::Impl::fillCursor() {
   cursorReady = true;
   }
 
-bool XrWindow::Impl::copyImage(const Attachment& src) {
+bool XrWindow::Impl::copyImage(uint8_t eye, const Attachment& src) {
   const VulkanNativeImage from = vulkanNativeImage(src);
   if(from.image==VK_NULL_HANDLE || src.w()!=int(width) || src.h()!=int(height))
     return false;
 
   uint32_t index = 0;
   XrSwapchainImageAcquireInfo acq = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-  if(!ok(xrAcquireSwapchainImage(swapchain, &acq, &index), "acquire window image"))
+  if(!ok(xrAcquireSwapchainImage(swapchain[eye], &acq, &index), "acquire window image"))
     return false;
   XrSwapchainImageWaitInfo wait = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
   wait.timeout = XR_INFINITE_DURATION;
-  xrWaitSwapchainImage(swapchain, &wait);
+  xrWaitSwapchainImage(swapchain[eye], &wait);
 
   const uint32_t  slot = ringAt;
   ringAt = (ringAt+1)%Ring;
@@ -821,7 +876,7 @@ bool XrWindow::Impl::copyImage(const Attachment& src) {
   b[0].newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
   b[0].srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
   b[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-  b[1].image         = images[index];
+  b[1].image         = images[eye][index];
   b[1].oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
   b[1].newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
   b[1].srcAccessMask = 0;
@@ -832,7 +887,7 @@ bool XrWindow::Impl::copyImage(const Attachment& src) {
   region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.extent         = {width, height, 1};
-  vkCmdCopyImage(cb, from.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+  vkCmdCopyImage(cb, from.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, images[eye][index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
   // Hand the image back to the game in its resting layout and the swapchain image to the compositor
   b[0].oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -852,20 +907,22 @@ bool XrWindow::Impl::copyImage(const Attachment& src) {
   vkQueueSubmit(vk.queue, 1, &si, fence[slot]);
 
   XrSwapchainImageReleaseInfo rel = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-  xrReleaseSwapchainImage(swapchain, &rel);
+  xrReleaseSwapchainImage(swapchain[eye], &rel);
   return true;
   }
 
-void XrWindow::submit(const Attachment* image) {
+void XrWindow::submit(const Attachment* left, const Attachment* right) {
   auto& s = *impl;
   if(!s.frameBegun)
     return;
   s.frameBegun = false;
+  if(right==nullptr)
+    right = left;
 
   std::lock_guard<std::mutex> guard(*s.vk.queueLock);
   if(!s.cursorReady && s.cursorSwapchain!=XR_NULL_HANDLE)
     s.fillCursor();
-  const bool hasImage = image!=nullptr && s.copyImage(*image);
+  const bool hasImage = left!=nullptr && s.copyImage(0,*left) && s.copyImage(1,*right);
 
   std::vector<const XrCompositionLayerBaseHeader*> layers;
 
@@ -875,23 +932,27 @@ void XrWindow::submit(const Attachment* image) {
     layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&pt));
     }
 
-  XrCompositionLayerQuad quad = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+  // The same rectangle in the room for both eyes, each showing its own view through it
+  XrCompositionLayerQuad quad[2] = {{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
   if(hasImage) {
-    quad.space                     = s.localSpace;
-    quad.eyeVisibility             = XR_EYE_VISIBILITY_BOTH;
-    quad.subImage.swapchain        = s.swapchain;
-    quad.subImage.imageRect        = {{0,0},{int32_t(s.width),int32_t(s.height)}};
-    quad.subImage.imageArrayIndex  = 0;
-    quad.pose                      = s.windowPose;
-    quad.size                      = {s.windowWidth, s.windowHeight()};
-    layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad));
+    for(int eye=0; eye<2; ++eye) {
+      auto& q = quad[eye];
+      q.space                    = s.localSpace;
+      q.eyeVisibility            = eye==0 ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT;
+      q.subImage.swapchain       = s.swapchain[eye];
+      q.subImage.imageRect       = {{0,0},{int32_t(s.width),int32_t(s.height)}};
+      q.subImage.imageArrayIndex = 0;
+      q.pose                     = s.windowPose;
+      q.size                     = {s.windowWidth, s.windowHeight()};
+      layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&q));
+      }
     }
 
   std::array<XrCompositionLayerQuad,2> cursors;
-  if(s.cursorReady) {
+  if(s.cursorReady && hasImage) {
     for(size_t i=0; i<s.hands.size(); ++i) {
       auto& h = s.hands[i];
-      if(!h.hover || !hasImage)
+      if(!h.hover)
         continue;
       auto& c = cursors[i];
       c = {XR_TYPE_COMPOSITION_LAYER_QUAD};
@@ -920,6 +981,10 @@ Size XrWindow::resolution() const {
   return Size(int(impl->width), int(impl->height));
   }
 
+void XrWindow::setVerticalFov(float degrees) {
+  impl->verticalFov = degrees;
+  }
+
 PadState XrWindow::pad() const {
   return impl->padState;
   }
@@ -941,7 +1006,9 @@ void      XrWindow::shutdown() {}
 void      XrWindow::attach(Tempest::Device&) {}
 Tempest::Size XrWindow::resolution() const { return {}; }
 bool      XrWindow::beginFrame() { return false; }
-void      XrWindow::submit(const Tempest::Attachment*) {}
+void      XrWindow::submit(const Tempest::Attachment*, const Tempest::Attachment*) {}
+bool      XrWindow::eyeView(uint8_t, float, Camera::EyeView&) const { return false; }
+void      XrWindow::setVerticalFov(float) {}
 PadState  XrWindow::pad() const { return {}; }
 bool      XrWindow::isFocused() const { return false; }
 

@@ -143,8 +143,35 @@ void Camera::setViewport(uint32_t w, uint32_t h) {
   }
 
 float Camera::zNear() const {
+  if(eye.active)
+    return eye.zNear;
   static float near = 10.f;
   return near;
+  }
+
+void Camera::setEyeView(const EyeView* v) {
+  if(v==nullptr) {
+    eye.active = false;
+    return;
+    }
+  // Eye offset from view space to world space (rotation only)
+  auto rot = mkView(Vec3(0), angles);
+  rot.inverse();
+  float wx = 0, wy = 0, wz = 0, ww = 0;
+  rot.project(v->offset.x, v->offset.y, v->offset.z, 0.f, wx, wy, wz, ww);
+
+  // Same conventions as Matrix4x4::perspective (+z forward, depth 0 at near, 1 at far),
+  // with the frustum shifted to pass through the window rectangle
+  const float n = v->zNear, f = zFar();
+  const float l = v->left, r = v->right, b = v->bottom, t = v->top;
+  const float k = f/(f-n);
+  eye.proj = Matrix4x4(2*n/(r-l), 0.f,        -(r+l)/(r-l), 0.f,
+                       0.f,       2*n/(t-b),  -(t+b)/(t-b), 0.f,
+                       0.f,       0.f,         k,           -n*k,
+                       0.f,       0.f,         1.f,          0.f);
+  eye.pos    = origin + shake + Vec3(wx,wy,wz);
+  eye.zNear  = n;
+  eye.active = true;
   }
 
 float Camera::zFar() const {
@@ -322,7 +349,7 @@ void Camera::onRotateMouse(const PointF& dpos) {
   }
 
 Matrix4x4 Camera::projective() const {
-  auto ret = proj;
+  auto ret = eye.active ? eye.proj : proj;
   if(auto w = Gothic::inst().world())
     w->globalFx()->morph(ret);
   return ret;
@@ -333,7 +360,7 @@ Matrix4x4 Camera::viewShadowVsm(const Tempest::Vec3& ldir) const {
   }
 
 Matrix4x4 Camera::viewShadowVsmLwc(const Tempest::Vec3& ldir) const {
-  return mkViewShadowVsm(inter.target-(origin+shake),ldir);
+  return mkViewShadowVsm(inter.target-originLwc(),ldir);
   }
 
 Matrix4x4 Camera::mkViewShadowVsm(const Vec3& cameraPos, const Vec3& ldir) const {
@@ -388,7 +415,7 @@ Matrix4x4 Camera::viewShadowLwc(const Tempest::Vec3& lightDir, size_t layer) con
   float rotation = (angles.y-90);
   // if(layer==0)
   //   return viewShadowVsm(cameraPos-origin,rotation,vp,lightDir);
-  return mkViewShadow(inter.target-origin,rotation,vp,lightDir,layer);
+  return mkViewShadow(inter.target-originLwc(),rotation,vp,lightDir,layer);
   }
 
 Matrix4x4 Camera::mkViewShadow(const Vec3& cameraPos, float rotation, const Tempest::Matrix4x4& viewProj, const Vec3& lightDir, size_t layer) const {
@@ -1032,6 +1059,8 @@ Matrix4x4 Camera::viewProj() const {
   }
 
 Matrix4x4 Camera::view() const {
+  if(eye.active)
+    return mkView(eye.pos, angles);
   return mkView(origin+shake, angles);
   }
 

@@ -112,12 +112,29 @@ class Camera final {
     Tempest::Matrix4x4 viewShadowVsmLwc(const Tempest::Vec3& ldir) const;
 
     ListenerPos        listenerPosition() const;
-    Tempest::Vec3      originLwc() const { return origin+shake; };
+    Tempest::Vec3      originLwc() const { return eye.active ? eye.pos : origin+shake; };
 
     float              zNear() const;
     float              zFar()  const;
 
+    // One eye looking through the XR window: the eye sits at `offset` (view space, game units,
+    // +x right, +z forward) from the camera, keeps the camera orientation, and sees an off-axis
+    // frustum given at its near plane. While set, view and projection describe that eye.
+    struct EyeView {
+      Tempest::Vec3 offset;
+      float         left = 0, right = 0, bottom = 0, top = 0;
+      float         zNear = 0;
+      };
+    void               setEyeView(const EyeView* view);
+
   private:
+    struct {
+      bool               active = false;
+      Tempest::Vec3      pos;
+      Tempest::Matrix4x4 proj;
+      float              zNear = 0;
+      } eye;
+
     struct Pin {
       Tempest::Vec3       origin = {};
       Tempest::Vec3       spin   = {};
