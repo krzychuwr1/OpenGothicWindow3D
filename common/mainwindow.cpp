@@ -26,11 +26,17 @@
 
 #include "commandline.h"
 #include "gothic.h"
+#include "xr/xrwindow.h"
+
+#if defined(__ANDROID__)
+#include <Tempest/AndroidApi>
+#endif
 
 using namespace Tempest;
 
 MainWindow::MainWindow(Device& device)
-  : Window(Maximized),device(device),swapchain(device,hwnd()),
+  : Window(Maximized),device(device),
+    pad([this](KeyEvent& e, bool down) { if(down) keyDownEvent(e); else keyUpEvent(e); }),
     atlas(device),rootMenu(keycodec),inventory(keycodec),
     dialogs(inventory),document(keycodec),
     console(*this),
@@ -38,6 +44,12 @@ MainWindow::MainWindow(Device& device)
     mobileUi(player),
 #endif
     player(dialogs,inventory) {
+  if(auto xr = XrWindow::inst()) {
+    const auto sz = xr->resolution();
+    xrTarget = device.attachment(TextureFormat::RGBA8, uint32_t(sz.w), uint32_t(sz.h));
+    } else {
+    swapchain.emplace(device,hwnd());
+    }
   Gothic::inst().onSettingsChanged.bind(this,&MainWindow::onSettings);
   onSettings();
 
@@ -294,9 +306,10 @@ void MainWindow::paintEvent(PaintEvent& event) {
 void MainWindow::resizeEvent(SizeEvent&) {
   for(auto& i:fence)
     i.wait();
-  swapchain.reset();
+  if(swapchain)
+    swapchain->reset();
   if(auto camera = Gothic::inst().camera())
-    camera->setViewport(swapchain.w(),swapchain.h());
+    camera->setViewport(outW(),outH());
 
   if(SystemApi::isFullscreen(hwnd())) {
     setCursorPosition(Point(w()/2,h()/2));
@@ -474,7 +487,7 @@ void MainWindow::keyDownEvent(KeyEvent &event) {
   player.onKeyPressed(act,event.key,mapping);
 
   if(event.key==Event::K_F11) {
-    auto tex = renderer.screenshoot(cmdId, Size(int(swapchain.w()),int(swapchain.h())));
+    auto tex = renderer.screenshoot(cmdId, Size(int(outW()),int(outH())));
     auto pm  = device.readPixels(textureCast<const Texture2d&>(tex));
     pm.save("dbg.png");
     }
@@ -1092,7 +1105,7 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
   if(auto w = Gothic::inst().world(); w!=nullptr && w->currentCs()!=nullptr)
     return;
 
-  auto tex  = renderer.screenshoot(cmdId, Size(int(swapchain.w()),int(swapchain.h())));
+  auto tex  = renderer.screenshoot(cmdId, Size(int(outW()),int(outH())));
   auto lres = Attachment();
 
   static int32_t kThumbW = 800;
@@ -1235,87 +1248,153 @@ void MainWindow::setFullscreen(bool fs) {
   setCursorShape(fs ? CursorShape::Hidden : CursorShape::Arrow);
   }
 
+uint32_t MainWindow::outW() const {
+  return swapchain ? swapchain->w() : uint32_t(xrTarget.w());
+  }
+
+uint32_t MainWindow::outH() const {
+  return swapchain ? swapchain->h() : uint32_t(xrTarget.h());
+  }
+
+bool MainWindow::padMenuContext() const {
+  return rootMenu.isActive() || dialogs.isActive() || document.isActive() || chapter.isActive() ||
+         video.isActive() || inventory.isActive();
+  }
+
+void MainWindow::tickPad(uint64_t dt) {
+  PadState state;
+#if defined(__ANDROID__)
+  const auto g = AndroidApi::gamepad();
+  state.connected = g.connected;
+  state.lx = g.lx; state.ly = g.ly; state.rx = g.rx; state.ry = g.ry; state.lt = g.lt; state.rt = g.rt;
+  for(int i=0; i<PadState::Count; ++i)
+    state.buttons[i] = g.buttons[i];
+#endif
+  if(auto xr = XrWindow::inst())
+    state = PadState::merge(state, xr->pad());
+  if(!state.connected)
+    return;
+
+  pad.tick(state, padMenuContext());
+  if(padMenuContext())
+    return;
+  // Accumulate fractional stick motion as mouse-look pixels
+  padLook += pad.look(state, dt);
+  const Point whole = Point(int(padLook.x), int(padLook.y));
+  padLook -= PointF(float(whole.x), float(whole.y));
+  dMouse  += whole;
+  }
+
 void MainWindow::render(){
   try {
-    static uint64_t time=Application::tickCount();
-
-    static bool once=true;
-    if(once) {
-      Gothic::inst().emitGlobalSoundWav("GAMESTART.WAV");
-      once=false;
-      }
-
-    if(T_UNLIKELY(Gothic::inst().isBenchmarkModeCi())) {
-      const auto st = Gothic::inst().checkLoading();
-      if(st==Gothic::LoadState::Loading) {
-        // skip loading frames in benchmark-ci mode, for sake of easier tooling
+    if(auto xr = XrWindow::inst()) {
+      if(!xr->beginFrame())
         return;
+      try {
+        renderFrame(true);
         }
-      }
-
-    /*
-      Note: game update goes first
-      once player position is updated, animation bones(cameraBone in particular) can be updated
-      lastly - camera position
-      */
-    const uint64_t dt = tick();
-    updateAnimation(dt);
-    tickCamera(dt);
-
-    auto& sync = fence[cmdId];
-    if(!sync.wait(0)) {
-      // GPU rendering is not done, pass to next frame
-      std::this_thread::yield();
+      catch(...) {
+        xr->submit(nullptr);
+        throw;
+        }
+      xr->submit(&xrTarget);
       return;
       }
-    Resources::resetRecycled(cmdId);
-
-    auto& backbuf = swapchain.acquire();
-
-    if(video.isActive()) {
-      video.paint(device,cmdId);
-      uiLayer.clear();
-      PaintEvent p(uiLayer,atlas,this->w(),this->h());
-      video.paintEvent(p);
-      }
-    else if(needToUpdate() || Gothic::inst().checkLoading()!=Gothic::LoadState::Idle) {
-      dispatchPaintEvent(uiLayer,atlas);
-
-      numOverlay.clear();
-      PaintEvent p(numOverlay,atlas,this->w(),this->h());
-      inventory.paintNumOverlay(p);
-      }
-    uiMesh [cmdId].update(device,uiLayer);
-    numMesh[cmdId].update(device,numOverlay);
-
-    CommandBuffer& cmd = commands[cmdId];
-    {
-    auto enc = cmd.startEncoding(device);
-    renderer.draw(backbuf,enc,cmdId,uiMesh[cmdId],numMesh[cmdId],inventory,video);
-    }
-    sync = device.submit(cmd);
-    device.present(swapchain);
-    cmdId = (cmdId+1u)%Resources::MaxFramesInFlight;
-
-    auto t = Application::tickCount();
-    auto frameTime = maxFpsInv;
-    if(!Gothic::inst().isInGame() && !video.isActive())
-      frameTime = std::max<uint64_t>(frameTime,16);
-    if(t-time<frameTime) {
-      uint32_t delay = uint32_t(frameTime-(t-time));
-      Application::sleep(delay);
-      t += delay;
-      }
-    fps.push(t-time);
-    if(Gothic::inst().isBenchmarkMode() && Gothic::inst().world()!=nullptr && Gothic::inst().world()->currentCs()!=nullptr)
-      benchmark.push(t-time);
-    time = t;
+    renderFrame(false);
     }
   catch(const Tempest::SwapchainSuboptimal&) {
     Log::e("swapchain is outdated - reset renderer");
     device.waitIdle();
-    swapchain.reset();
+    if(swapchain)
+      swapchain->reset();
     }
+  }
+
+void MainWindow::renderFrame(bool xr) {
+  static uint64_t time=Application::tickCount();
+
+  static bool once=true;
+  if(once) {
+    Gothic::inst().emitGlobalSoundWav("GAMESTART.WAV");
+    once=false;
+    }
+
+  if(T_UNLIKELY(Gothic::inst().isBenchmarkModeCi())) {
+    const auto st = Gothic::inst().checkLoading();
+    if(st==Gothic::LoadState::Loading) {
+      // skip loading frames in benchmark-ci mode, for sake of easier tooling
+      return;
+      }
+    }
+
+  {
+  const uint64_t now = Application::tickCount();
+  tickPad(padTime==0 ? 0 : std::min<uint64_t>(now-padTime, 50));
+  padTime = now;
+  }
+
+  /*
+    Note: game update goes first
+    once player position is updated, animation bones(cameraBone in particular) can be updated
+    lastly - camera position
+    */
+  const uint64_t dt = tick();
+  updateAnimation(dt);
+  tickCamera(dt);
+
+  auto& sync = fence[cmdId];
+  if(xr) {
+    // The runtime paces frames; never skip one that has already begun
+    sync.wait();
+    }
+  else if(!sync.wait(0)) {
+    // GPU rendering is not done, pass to next frame
+    std::this_thread::yield();
+    return;
+    }
+  Resources::resetRecycled(cmdId);
+
+  auto& backbuf = xr ? xrTarget : swapchain->acquire();
+
+  if(video.isActive()) {
+    video.paint(device,cmdId);
+    uiLayer.clear();
+    PaintEvent p(uiLayer,atlas,this->w(),this->h());
+    video.paintEvent(p);
+    }
+  else if(needToUpdate() || Gothic::inst().checkLoading()!=Gothic::LoadState::Idle) {
+    dispatchPaintEvent(uiLayer,atlas);
+
+    numOverlay.clear();
+    PaintEvent p(numOverlay,atlas,this->w(),this->h());
+    inventory.paintNumOverlay(p);
+    }
+  uiMesh [cmdId].update(device,uiLayer);
+  numMesh[cmdId].update(device,numOverlay);
+
+  CommandBuffer& cmd = commands[cmdId];
+  {
+  auto enc = cmd.startEncoding(device);
+  renderer.draw(backbuf,enc,cmdId,uiMesh[cmdId],numMesh[cmdId],inventory,video);
+  }
+  sync = device.submit(cmd);
+  if(!xr)
+    device.present(*swapchain);
+  cmdId = (cmdId+1u)%Resources::MaxFramesInFlight;
+
+  auto t = Application::tickCount();
+  auto frameTime = xr ? 0 : maxFpsInv;
+  if(!xr && !Gothic::inst().isInGame() && !video.isActive())
+    frameTime = std::max<uint64_t>(frameTime,16);
+  if(t-time<frameTime) {
+    uint32_t delay = uint32_t(frameTime-(t-time));
+    Application::sleep(delay);
+    t += delay;
+    }
+  fps.push(t-time);
+  if(Gothic::inst().isBenchmarkMode() && Gothic::inst().world()!=nullptr && Gothic::inst().world()->currentCs()!=nullptr)
+    benchmark.push(t-time);
+  time = t;
   }
 
 double MainWindow::Fps::get() const {

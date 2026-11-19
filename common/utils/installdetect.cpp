@@ -36,11 +36,21 @@ std::u16string InstallDetect::detectG2() {
     return appDir;
   return u"";
 #elif defined(__ANDROID__)
+  // The app's own folder first; then the shared OpenGothic folder, which adb can fill on
+  // devices where files pushed into Android/data stay unreadable to the app (Meta Quest).
+  auto hasData = [](const std::u16string& dir) {
+    return !dir.empty() && FileUtil::exists(FileUtil::nestedPath(dir, {u"Data"}, Tempest::Dir::FT_Dir));
+    };
   auto path = Tempest::AndroidApi::externalDataPath().u16string();
-  if(path.empty())
-    return u"";
-  path = FileUtil::nestedPath(path + u"/", {u"gothic2"}, Tempest::Dir::FT_Dir);
-  return path;
+  if(!path.empty()) {
+    auto dir = FileUtil::nestedPath(path + u"/", {u"gothic2"}, Tempest::Dir::FT_Dir);
+    if(hasData(dir))
+      return dir;
+    }
+  auto shared = FileUtil::nestedPath(u"/storage/emulated/0/OpenGothic/", {u"gothic2"}, Tempest::Dir::FT_Dir);
+  if(hasData(shared))
+    return shared;
+  return path.empty() ? u"" : FileUtil::nestedPath(path + u"/", {u"gothic2"}, Tempest::Dir::FT_Dir);
 #else
   return u"";
 #endif

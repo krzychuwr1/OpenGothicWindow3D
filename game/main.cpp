@@ -24,6 +24,7 @@
 #include "gothic.h"
 #include "build.h"
 #include "commandline.h"
+#include "xr/xrwindow.h"
 
 #include <dmusic.h>
 
@@ -134,12 +135,16 @@ int main(int argc,const char** argv) {
   Workers::setThreadName("Main thread");
 
   CommandLine          cmd{argc,argv};
+  // OpenXR decides which Vulkan instance and device the game uses, so it starts first
+  XrWindow::preInit();
   auto                 api     = mkApi(cmd);
   const auto           gpuName = selectDevice(*api);
   CrashLog::setGpu(gpuName);
 
   Tempest::Device      device{*api,gpuName};
   CrashLog::setGpu(device.properties().name);
+  if(auto xr = XrWindow::inst())
+    xr->attach(device);
 
   Resources            resources{device};
   Gothic               gothic;

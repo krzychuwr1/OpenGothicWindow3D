@@ -21,6 +21,7 @@
 
 #include <vector>
 #include <thread>
+#include <optional>
 
 #include "world/world.h"
 #include "world/focus.h"
@@ -28,6 +29,7 @@
 #include "graphics/renderer.h"
 #include "ui/dialogmenu.h"
 #include "ui/inventorymenu.h"
+#include "xr/gamepadinput.h"
 #include "ui/chapterscreen.h"
 #include "ui/documentmenu.h"
 #include "ui/videowidget.h"
@@ -98,6 +100,11 @@ class MainWindow : public Tempest::Window {
     void render() override;
 
     uint64_t tick();
+    void     tickPad(uint64_t dt);
+    bool     padMenuContext() const;
+    void     renderFrame(bool xr);
+    uint32_t outW() const;
+    uint32_t outH() const;
     void     updateAnimation(uint64_t dt);
     void     tickCamera(uint64_t dt);
     void     isDialogClosed(bool& ret);
@@ -114,7 +121,11 @@ class MainWindow : public Tempest::Window {
       };
 
     Tempest::Device&      device;
-    Tempest::Swapchain    swapchain;
+    std::optional<Tempest::Swapchain> swapchain;
+    Tempest::Attachment   xrTarget;
+    GamepadInput          pad;
+    Tempest::PointF       padLook;
+    uint64_t              padTime = 0;
     Tempest::TextureAtlas atlas;
     Shaders               shaders;
     Renderer              renderer;

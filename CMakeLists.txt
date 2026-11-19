@@ -215,6 +215,23 @@ target_sources(Spacer PRIVATE ${SPACER_SOURCES} spacer/main.cpp)
 target_include_directories(Spacer PRIVATE "spacer")
 target_link_libraries(Spacer PRIVATE OpenGothic SpacerAssets)
 
+# OpenXR window mode (Meta Quest): the game floats in a window with passthrough around it
+if(ANDROID)
+  option(OPENGOTHIC_XR "Present through OpenXR as a window in passthrough" ON)
+  set(OPENGOTHIC_OPENXR_DIR "${CMAKE_SOURCE_DIR}/toolchain/openxr-aar" CACHE PATH "Extracted openxr_loader_for_android AAR")
+  if(OPENGOTHIC_XR)
+    if(NOT EXISTS "${OPENGOTHIC_OPENXR_DIR}/prefab/modules/headers/include/openxr/openxr.h")
+      message(FATAL_ERROR "OpenXR loader not found: extract org.khronos.openxr:openxr_loader_for_android into ${OPENGOTHIC_OPENXR_DIR}")
+    endif()
+    add_library(openxr_loader SHARED IMPORTED)
+    set_target_properties(openxr_loader PROPERTIES
+      IMPORTED_LOCATION "${OPENGOTHIC_OPENXR_DIR}/jni/${ANDROID_ABI}/libopenxr_loader.so"
+      INTERFACE_INCLUDE_DIRECTORIES "${OPENGOTHIC_OPENXR_DIR}/prefab/modules/headers/include")
+    target_compile_definitions(${PROJECT_NAME} PUBLIC OPENGOTHIC_XR)
+    target_link_libraries(${PROJECT_NAME} openxr_loader)
+  endif()
+endif()
+
 if(ANDROID)
   add_android_apk(OpenGothic-apk
     PACKAGE_NAME org.opengothic.app
