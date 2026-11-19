@@ -31,7 +31,7 @@ Start-Sleep $LoadSeconds
 adb logcat -c
 Start-Sleep ($Samples + 1)
 $vr  = adb logcat -d -s VrApi:* | Select-String 'App='
-$cpu = adb logcat -d -s app:* | Select-String 'Frame CPU ms|XR submit|GPU ms per view|^.*app\s+:\s+[ A-Za-z#0-9&\-]+ [\d.]+;' | Select-Object -Last 8
+$cpu = adb logcat -d -s app:* | Select-String 'Frame CPU ms|Update:|Draw CPU|eye 1|Per frame|XR submit|GPU ms per view|^.*app\s+:\s+[ A-Za-z#0-9&\-]+ [\d.]+;' | Select-Object -Last 8
 adb shell rm -f /sdcard/OpenGothic/args.txt
 
 $fps = @(); $gpu = @(); $cg = @()

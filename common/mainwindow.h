@@ -108,6 +108,8 @@ class MainWindow : public Tempest::Window {
 
     struct FrameTiming {
       uint64_t frames = 0, total = 0, wait = 0, update = 0, gpuWait = 0, record = 0, present = 0;
+      uint64_t uiMesh = 0, encStart = 0, drawCall = 0, submit = 0;
+      uint64_t tickGame = 0, tickAnim = 0, tickCam = 0;
       uint64_t last = 0;
       void     report();
       };

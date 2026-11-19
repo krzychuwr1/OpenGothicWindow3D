@@ -21,6 +21,11 @@ layout(binding = 4, std430) readonly buffer SsboLighting {
   LightSource lights[];
   };
 
+// Lights that reach the view (culled on the CPU), indexing lights[]
+layout(binding = 12, std430) readonly buffer SsboVisible {
+  uint visibleLights[];
+  };
+
 layout(location = 0) out vec4 cenPosition;
 layout(location = 1) out vec3 color;
 layout(location = 2) out flat uint lightId;
@@ -46,7 +51,8 @@ bool testFrustrum(in vec3 at, in float R){
   }
 
 void main(void) {
-  LightSource light = lights[gl_InstanceIndex];
+  const uint  id    = visibleLights[gl_InstanceIndex];
+  LightSource light = lights[id];
 
   if(!testFrustrum(light.pos,light.range)) {
     // skip invisible lights, make sure that they don't turn into FQS
@@ -116,5 +122,5 @@ void main(void) {
   gl_Position = pos;
   cenPosition = vec4(light.pos,light.range);
   color       = light.color;
-  lightId     = gl_InstanceIndex;
+  lightId     = id;
   }

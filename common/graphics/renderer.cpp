@@ -5,6 +5,43 @@
 
 #include "commandline.h"
 
+#include <chrono>
+
+// CPU time per phase of the world draw, reported while profiling (-gpuprofile)
+namespace {
+struct CpuPhases {
+  const char* name[16] = {};
+  uint64_t    us  [16] = {};
+  uint64_t    last = 0;
+  int         at   = 0;
+  static uint64_t now() {
+    return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
+  void start() { at = 0; last = now(); }
+  void mark(const char* n) {
+    const uint64_t t = now();
+    if(at<16) { name[at] = n; us[at] += t-last; at++; }
+    last = t;
+    }
+  };
+CpuPhases cpuPhasesPerView[2];
+CpuPhases* cpuPhasesCur = &cpuPhasesPerView[0];
+}
+#define cpuPhases (*cpuPhasesCur)
+
+std::string Renderer::cpuReport() {
+  std::string ret;
+  for(int v=0; v<2; ++v) {
+    auto& p = cpuPhasesPerView[v];
+    ret += v==0 ? "Draw CPU ms total, eye 0:" : " | eye 1:";
+    for(int i=0; i<16 && p.name[i]!=nullptr; ++i) {
+      ret += std::string(" ") + p.name[i] + " " + std::to_string(int(p.us[i]/1000)) + ";";
+      p.us[i] = 0;
+      }
+    }
+  return ret;
+  }
+
 #include <Tempest/Color>
 #include <Tempest/Fence>
 #include <Tempest/Log>
@@ -627,6 +664,9 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
   const auto gameTime  = world!=nullptr ? world->time() : gtime(8,0);
   const auto tickCount = world!=nullptr ? world->tickCount() : uint64_t();
 
+  cpuPhasesCur = &cpuPhasesPerView[secondView ? 1 : 0];
+  lightSlot    = fId;
+  cpuPhases.start();
   shaders.waitCompiler();
 
   const auto res = internalResolution(result.size());
@@ -658,9 +698,13 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
     wview.updateFrustrum(frustrum);
     }
 
+  cpuPhases.mark("setup");
   prepareUniforms(wview);
-  wview.preFrameUpdate(camera, tickCount, fId);
+  cpuPhases.mark("uniforms");
+  wview.preFrameUpdate(camera, tickCount, fId, secondView);
+  cpuPhases.mark("preFrameUpdate");
   wview.prepareGlobals(cmd,fId);
+  cpuPhases.mark("prepareGlobals");
 
   if(settings.pathTraceEnabled) {
     drawPathtrace(cmd, wview, fId);
@@ -679,10 +723,13 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
   buildHiZ(cmd);
 
   wview.visibilityPass(cmd, 1);
+  cpuPhases.mark("visibility+hiz");
   drawGBuffer(cmd, fId, wview);
+  cpuPhases.mark("gbuffer");
 
   if(!secondView)
     drawShadowMap(cmd, fId, wview);
+  cpuPhases.mark("shadows");
   prepareEpipolar(cmd, wview);
 
   drawVsm(cmd, wview);
@@ -708,6 +755,7 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
   drawSky(cmd, wview);
   drawLightTreeDbg(sceneLinear, cmd, wview);
 
+  cpuPhases.mark("prepare+lighting");
   stashSceneAux(cmd);
 
   drawGWater(cmd, wview);
@@ -751,7 +799,9 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
   //drawRayQueryDbg(cmd, wview);
   //drawHashDbg(result, cmd, wview);
 
+  cpuPhases.mark("water+translucent+post");
   wview.postFrameupdate();
+  cpuPhases.mark("postFrameupdate");
   }
 
 void Renderer::drawTonemapping(Attachment& result, Encoder<CommandBuffer>& cmd, const WorldView& wview) {
@@ -1788,12 +1838,18 @@ void Renderer::drawUnderwater(Encoder<CommandBuffer>& cmd, const WorldView& wvie
 
 void Renderer::drawShadowMap(Encoder<CommandBuffer>& cmd, uint8_t fId, WorldView& view) {
   const bool lit = view.mainLight().dir().y > Camera::minShadowY;
+  shadowFrame++;
   for(uint8_t i=0; i<Resources::ShadowLayers; ++i) {
     if(shadowMap[i].isEmpty())
       continue;
     if(lit && !shadowStatic[i].isEmpty()) {
+      const bool moved = !shadowStaticValid[i] || std::memcmp(shadowStaticMatrix[i].data(), shadowMatrix[i].data(), sizeof(float)*16)!=0;
+      // The far cascade's moving casters are refreshed every other frame: a frame of lag at that
+      // distance is invisible. Its map keeps the previous frame's content in between.
+      if(i==1 && !moved && shadowWasLit && (shadowFrame%2)!=0)
+        continue;
       // Landscape and static objects change only when the cascade moves: render them into a cache
-      if(!shadowStaticValid[i] || std::memcmp(shadowStaticMatrix[i].data(), shadowMatrix[i].data(), sizeof(float)*16)!=0) {
+      if(moved) {
         cmd.setDebugMarker(string_frm("ShadowMap #",i," static"));
         cmd.setFramebuffer({}, {shadowStatic[i], 0.f, Tempest::Preserve});
         view.drawShadowStatic(cmd,i);
@@ -1813,6 +1869,7 @@ void Renderer::drawShadowMap(Encoder<CommandBuffer>& cmd, uint8_t fId, WorldView
     if(lit)
       view.drawShadow(cmd,fId,i);
     }
+  shadowWasLit = lit;
   }
 
 void Renderer::drawShadowResolve(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
@@ -1901,11 +1958,24 @@ void Renderer::drawLights(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
     cmd.setBinding(11,scene.rtScene.rtDesc);
     }
 
+  // Only lights that reach the view: the world holds thousands, each drawn as a cube
+  wview.lights().visibleLights(frustrum[SceneGlobals::V_Main], visibleLights);
+  if(visibleLights.empty())
+    return;
+  auto& device = Resources::device();
+  auto& list   = visibleLightsSsbo[lightSlot];
+  if(list.byteSize()<visibleLights.size()*sizeof(uint32_t)) {
+    Resources::recycle(std::move(list));
+    list = device.ssbo(Tempest::BufferHeap::Upload, Tempest::Uninitialized, (visibleLights.size()+256)*sizeof(uint32_t));
+    }
+  list.update(visibleLights.data(), 0, visibleLights.size()*sizeof(uint32_t));
+  cmd.setBinding(12, list);
+
   auto  originLwc = scene.originLwc;
   auto& ibo       = Resources::cubeIbo();
   cmd.setPushData(&originLwc, sizeof(originLwc));
   cmd.setPipeline(*lights.directLightPso);
-  cmd.draw(nullptr,ibo, 0,ibo.size(), 0,wview.lights().size());
+  cmd.draw(nullptr,ibo, 0,ibo.size(), 0,visibleLights.size());
   }
 
 void Renderer::drawSky(Encoder<CommandBuffer>& cmd, const WorldView& wview) {

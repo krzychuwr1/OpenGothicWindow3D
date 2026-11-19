@@ -1306,6 +1306,8 @@ void MainWindow::FrameTiming::report() {
   if(t-last<3000000 || frames==0)
     return;
   auto ms = [this](uint64_t v) { return double(v)/double(frames)/1000.0; };
+  Log::i("Update: game tick ", ms(tickGame), " animation ", ms(tickAnim), " camera ", ms(tickCam));
+  Log::i("Per frame: ui mesh ", ms(uiMesh), " encode start ", ms(encStart), " draw+end ", ms(drawCall), " submit ", ms(submit));
   Log::i("Frame CPU ms: total ", ms(total), " | xr wait ", ms(wait), " | update ", ms(update),
          " | gpu wait ", ms(gpuWait), " | record ", ms(record), " | xr submit ", ms(present),
          " | fps ", double(frames)*1e6/double(t-last));
@@ -1316,8 +1318,9 @@ void MainWindow::FrameTiming::report() {
     const std::string rep = Tempest::vulkanGpuProfileReport();
     for(size_t at=0; at<rep.size(); at+=200)
       Log::i(std::string_view(rep).substr(at,200));
-    if(auto wv = Gothic::inst().worldView())
-      wv->dbgCountVisible();
+    const std::string cpu = Renderer::cpuReport();
+    for(size_t at=0; at<cpu.size(); at+=200)
+      Log::i(std::string_view(cpu).substr(at,200));
     }
   *this = FrameTiming();
   last  = t;
@@ -1407,9 +1410,15 @@ void MainWindow::updateFrame() {
   const uint64_t tu0 = nowUs();
   runStartupCommands();
   const uint64_t dt = tick();
+  const uint64_t tu1 = nowUs();
   updateAnimation(dt);
+  const uint64_t tu2 = nowUs();
   tickCamera(dt);
-  timing.update += nowUs()-tu0;
+  const uint64_t tu3 = nowUs();
+  timing.update   += tu3-tu0;
+  timing.tickGame += tu1-tu0;
+  timing.tickAnim += tu2-tu1;
+  timing.tickCam  += tu3-tu2;
   }
 
 void MainWindow::renderFrame(bool xr) {
@@ -1471,8 +1480,10 @@ void MainWindow::renderFrame(bool xr) {
         inventory.paintNumOverlay(p);
         }
       }
+    const uint64_t tm = nowUs();
     uiMesh [cmdId].update(device,uiLayer);
     numMesh[cmdId].update(device,numOverlay);
+    timing.uiMesh += nowUs()-tm;
 
     // Each eye looks through the window from its own tracked position
     Camera*         camera = xr ? Gothic::inst().camera() : nullptr;
@@ -1484,12 +1495,18 @@ void MainWindow::renderFrame(bool xr) {
 
     CommandBuffer& cmd = commands[cmdId];
     {
+    const uint64_t ts = nowUs();
     auto enc = cmd.startEncoding(device);
+    timing.encStart += nowUs()-ts;
     renderer.draw(backbuf,enc,cmdId,uiMesh[cmdId],numMesh[cmdId],inventory,video);
+    const uint64_t te = nowUs();
+    timing.drawCall += te-ts;
     }
     if(stereo)
       camera->setEyeView(nullptr);
+    const uint64_t tsub = nowUs();
     sync = device.submit(cmd);
+    timing.submit += nowUs()-tsub;
     timing.record += nowUs()-tr;
     if(!xr)
       device.present(*swapchain);

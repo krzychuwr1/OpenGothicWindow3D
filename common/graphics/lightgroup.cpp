@@ -305,6 +305,17 @@ const zenkit::LightPreset& LightGroup::findPreset(std::string_view preset) const
   return zero;
   }
 
+void LightGroup::visibleLights(const Frustrum& f, std::vector<uint32_t>& out) const {
+  out.clear();
+  for(size_t i=0; i<lightSourceData.size(); ++i) {
+    auto& l = lightSourceData[i];
+    if(l.range<=0)
+      continue;
+    if(f.testPoint(l.pos, l.range))
+      out.push_back(uint32_t(i));
+    }
+  }
+
 void LightGroup::tick(uint64_t time) {
   for(size_t i : animatedLights) {
     auto& light = lightSourceDesc[i];

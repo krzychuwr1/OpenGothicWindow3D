@@ -1,5 +1,7 @@
 #pragma once
 
+#include "graphics/dynamic/frustrum.h"
+
 #include <Tempest/CommandBuffer>
 #include <unordered_set>
 #include <zenkit/vobs/Light.hh>
@@ -50,6 +52,8 @@ class LightGroup final {
     void   tick(uint64_t time);
     bool   updateLights();
     auto&  lightsSsbo() const { return lightSourceSsbo; }
+    // Indices of lights whose range intersects the frustum
+    void   visibleLights(const Frustrum& f, std::vector<uint32_t>& out) const;
 
     void   prepareGlobals(Tempest::Encoder<Tempest::CommandBuffer> &cmd, uint8_t fId);
 

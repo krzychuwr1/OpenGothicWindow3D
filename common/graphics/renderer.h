@@ -21,6 +21,7 @@ class Renderer final {
     ~Renderer();
 
     void onWorldChanged();
+    static std::string cpuReport();
     // The second view of a stereo frame reuses the first view's shadow maps
     void setSecondView(bool second) { secondView = second; }
     void setGizmo(bool enable, Tempest::Vec3 center, int mode);
@@ -170,6 +171,12 @@ class Renderer final {
     Tempest::ZBuffer          shadowStatic      [Resources::ShadowLayers];
     Tempest::Matrix4x4        shadowStaticMatrix[Resources::ShadowLayers];
     bool                      shadowStaticValid [Resources::ShadowLayers] = {};
+    uint64_t                  shadowFrame  = 0;
+    // Point lights visible to the view being drawn, one list per frame slot
+    Tempest::StorageBuffer    visibleLightsSsbo[Resources::MaxFramesInFlight];
+    std::vector<uint32_t>     visibleLights;
+    uint8_t                   lightSlot = 0;
+    bool                      shadowWasLit = false;
     Tempest::Vec3             clipInfo;
 
     Tempest::Attachment       sceneLinear;

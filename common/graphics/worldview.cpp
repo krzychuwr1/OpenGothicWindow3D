@@ -39,7 +39,7 @@ bool WorldView::isInPfxRange(const Vec3& pos) const {
   return pfxGroup.isInPfxRange(pos);
   }
 
-void WorldView::preFrameUpdate(const Camera& camera, uint64_t tickCount, uint8_t fId) {
+void WorldView::preFrameUpdate(const Camera& camera, uint64_t tickCount, uint8_t fId, bool secondView) {
   const auto ldir = gSky.sunLight().dir();
   Tempest::Matrix4x4 shadow   [Resources::ShadowLayers];
   Tempest::Matrix4x4 shadowLwc[Resources::ShadowLayers];
@@ -58,12 +58,15 @@ void WorldView::preFrameUpdate(const Camera& camera, uint64_t tickCount, uint8_t
 
   pfxGroup.setViewerPos(camera.originLwc());
   pfxGroup.tick(tickCount);
-  gLights.tick(tickCount);
+  // The second view of a stereo frame shares the tick: animated lights, wind and morphs are already updated
+  if(!secondView)
+    gLights.tick(tickCount);
   sGlobal.setTime(tickCount);
   sGlobal.commitUbo(fId);
 
   pfxGroup.preFrameUpdate(fId);
-  visuals .preFrameUpdate();
+  if(!secondView)
+    visuals.preFrameUpdate();
   }
 
 void WorldView::prepareGlobals(Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t fId) {
