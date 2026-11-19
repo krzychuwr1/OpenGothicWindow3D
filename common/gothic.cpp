@@ -172,9 +172,23 @@ Gothic::Gothic(GameModDescriptor desc) {
 
   baseIniFile.reset(new IniFile(nestedPath({u"system",u"Gothic.ini"},Dir::FT_File)));
   iniFile    .reset(new IniFile(u"Gothic.ini"));
+#if defined(__ANDROID__)
+  // Mobile GPU: 3D at 75%, interface at full resolution
+  const int defaultResIndex = 1;
+#else
+  const int defaultResIndex = 0; // full-res
+#endif
   if(!iniFile->has("INTERNAL", "vidResIndex")) {
-    iniFile->set("INTERNAL", "vidResIndex", 0); // full-res
+    iniFile->set("INTERNAL", "vidResIndex", defaultResIndex);
     }
+#if defined(__ANDROID__)
+  // The original Gothic.ini (copied with the game) enables desktop-cost effects;
+  // start mobile installs without them. The video menu still changes these.
+  for(auto [sec,key] : {std::pair{"RENDERER_D3D","zFogRadial"}, {"ENGINE","zEnvMappingEnabled"}, {"ENGINE","zCloudShadowScale"}}) {
+    if(!iniFile->has(sec,key))
+      iniFile->set(sec,key,0);
+    }
+#endif
   {
   defaults.reset(new IniFile());
   defaults->set("GAME", "enableMouse",         1);
@@ -202,10 +216,15 @@ Gothic::Gothic(GameModDescriptor desc) {
   defaults->set("SKY_OUTDOOR", "zMoonSize",  400);
   defaults->set("SKY_OUTDOOR", "zMoonAlpha", 255);
 
-  defaults->set("RENDERER_D3D", "zFogRadial", 1); // sunshafts
-  defaults->set("ENGINE",       "zEnvMappingEnabled", 1); // reflections
+#if defined(__ANDROID__)
+  const int highEnd = 0;
+#else
+  const int highEnd = 1;
+#endif
+  defaults->set("RENDERER_D3D", "zFogRadial", highEnd); // sunshafts
+  defaults->set("ENGINE",       "zEnvMappingEnabled", highEnd); // reflections
   defaults->set("ENGINE",       "zCloudShadowScale", gpu.type==Tempest::DeviceType::Discrete); // ssao
-  defaults->set("INTERNAL",     "vidResIndex", 0); // full-res
+  defaults->set("INTERNAL",     "vidResIndex", defaultResIndex);
 
   defaults->set("VIDEO", "zVidBrightness", 0.5f);
   defaults->set("VIDEO", "zVidContrast",   0.5f);

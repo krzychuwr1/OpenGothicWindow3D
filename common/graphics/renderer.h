@@ -124,7 +124,11 @@ class Renderer final {
     void togglePathtrace();
 
     struct Settings {
+#if defined(__ANDROID__)
+      const uint32_t shadowResolution   = 1024;
+#else
       const uint32_t shadowResolution   = 2048;
+#endif
       bool           vsmEnabled         = false;
       bool           rtsmEnabled        = false;
       bool           swrEnabled         = false;

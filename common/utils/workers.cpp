@@ -99,6 +99,10 @@ uint8_t Workers::maxThreads() {
   int32_t th = int32_t(std::thread::hardware_concurrency());
   if(th<=0)
     th = 1;
+#if defined(__ANDROID__) && defined(OPENGOTHIC_XR)
+  // Meta Quest gives an immersive app three of its cores; more workers only contend with the main thread
+  th = std::min(th, 3);
+#endif
   if(th>MAX_THREADS)
     return MAX_THREADS;
   return uint8_t(th);
