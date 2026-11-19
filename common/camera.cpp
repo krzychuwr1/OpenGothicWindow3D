@@ -403,14 +403,43 @@ Matrix4x4 Camera::mkViewShadowVsm(const Vec3& cameraPos, const Vec3& ldir) const
   }
 
 Matrix4x4 Camera::viewShadow(const Vec3& lightDir, size_t layer) const {
-  auto  vp       = viewProj();
+  // Cascades fit the game camera even while an eye view is set, so both eyes share one shadow map
+  auto  vp       = proj;
+  if(auto w = Gothic::inst().world())
+    w->globalFx()->morph(vp);
+  vp.mul(mkView(origin+shake, angles));
   float rotation = (angles.y-90);
+#if defined(OPENGOTHIC_XR)
+  if(layer==0) {
+    // A near cascade that holds still while the view turns a little, the player takes a step
+    // or the sun creeps, so its static casters can be cached (Renderer::drawShadowMap)
+    rotation = std::round(rotation/45.f)*45.f;
+    const Vec3 l = Vec3::normalize(lightDir);
+    if(Vec3::dotProduct(l, shadowLight)<0.99999f)  // ~0.25 degrees
+      shadowLight = l;
+    const float step = 256.f;
+    const Vec3  at   = Vec3(std::round(inter.target.x/step)*step, std::round(inter.target.y/step)*step,
+                            std::round(inter.target.z/step)*step);
+    return mkViewShadow(at,rotation,vp,shadowLight,layer);
+    }
+#endif
   // if(layer==0)
   //   return viewShadowVsm(cameraPos,rotation,vp,lightDir);
   return mkViewShadow(inter.target,rotation,vp,lightDir,layer);
   }
 
 Matrix4x4 Camera::viewShadowLwc(const Tempest::Vec3& lightDir, size_t layer) const {
+#if defined(OPENGOTHIC_XR)
+  const bool shared = true;
+#else
+  const bool shared = eye.active;
+#endif
+  if(shared) {
+    // The shared world-space cascade, expressed relative to this eye's origin
+    auto ret = viewShadow(lightDir, layer);
+    ret.translate(originLwc());
+    return ret;
+    }
   auto  vp       = viewProjLwc();
   float rotation = (angles.y-90);
   // if(layer==0)
@@ -444,6 +473,10 @@ Matrix4x4 Camera::mkViewShadow(const Vec3& cameraPos, float rotation, const Temp
     case 0:
       smWidth    = (r-l).length();
       smWidth    = std::max(smWidth,1024.f); // ~4 pixels per santimeter
+#if defined(OPENGOTHIC_XR)
+      // Steps of a quarter octave, so camera zoom does not invalidate the cached cascade every frame
+      smWidth    = 1024.f*std::exp2(std::ceil(std::log2(smWidth/1024.f)*4.f)/4.f);
+#endif
       smDepth    = 5120;
       break;
     case 1:

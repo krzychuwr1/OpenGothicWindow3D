@@ -1,5 +1,8 @@
 #include "worldview.h"
 
+#include <Tempest/Log>
+#include <string>
+
 #include <Tempest/Application>
 
 #include "graphics/mesh/submesh/packedmesh.h"
@@ -116,6 +119,41 @@ void WorldView::updateFrustrum(const Frustrum fr[]) {
     sGlobal.frustrum[i] = fr[i];
   }
 
+void WorldView::dbgCountVisible() const {
+  // Clusters per caster type passing each view's frustum, as the GPU visibility pass tests them
+  const char* typeName[] = {"landscape","static","movable","animated","pfx","morph"};
+  auto& cl  = visuals.clusters();
+  auto& dc  = visuals.drawCommands();
+  int   cnt[3][6] = {};
+  const SceneGlobals::VisCamera views[3] = {SceneGlobals::V_Main, SceneGlobals::V_Shadow0, SceneGlobals::V_Shadow1};
+  for(size_t i=0; i<cl.size(); ++i) {
+    auto& c = const_cast<DrawClusters&>(cl)[i];
+    if(c.r<=0)
+      continue;
+    const auto t = dc[c.commandId].type;
+    for(int v=0; v<3; ++v)
+      if(sGlobal.frustrum[views[v]].testPoint(c.pos, c.r))
+        cnt[v][t] += int(c.meshletCount);
+    }
+  for(int v=1; v<3; ++v) {
+    // World-space extent of the cascade volume: corners of NDC x,y in [-1,1], z in [0,1]
+    auto inv = sGlobal.frustrum[views[v]].mat;
+    inv.inverse();
+    Tempest::Vec3 lo(1e9f), hi(-1e9f);
+    for(int i=0; i<8; ++i) {
+      Tempest::Vec3 p(i&1 ? 1.f : -1.f, i&2 ? 1.f : -1.f, i&4 ? 1.f : 0.f);
+      inv.project(p);
+      lo = Tempest::Vec3(std::min(lo.x,p.x), std::min(lo.y,p.y), std::min(lo.z,p.z));
+      hi = Tempest::Vec3(std::max(hi.x,p.x), std::max(hi.y,p.y), std::max(hi.z,p.z));
+      }
+    Tempest::Log::i("Shadow cascade ", v-1, " extent cm: ", hi.x-lo.x, " x ", hi.y-lo.y, " x ", hi.z-lo.z);
+    }
+  std::string s = "Visible meshlets (main/shadow0/shadow1):";
+  for(int t=0; t<6; ++t)
+    s += std::string(" ") + typeName[t] + " " + std::to_string(cnt[0][t]) + "/" + std::to_string(cnt[1][t]) + "/" + std::to_string(cnt[2][t]);
+  Tempest::Log::i(s);
+  }
+
 void WorldView::visibilityPass(Tempest::Encoder<Tempest::CommandBuffer>& cmd, int pass) {
   cmd.setDebugMarker("Visibility");
   visuals.visibilityPass(cmd, pass);
@@ -132,6 +170,21 @@ void WorldView::drawHiZ(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
 void WorldView::drawShadow(Tempest::Encoder<CommandBuffer>& cmd, uint8_t fId, uint8_t layer) {
   visuals.drawShadow(cmd,layer);
   pfxGroup.drawShadow(cmd,fId,layer);
+  }
+
+void WorldView::drawShadowStatic(Tempest::Encoder<CommandBuffer>& cmd, uint8_t layer) {
+  visuals.drawShadow(cmd,layer,true);
+  }
+
+void WorldView::drawShadowDynamic(Tempest::Encoder<CommandBuffer>& cmd, uint8_t fId, uint8_t layer) {
+  visuals.drawShadow(cmd,layer,false);
+  pfxGroup.drawShadow(cmd,fId,layer);
+  }
+
+void WorldView::drawShadowProfiled(Tempest::Encoder<CommandBuffer>& cmd, uint8_t fId, uint8_t layer, int part) {
+  if(part==0) visuals.drawShadow(cmd,layer,DrawCommands::Casters::Movable);
+  if(part==1) visuals.drawShadow(cmd,layer,DrawCommands::Casters::Animated);
+  if(part==2) pfxGroup.drawShadow(cmd,fId,layer);
   }
 
 void WorldView::drawVsm(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {

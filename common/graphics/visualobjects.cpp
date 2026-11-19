@@ -586,6 +586,16 @@ void VisualObjects::drawShadow(Tempest::Encoder<Tempest::CommandBuffer>& cmd, in
   drawCmd.drawCommon(cmd, view, Material::AlphaTest);
   }
 
+void VisualObjects::drawShadow(Tempest::Encoder<Tempest::CommandBuffer>& cmd, int layer, bool staticCasters) {
+  drawShadow(cmd, layer, staticCasters ? DrawCommands::Casters::Static : DrawCommands::Casters::Dynamic);
+  }
+
+void VisualObjects::drawShadow(Tempest::Encoder<Tempest::CommandBuffer>& cmd, int layer, DrawCommands::Casters casters) {
+  auto view    = SceneGlobals::VisCamera(SceneGlobals::V_Shadow0 + layer);
+  drawCmd.drawCommon(cmd, view, Material::Solid,     casters);
+  drawCmd.drawCommon(cmd, view, Material::AlphaTest, casters);
+  }
+
 void VisualObjects::drawVsm(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
   drawCmd.drawVsm(cmd);
   }

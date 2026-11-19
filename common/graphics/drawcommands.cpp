@@ -430,7 +430,7 @@ void DrawCommands::drawHiZ(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
     }
   }
 
-void DrawCommands::drawCommon(Tempest::Encoder<Tempest::CommandBuffer>& cmd, SceneGlobals::VisCamera viewId, Material::AlphaFunc func) {
+void DrawCommands::drawCommon(Tempest::Encoder<Tempest::CommandBuffer>& cmd, SceneGlobals::VisCamera viewId, Material::AlphaFunc func, Casters casters) {
   struct Push { uint32_t firstMeshlet; uint32_t meshletCount; } push = {};
 
   auto b = std::lower_bound(ord.begin(), ord.end(), func, [](const DrawCmd* l, Material::AlphaFunc f){
@@ -445,6 +445,17 @@ void DrawCommands::drawCommon(Tempest::Encoder<Tempest::CommandBuffer>& cmd, Sce
     auto& cx = **i;
     if(cx.alpha!=func)
       continue;
+    if(casters!=Casters::All) {
+      const bool isStatic = (cx.type==Type::Landscape || cx.type==Type::Static);
+      if(casters==Casters::Movable && cx.type!=Type::Movable)
+        continue;
+      if(casters==Casters::Animated && cx.type==Type::Movable)
+        continue;
+      if((casters==Casters::Static || casters==Casters::Dynamic) && isStatic!=(casters==Casters::Static))
+        continue;
+      if((casters==Casters::Movable || casters==Casters::Animated) && isStatic)
+        continue;
+      }
 
     if(cx.maxPayload==0)
       continue;

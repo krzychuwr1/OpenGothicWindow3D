@@ -1,5 +1,8 @@
 #include "renderer.h"
 
+#include <Tempest/VulkanInterop>
+#include <cstring>
+
 #include <Tempest/Color>
 #include <Tempest/Fence>
 #include <Tempest/Log>
@@ -225,6 +228,7 @@ void Renderer::togglePathtrace() {
 
 void Renderer::onWorldChanged() {
   sky.lutIsInitialized = false;
+  shadowStaticValid    = false;
   resetSkyFog();
   }
 
@@ -437,6 +441,12 @@ void Renderer::resetShadowmap() {
       }
     shadowMap[i] = device.zbuffer(shadowFormat, settings.shadowResolution, settings.shadowResolution);
     }
+#if defined(OPENGOTHIC_XR)
+  Resources::recycle(std::move(shadowStatic));
+  if(!shadowMap[0].isEmpty())
+    shadowStatic = device.zbuffer(shadowFormat, settings.shadowResolution, settings.shadowResolution);
+  shadowStaticValid = false;
+#endif
   }
 
 void Renderer::resetSkyFog() {
@@ -656,7 +666,9 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
     }
 
   wview.visibilityPass(cmd, 0);
-  prepareSky(cmd, wview);
+  // Sky, fog and irradiance tables change too little between the eyes to compute twice
+  if(!secondView)
+    prepareSky(cmd, wview);
 
   drawHiZ (cmd, wview);
   buildHiZ(cmd);
@@ -664,7 +676,8 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
   wview.visibilityPass(cmd, 1);
   drawGBuffer(cmd, fId, wview);
 
-  drawShadowMap(cmd, fId, wview);
+  if(!secondView)
+    drawShadowMap(cmd, fId, wview);
   prepareEpipolar(cmd, wview);
 
   drawVsm(cmd, wview);
@@ -674,10 +687,12 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
 
   drawSwRT(cmd, wview);
 
-  prepareIrradiance(cmd, wview);
+  if(!secondView)
+    prepareIrradiance(cmd, wview);
   prepareExposure(cmd, wview);
   prepareSSAO(cmd, wview);
-  prepareFog (cmd, wview);
+  if(!secondView)
+    prepareFog(cmd, wview);
   prepareGi  (cmd, wview);
   prepareSurfels(cmd, wview);
 
@@ -1767,12 +1782,39 @@ void Renderer::drawUnderwater(Encoder<CommandBuffer>& cmd, const WorldView& wvie
   }
 
 void Renderer::drawShadowMap(Encoder<CommandBuffer>& cmd, uint8_t fId, WorldView& view) {
+  const bool lit = view.mainLight().dir().y > Camera::minShadowY;
   for(uint8_t i=0; i<Resources::ShadowLayers; ++i) {
     if(shadowMap[i].isEmpty())
       continue;
+    if(i==0 && lit && !shadowStatic.isEmpty()) {
+      // Landscape and static objects change only when the cascade moves: render them into a cache
+      if(!shadowStaticValid || std::memcmp(shadowStaticMatrix.data(), shadowMatrix[0].data(), sizeof(float)*16)!=0) {
+        cmd.setDebugMarker("ShadowMap #0 static");
+        cmd.setFramebuffer({}, {shadowStatic, 0.f, Tempest::Preserve});
+        view.drawShadowStatic(cmd,0);
+        shadowStaticMatrix = shadowMatrix[0];
+        shadowStaticValid  = true;
+        }
+      cmd.setDebugMarker("ShadowMap #0");
+      cmd.setFramebuffer({}, {shadowMap[0], Tempest::Discard, Tempest::Preserve});
+      cmd.setBinding(0, shadowStatic, Sampler::nearest());
+      cmd.setPipeline(shaders.copyDepth);
+      cmd.draw(nullptr, 0, 3);
+      if(Tempest::vulkanGpuProfiling()) {
+        const char* names[] = {"ShadowMap #0 movable", "ShadowMap #0 animated", "ShadowMap #0 particles"};
+        for(int p=0; p<3; ++p) {
+          cmd.setDebugMarker(names[p]);
+          cmd.setFramebuffer({}, {shadowMap[0], Tempest::Preserve, Tempest::Preserve});
+          view.drawShadowProfiled(cmd,fId,0,p);
+          }
+        } else {
+        view.drawShadowDynamic(cmd,fId,0);
+        }
+      continue;
+      }
     cmd.setDebugMarker(string_frm("ShadowMap #",i));
     cmd.setFramebuffer({}, {shadowMap[i], 0.f, Tempest::Preserve});
-    if(view.mainLight().dir().y > Camera::minShadowY)
+    if(lit)
       view.drawShadow(cmd,fId,i);
     }
   }

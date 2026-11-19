@@ -112,6 +112,17 @@ CommandLine::CommandLine(int argc, const char** argv) {
       if(i<argc)
         wrldDef = argv[i];
       }
+    else if(arg=="-exec") {
+      ++i;
+      if(i<argc)
+        execCmds = argv[i];
+      }
+    else if(arg=="-gpuprofile") {
+      gpuProfile = true;
+      }
+    else if(arg=="-novideo") {
+      skipVideo = true;
+      }
     else if(arg=="-window") {
       isWindow = true;
       }

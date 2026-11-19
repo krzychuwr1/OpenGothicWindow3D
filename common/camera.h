@@ -128,6 +128,8 @@ class Camera final {
     void               setEyeView(const EyeView* view);
 
   private:
+    mutable Tempest::Vec3 shadowLight = {0,1,0};
+
     struct {
       bool               active = false;
       Tempest::Vec3      pos;

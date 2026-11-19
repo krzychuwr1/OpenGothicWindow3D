@@ -103,6 +103,16 @@ class MainWindow : public Tempest::Window {
     void     tickPad(uint64_t dt);
     bool     padMenuContext() const;
     void     renderFrame(bool xr);
+    void     runStartupCommands();
+
+    struct FrameTiming {
+      uint64_t frames = 0, total = 0, wait = 0, update = 0, gpuWait = 0, record = 0, present = 0;
+      uint64_t last = 0;
+      void     report();
+      };
+    FrameTiming timing;
+    bool        startupDone   = false;
+    int         startupFrames = 0;
     uint32_t outW() const;
     uint32_t outH() const;
     void     updateAnimation(uint64_t dt);

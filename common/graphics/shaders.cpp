@@ -82,6 +82,15 @@ void Shaders::compileShaders() noexcept {
   copyBuf   = computeShader("copy.comp.sprv");
   copyImg   = computeShader("copy_img.comp.sprv");
   copy      = postEffect("copy");
+  {
+    RenderState st;
+    st.setZTestMode(RenderState::ZTestMode::Always);
+    st.setZWriteEnabled(true);
+    auto vs = GothicShader::get("triangle.vert.sprv");
+    auto fs = GothicShader::get("copy_depth.frag.sprv");
+    copyDepth = Resources::device().pipeline(Triangles, st, Resources::device().shader(vs.data,vs.len),
+                                             Resources::device().shader(fs.data,fs.len));
+  }
 
   patch     = computeShader("patch.comp.sprv");
 

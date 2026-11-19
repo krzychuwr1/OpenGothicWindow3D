@@ -60,6 +60,10 @@ class WorldView {
 
     void drawHiZ        (Tempest::Encoder<Tempest::CommandBuffer>& cmd);
     void drawShadow     (Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t frameId, uint8_t layer);
+    void drawShadowStatic (Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t layer);
+    void dbgCountVisible() const;
+    void drawShadowDynamic(Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t frameId, uint8_t layer);
+    void drawShadowProfiled(Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t frameId, uint8_t layer, int part);
     void drawVsm        (Tempest::Encoder<Tempest::CommandBuffer>& cmd);
     void drawGBuffer    (Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t frameId);
     void drawWater      (Tempest::Encoder<Tempest::CommandBuffer>& cmd);

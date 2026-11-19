@@ -21,6 +21,8 @@ class Renderer final {
     ~Renderer();
 
     void onWorldChanged();
+    // The second view of a stereo frame reuses the first view's shadow maps
+    void setSecondView(bool second) { secondView = second; }
     void setGizmo(bool enable, Tempest::Vec3 center, int mode);
     void setLightsHud(const Tempest::Texture2d* tex);
 
@@ -35,6 +37,8 @@ class Renderer final {
     Tempest::Attachment screenshoot(uint8_t frameId, Tempest::Size size);
 
   private:
+    bool secondView = false;
+
     enum Quality : uint8_t {
       None,
       VolumetricLQ,
@@ -161,6 +165,10 @@ class Renderer final {
     Tempest::Matrix4x4        proj, viewProj, viewProjLwc;
     Tempest::Matrix4x4        shadowMatrix[Resources::ShadowLayers];
     Tempest::Matrix4x4        shadowMatrixVsm;
+    // Static casters of the near cascade, re-rendered only when the cascade moves (XR builds)
+    Tempest::ZBuffer          shadowStatic;
+    Tempest::Matrix4x4        shadowStaticMatrix;
+    bool                      shadowStaticValid = false;
     Tempest::Vec3             clipInfo;
 
     Tempest::Attachment       sceneLinear;

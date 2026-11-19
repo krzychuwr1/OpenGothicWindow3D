@@ -48,6 +48,10 @@ class CommandLine {
     bool                doForceG2NR()      const { return forceG2NR;    }
     bool                aaPreset()         const { return aaPresetId;   }
     std::string_view    defaultSave()      const { return saveDef;    }
+    // Console (Marvin) commands run once the first world has loaded, separated by ';'
+    std::string_view    startupCommands()  const { return execCmds;   }
+    bool                noVideo()          const { return skipVideo;  }
+    bool                isGpuProfile()     const { return gpuProfile; }
 
     std::string         wrldDef;
 
@@ -59,6 +63,9 @@ class CommandLine {
     std::u16string      gscript;
     std::u16string      gcutscene;
     std::string         saveDef;
+    std::string         execCmds;
+    bool                skipVideo    = false;
+    bool                gpuProfile   = false;
     bool                devmode      = false;
     bool                noMenu       = false;
     Benchmark           isBenchmark  = Benchmark::None;

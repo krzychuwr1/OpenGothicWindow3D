@@ -68,15 +68,30 @@ static bool ok(XrResult r, const char* what) {
   return false;
   }
 
+static V3 toLocal(const XrPosef& pose, const V3& p) {
+  return rotate(conjugate(pose.orientation), p - toV3(pose.position));
+  }
+
+static V3 toWorld(const XrPosef& pose, const V3& p) {
+  return toV3(pose.position) + rotate(pose.orientation, p);
+  }
+
+// Parts of the window frame a hand can grab
+enum class Grip : uint8_t { None, Handle, CornerLeft, CornerRight };
+
 struct Hand {
   XrPath         path        = XR_NULL_PATH;
-  XrSpace        aimSpace    = XR_NULL_HANDLE;
+  XrSpace        aimSpace    = XR_NULL_HANDLE;   // pointing ray
+  XrSpace        nearSpace   = XR_NULL_HANDLE;   // pinch point (hands) or grip (controllers), for direct touch
   bool           aimValid    = false;
+  bool           nearValid   = false;
   XrPosef        aim         = {{0,0,0,1},{0,0,0}};
+  XrPosef        nearPose    = {{0,0,0,1},{0,0,0}};
   float          grab        = 0;
   bool           grabHeld    = false;
-  bool           hover       = false;
-  V3             hit;
+  Grip           hover       = Grip::None;
+  bool           hoverNear   = false;
+  V3             hit;                            // where the hand targets the frame part, local space
   };
 
 }
@@ -118,9 +133,11 @@ struct XrWindow::Impl {
   VkFence                  fence[Ring] = {};
   uint32_t                 ringAt = 0;
 
-  // Cursor dot shown where a controller or hand points at the window
-  XrSwapchain              cursorSwapchain = XR_NULL_HANDLE;
-  bool                     cursorReady     = false;
+  // Window frame parts: grab handle (idle/hover/held) and resize corners (left/right, hover/held)
+  XrSwapchain              handleSwapchain = XR_NULL_HANDLE;
+  XrSwapchain              cornerSwapchain = XR_NULL_HANDLE;
+  bool                     chromeReady     = false;
+  static constexpr uint32_t HandleW = 256, HandleH = 32, CornerSize = 64;
 
   // Frame
   XrFrameState             frame = {XR_TYPE_FRAME_STATE};
@@ -134,13 +151,16 @@ struct XrWindow::Impl {
   float                    verticalFov = 67.5f;
   bool                     placed      = false;
   int                      grabbedBy   = -1;
-  XrPosef                  grabOffset  = {{0,0,0,1},{0,0,0}};
-  float                    grabDistance = 0;
+  Grip                     grabbed     = Grip::None;
+  bool                     grabNear    = false;
+  V3                       grabLocal;          // grabbed point in the space of the holding pose
+  float                    grabScale   = 1;    // window width per corner reach at the start of a resize
   V3                       headPos;
 
   // Input
   XrActionSet              actionSet  = XR_NULL_HANDLE;
   XrAction                 aAim       = XR_NULL_HANDLE;
+  XrAction                 aNear      = XR_NULL_HANDLE;
   XrAction                 aGrab      = XR_NULL_HANDLE;
   XrAction                 aStick     = XR_NULL_HANDLE;
   XrAction                 aTrigger   = XR_NULL_HANDLE;
@@ -160,7 +180,9 @@ struct XrWindow::Impl {
   void pollEvents();
   void updateInput();
   void placeWindow();
-  void fillCursor();
+  void fillChrome();
+  Grip targetAt(float x, float y) const;
+  V3   handleCenter() const;
   bool copyImage(uint8_t eye, const Attachment& img);
   void locateEyes();
   XrPath path(const char* p) const { XrPath r = XR_NULL_PATH; xrStringToPath(instance, p, &r); return r; }
@@ -197,8 +219,10 @@ XrWindow::Impl::~Impl() {
     xrDestroyPassthroughLayer(passthroughLayer);
   if(passthrough!=XR_NULL_HANDLE)
     xrDestroyPassthrough(passthrough);
-  if(cursorSwapchain!=XR_NULL_HANDLE)
-    xrDestroySwapchain(cursorSwapchain);
+  if(handleSwapchain!=XR_NULL_HANDLE)
+    xrDestroySwapchain(handleSwapchain);
+  if(cornerSwapchain!=XR_NULL_HANDLE)
+    xrDestroySwapchain(cornerSwapchain);
   for(auto sw:swapchain)
     if(sw!=XR_NULL_HANDLE)
       xrDestroySwapchain(sw);
@@ -425,9 +449,14 @@ void XrWindow::Impl::createSwapchains() {
     }
 
   info.createFlags = XR_SWAPCHAIN_CREATE_STATIC_IMAGE_BIT;
-  info.width       = 16;
-  info.height      = 16;
-  ok(xrCreateSwapchain(session, &info, &cursorSwapchain), "cursor swapchain");
+  info.width       = HandleW;
+  info.height      = HandleH;
+  info.arraySize   = 3;
+  ok(xrCreateSwapchain(session, &info, &handleSwapchain), "handle swapchain");
+  info.width       = CornerSize;
+  info.height      = CornerSize;
+  info.arraySize   = 4;
+  ok(xrCreateSwapchain(session, &info, &cornerSwapchain), "corner swapchain");
   }
 
 void XrWindow::Impl::createPassthrough() {
@@ -466,6 +495,7 @@ void XrWindow::Impl::createActions() {
     ok(xrCreateAction(actionSet, &info, &out), name);
     };
   make(aAim,        "aim",          "Aim",              XR_ACTION_TYPE_POSE_INPUT,     true);
+  make(aNear,       "touch",        "Touch point",      XR_ACTION_TYPE_POSE_INPUT,     true);
   make(aGrab,       "grab_window",  "Move the window",  XR_ACTION_TYPE_FLOAT_INPUT,    true);
   make(aStick,      "stick",        "Thumbstick",       XR_ACTION_TYPE_VECTOR2F_INPUT, true);
   make(aTrigger,    "trigger",      "Trigger",          XR_ACTION_TYPE_FLOAT_INPUT,    true);
@@ -489,6 +519,8 @@ void XrWindow::Impl::createActions() {
   suggest("/interaction_profiles/oculus/touch_controller", {
     {aAim,        "/user/hand/left/input/aim/pose"},
     {aAim,        "/user/hand/right/input/aim/pose"},
+    {aNear,       "/user/hand/left/input/grip/pose"},
+    {aNear,       "/user/hand/right/input/grip/pose"},
     {aGrab,       "/user/hand/left/input/squeeze/value"},
     {aGrab,       "/user/hand/right/input/squeeze/value"},
     {aStick,      "/user/hand/left/input/thumbstick"},
@@ -507,6 +539,8 @@ void XrWindow::Impl::createActions() {
     suggest("/interaction_profiles/ext/hand_interaction_ext", {
       {aAim,  "/user/hand/left/input/aim/pose"},
       {aAim,  "/user/hand/right/input/aim/pose"},
+      {aNear, "/user/hand/left/input/pinch_ext/pose"},
+      {aNear, "/user/hand/right/input/pinch_ext/pose"},
       {aGrab, "/user/hand/left/input/pinch_ext/value"},
       {aGrab, "/user/hand/right/input/pinch_ext/value"},
       });
@@ -518,6 +552,8 @@ void XrWindow::Impl::createActions() {
     info.subactionPath     = h.path;
     info.poseInActionSpace = {{0,0,0,1},{0,0,0}};
     ok(xrCreateActionSpace(session, &info, &h.aimSpace), "aim space");
+    info.action            = aNear;
+    ok(xrCreateActionSpace(session, &info, &h.nearSpace), "touch space");
     }
 
   XrSessionActionSetsAttachInfo attach = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
@@ -621,41 +657,56 @@ void XrWindow::Impl::updateInput() {
     return st.isActive ? st.currentState : XrVector2f{0,0};
     };
 
-  // Pointing at and grabbing the window
-  const V3    wPos    = toV3(windowPose.position);
-  const V3    wNormal = rotate(windowPose.orientation, V3{0,0,1});
-  const V3    wRight  = rotate(windowPose.orientation, V3{1,0,0});
-  const V3    wUp     = rotate(windowPose.orientation, V3{0,1,0});
-  const float halfW   = windowWidth*0.5f;
-  const float halfH   = windowHeight()*0.5f;
+  // Pointing at or touching the frame parts: the handle moves the window, the corners resize it.
+  // The game image itself is never a grab target, so playing never moves the window by accident.
+  const V3 wNormal = rotate(windowPose.orientation, V3{0,0,1});
 
   for(size_t i=0; i<hands.size(); ++i) {
     auto& h = hands[i];
-    XrSpaceLocation loc = {XR_TYPE_SPACE_LOCATION};
-    h.aimValid = XR_SUCCEEDED(xrLocateSpace(h.aimSpace, localSpace, frame.predictedDisplayTime, &loc)) &&
-                 (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
-                 (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
-    h.aim   = loc.pose;
-    h.grab  = getF(aGrab, h.path);
-    h.hover = false;
+    auto locate = [&](XrSpace sp, XrPosef& out) {
+      XrSpaceLocation loc = {XR_TYPE_SPACE_LOCATION};
+      const bool valid = XR_SUCCEEDED(xrLocateSpace(sp, localSpace, frame.predictedDisplayTime, &loc)) &&
+                         (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
+                         (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
+      out = loc.pose;
+      return valid;
+      };
+    h.aimValid  = locate(h.aimSpace,  h.aim);
+    h.nearValid = locate(h.nearSpace, h.nearPose);
+    h.grab      = getF(aGrab, h.path);
+    h.hover     = Grip::None;
+    h.hoverNear = false;
+
+    // Direct touch first: the pinch point (or controller grip) close to a frame part
+    if(h.nearValid) {
+      const V3 n = toLocal(windowPose, toV3(h.nearPose.position));
+      if(std::abs(n.z)<0.08f) {
+        const Grip g = targetAt(n.x, n.y);
+        if(g!=Grip::None) {
+          h.hover     = g;
+          h.hoverNear = true;
+          h.hit       = toV3(h.nearPose.position);
+          continue;
+          }
+        }
+      }
+    // Then pointing: the aim ray against the window plane
     if(!h.aimValid)
       continue;
-
     const V3    origin = toV3(h.aim.position);
     const V3    dir    = rotate(h.aim.orientation, V3{0,0,-1});
     const float denom  = dot(dir, wNormal);
-    if(denom<-1e-4f) {
-      const float t = dot(wPos-origin, wNormal)/denom;
-      if(t>0) {
-        const V3    p = origin + dir*t;
-        const float x = dot(p-wPos, wRight);
-        const float y = dot(p-wPos, wUp);
-        // A small margin around the frame keeps edges easy to catch
-        if(std::abs(x)<=halfW+0.05f && std::abs(y)<=halfH+0.05f) {
-          h.hover = true;
-          h.hit   = p;
-          }
-        }
+    if(denom>-1e-4f)
+      continue;
+    const float t = dot(toV3(windowPose.position)-origin, wNormal)/denom;
+    if(t<=0)
+      continue;
+    const V3 p = origin + dir*t;
+    const V3 l = toLocal(windowPose, p);
+    const Grip g = targetAt(l.x, l.y);
+    if(g!=Grip::None) {
+      h.hover = g;
+      h.hit   = p;
       }
     }
 
@@ -664,30 +715,47 @@ void XrWindow::Impl::updateInput() {
     const bool pressed  = h.grab>0.75f;
     const bool released = h.grab<0.35f;
     if(grabbedBy==int(i)) {
-      if(released || !h.aimValid) {
+      const bool tracked = grabNear ? h.nearValid : h.aimValid;
+      if(released || !tracked) {
         grabbedBy  = -1;
+        grabbed    = Grip::None;
         h.grabHeld = false;
         continue;
         }
-      // Keep the window at the same distance along the ray, facing the user, without roll
-      const V3 origin = toV3(h.aim.position);
-      const V3 dir    = rotate(h.aim.orientation, V3{0,0,-1});
-      // Thumbstick pushes the window away or pulls it closer
-      const XrVector2f stick = getV(aStick, h.path);
-      grabDistance = std::clamp(grabDistance + stick.y*0.02f, 0.4f, 6.f);
-      windowWidth  = std::clamp(windowWidth*(1.f + stick.x*0.01f), 0.4f, 6.f);
-      const V3 center = origin + dir*grabDistance - rotate(windowPose.orientation, toV3(grabOffset.position));
-      windowPose.position    = toXr(center);
-      windowPose.orientation = facing(headPos - center);
-      h.hit   = origin + dir*grabDistance;
-      h.hover = true;
+      const XrPosef& holder = grabNear ? h.nearPose : h.aim;
+      if(!grabNear) {
+        // Thumbstick pushes a pointed-at window away or pulls it closer
+        const XrVector2f stick = getV(aStick, h.path);
+        grabLocal.z = std::clamp(grabLocal.z - stick.y*0.03f, -8.f, -0.2f);
+        }
+      const V3 point = toWorld(holder, grabLocal);
+      h.hit   = point;
+      h.hover = grabbed;
+
+      if(grabbed==Grip::Handle) {
+        // The handle stays in the hand; the window turns to face the viewer, without roll
+        const V3 offset = handleCenter();
+        V3 center = point - rotate(windowPose.orientation, offset);
+        windowPose.orientation = facing(headPos - center);
+        center = point - rotate(windowPose.orientation, offset);
+        windowPose.position = toXr(center);
+        } else {
+        // A corner follows the hand across the window plane; the centre stays put
+        const V3    l     = toLocal(windowPose, point);
+        const float reach = std::max(std::abs(l.x), std::abs(l.y)*float(width)/float(height));
+        windowWidth = std::clamp(reach*grabScale, 0.6f, 6.f);
+        }
       }
-    else if(grabbedBy<0 && pressed && !h.grabHeld && h.hover) {
-      grabbedBy    = int(i);
-      grabDistance = length(h.hit - toV3(h.aim.position));
-      // Offset of the grab point from the window centre, in window space
-      const V3 d = h.hit - wPos;
-      grabOffset.position = toXr(V3{dot(d,wRight), dot(d,wUp), 0});
+    else if(grabbedBy<0 && pressed && !h.grabHeld && h.hover!=Grip::None) {
+      grabbedBy = int(i);
+      grabbed   = h.hover;
+      grabNear  = h.hoverNear;
+      grabLocal = toLocal(grabNear ? h.nearPose : h.aim, h.hit);
+      if(grabbed!=Grip::Handle) {
+        const V3    l     = toLocal(windowPose, h.hit);
+        const float reach = std::max(std::max(std::abs(l.x), std::abs(l.y)*float(width)/float(height)), 0.05f);
+        grabScale = windowWidth/reach;
+        }
       }
     h.grabHeld = pressed ? true : (released ? false : h.grabHeld);
     }
@@ -711,6 +779,27 @@ void XrWindow::Impl::updateInput() {
   padState.buttons[PadState::Start]      = getB(aMenu, XR_NULL_PATH);
   padState.buttons[PadState::LeftStick]  = getB(aStickClick, hands[0].path);
   padState.buttons[PadState::RightStick] = getB(aStickClick, hands[1].path);
+  }
+
+V3 XrWindow::Impl::handleCenter() const {
+  return V3{0, -windowHeight()*0.5f - 0.05f, 0};
+  }
+
+Grip XrWindow::Impl::targetAt(float x, float y) const {
+  const float halfW = windowWidth*0.5f;
+  const float halfH = windowHeight()*0.5f;
+  // Corners: a hand-sized zone around each bottom corner, mostly outside the image
+  const float zone = 0.10f;
+  if(std::abs(y+halfH)<zone) {
+    if(std::abs(x-halfW)<zone)
+      return Grip::CornerRight;
+    if(std::abs(x+halfW)<zone)
+      return Grip::CornerLeft;
+    }
+  const V3 hc = handleCenter();
+  if(std::abs(x-hc.x)<0.16f && std::abs(y-hc.y)<0.045f)
+    return Grip::Handle;
+  return Grip::None;
   }
 
 void XrWindow::Impl::locateEyes() {
@@ -789,54 +878,144 @@ bool XrWindow::beginFrame() {
   return true;
   }
 
-void XrWindow::Impl::fillCursor() {
+// Premultiplied RGBA8 pixel with coverage `a` of colour (r,g,b) at opacity `o`
+static uint32_t pixel(float r, float g, float b, float o, float a) {
+  a = std::clamp(a, 0.f, 1.f)*o;
+  auto c = [](float v) { return uint32_t(std::clamp(v, 0.f, 1.f)*255.f + 0.5f); };
+  return c(r*a) | (c(g*a)<<8) | (c(b*a)<<16) | (c(a)<<24);
+  }
+
+static void uploadStatic(const VulkanNativeContext& vk, VkCommandBuffer cb, VkFence fence, XrSwapchain sc,
+                         uint32_t w, uint32_t h, uint32_t layers, const std::vector<uint32_t>& rgba) {
   uint32_t index = 0;
   XrSwapchainImageAcquireInfo acq = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-  if(!XR_SUCCEEDED(xrAcquireSwapchainImage(cursorSwapchain, &acq, &index)))
+  if(!XR_SUCCEEDED(xrAcquireSwapchainImage(sc, &acq, &index)))
     return;
   XrSwapchainImageWaitInfo wait = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
   wait.timeout = XR_INFINITE_DURATION;
-  xrWaitSwapchainImage(cursorSwapchain, &wait);
-
+  xrWaitSwapchainImage(sc, &wait);
   uint32_t count = 0;
-  xrEnumerateSwapchainImages(cursorSwapchain, 0, &count, nullptr);
+  xrEnumerateSwapchainImages(sc, 0, &count, nullptr);
   std::vector<XrSwapchainImageVulkan2KHR> img(count, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR});
-  xrEnumerateSwapchainImages(cursorSwapchain, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(img.data()));
+  xrEnumerateSwapchainImages(sc, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(img.data()));
 
-  VkCommandBuffer cb = cmd[0];
-  vkWaitForFences(vk.device, 1, &fence[0], VK_TRUE, UINT64_MAX);
-  vkResetFences(vk.device, 1, &fence[0]);
+  // Host-visible staging buffer
+  const VkDeviceSize size = VkDeviceSize(rgba.size()*sizeof(uint32_t));
+  VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  bi.size  = size;
+  bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  VkBuffer buf = VK_NULL_HANDLE;
+  vkCreateBuffer(vk.device, &bi, nullptr, &buf);
+  VkMemoryRequirements req = {};
+  vkGetBufferMemoryRequirements(vk.device, buf, &req);
+  VkPhysicalDeviceMemoryProperties mp = {};
+  vkGetPhysicalDeviceMemoryProperties(vk.physicalDevice, &mp);
+  uint32_t type = 0;
+  const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  for(uint32_t i=0; i<mp.memoryTypeCount; ++i)
+    if((req.memoryTypeBits & (1u<<i)) && (mp.memoryTypes[i].propertyFlags & want)==want) {
+      type = i;
+      break;
+      }
+  VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+  ai.allocationSize  = req.size;
+  ai.memoryTypeIndex = type;
+  VkDeviceMemory mem = VK_NULL_HANDLE;
+  vkAllocateMemory(vk.device, &ai, nullptr, &mem);
+  vkBindBufferMemory(vk.device, buf, mem, 0);
+  void* data = nullptr;
+  vkMapMemory(vk.device, mem, 0, size, 0, &data);
+  std::memcpy(data, rgba.data(), size_t(size));
+  vkUnmapMemory(vk.device, mem);
+
+  vkWaitForFences(vk.device, 1, &fence, VK_TRUE, UINT64_MAX);
+  vkResetFences(vk.device, 1, &fence);
   vkResetCommandBuffer(cb, 0);
-  VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-  bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  vkBeginCommandBuffer(cb, &bi);
-
+  VkCommandBufferBeginInfo cbi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vkBeginCommandBuffer(cb, &cbi);
   VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   b.image               = img[index].image;
-  b.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  b.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers};
   b.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
   b.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
   b.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
   vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
-  VkClearColorValue color = {{1.f, 0.85f, 0.45f, 1.f}};
-  vkCmdClearColorImage(cb, b.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &b.subresourceRange);
+  for(uint32_t l=0; l<layers; ++l) {
+    VkBufferImageCopy r = {};
+    r.bufferOffset     = VkDeviceSize(l)*w*h*4;
+    r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, l, 1};
+    r.imageExtent      = {w, h, 1};
+    vkCmdCopyBufferToImage(cb, buf, b.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
+    }
   b.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
   b.newLayout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
   b.dstAccessMask = 0;
   vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
   vkEndCommandBuffer(cb);
-
   VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
   si.commandBufferCount = 1;
   si.pCommandBuffers    = &cb;
-  vkQueueSubmit(vk.queue, 1, &si, fence[0]);
+  vkQueueSubmit(vk.queue, 1, &si, fence);
+  vkWaitForFences(vk.device, 1, &fence, VK_TRUE, UINT64_MAX);
+  vkDestroyBuffer(vk.device, buf, nullptr);
+  vkFreeMemory(vk.device, mem, nullptr);
 
   XrSwapchainImageReleaseInfo rel = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-  xrReleaseSwapchainImage(cursorSwapchain, &rel);
-  cursorReady = true;
+  xrReleaseSwapchainImage(sc, &rel);
+  }
+
+void XrWindow::Impl::fillChrome() {
+  chromeReady = true;
+  if(handleSwapchain==XR_NULL_HANDLE || cornerSwapchain==XR_NULL_HANDLE)
+    return;
+
+  // Handle: a capsule; idle, hover and held states
+  {
+    const uint32_t w = HandleW, h = HandleH;
+    std::vector<uint32_t> px(size_t(w)*h*3);
+    const float r   = float(h)*0.5f - 2.f;
+    const float len = float(w)*0.5f - float(h)*0.5f;
+    const struct { float r,g,b,o; } st[3] = {{0.9f,0.9f,0.9f,0.45f}, {1.f,1.f,1.f,0.9f}, {0.8f,0.9f,1.f,1.f}};
+    for(uint32_t l=0; l<3; ++l)
+      for(uint32_t y=0; y<h; ++y)
+        for(uint32_t x=0; x<w; ++x) {
+          const float fx = float(x)+0.5f - float(w)*0.5f;
+          const float fy = float(y)+0.5f - float(h)*0.5f;
+          const float dx = std::max(std::abs(fx)-len, 0.f);
+          const float d  = std::sqrt(dx*dx + fy*fy);
+          px[(size_t(l)*h + y)*w + x] = pixel(st[l].r, st[l].g, st[l].b, st[l].o, r - d + 0.5f);
+          }
+    uploadStatic(vk, cmd[0], fence[0], handleSwapchain, w, h, 3, px);
+  }
+
+  // Corners: an L bracket around the bottom-right corner (layers 0,1) and its mirror (2,3)
+  {
+    const uint32_t n = CornerSize;
+    std::vector<uint32_t> px(size_t(n)*n*4);
+    const float t = 3.5f;                 // half thickness
+    const float c = 44.f;                 // bracket corner, pixels
+    const float a = 10.f;                 // arm ends
+    const struct { float r,g,b,o; } st[2] = {{1.f,1.f,1.f,0.9f}, {0.8f,0.9f,1.f,1.f}};
+    for(uint32_t l=0; l<4; ++l)
+      for(uint32_t y=0; y<n; ++y)
+        for(uint32_t x=0; x<n; ++x) {
+          float fx = float(x)+0.5f;
+          float fy = float(y)+0.5f;
+          if(l>=2)
+            fx = float(n)-fx;
+          // distance to the two segments (a,c)-(c,c) and (c,a)-(c,c)
+          const float hx = std::clamp(fx, a, c), vy = std::clamp(fy, a, c);
+          const float d1 = std::sqrt((fx-hx)*(fx-hx) + (fy-c)*(fy-c));
+          const float d2 = std::sqrt((fx-c)*(fx-c) + (fy-vy)*(fy-vy));
+          const auto& s = st[l%2];
+          px[(size_t(l)*n + y)*n + x] = pixel(s.r, s.g, s.b, s.o, t - std::min(d1,d2) + 0.5f);
+          }
+    uploadStatic(vk, cmd[0], fence[0], cornerSwapchain, n, n, 4, px);
+  }
   }
 
 bool XrWindow::Impl::copyImage(uint8_t eye, const Attachment& src) {
@@ -920,8 +1099,8 @@ void XrWindow::submit(const Attachment* left, const Attachment* right) {
     right = left;
 
   std::lock_guard<std::mutex> guard(*s.vk.queueLock);
-  if(!s.cursorReady && s.cursorSwapchain!=XR_NULL_HANDLE)
-    s.fillCursor();
+  if(!s.chromeReady)
+    s.fillChrome();
   const bool hasImage = left!=nullptr && s.copyImage(0,*left) && s.copyImage(1,*right);
 
   std::vector<const XrCompositionLayerBaseHeader*> layers;
@@ -948,24 +1127,50 @@ void XrWindow::submit(const Attachment* left, const Attachment* right) {
       }
     }
 
-  std::array<XrCompositionLayerQuad,2> cursors;
-  if(s.cursorReady && hasImage) {
-    for(size_t i=0; i<s.hands.size(); ++i) {
-      auto& h = s.hands[i];
-      if(!h.hover)
+  // Frame parts: the grab handle, and the resize bracket of a corner a hand is reaching for
+  XrCompositionLayerQuad handle = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+  std::array<XrCompositionLayerQuad,2> corners;
+  if(s.chromeReady && hasImage) {
+    bool hoverHandle = false, cornerOn[2] = {}, cornerHeld[2] = {};
+    for(auto& h:s.hands) {
+      hoverHandle |= (h.hover==Grip::Handle);
+      if(h.hover==Grip::CornerLeft)  cornerOn[0] = true;
+      if(h.hover==Grip::CornerRight) cornerOn[1] = true;
+      }
+    if(s.grabbed==Grip::CornerLeft)  cornerHeld[0] = cornerOn[0] = true;
+    if(s.grabbed==Grip::CornerRight) cornerHeld[1] = cornerOn[1] = true;
+
+    handle.layerFlags                = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    handle.space                     = s.localSpace;
+    handle.eyeVisibility             = XR_EYE_VISIBILITY_BOTH;
+    handle.subImage.swapchain        = s.handleSwapchain;
+    handle.subImage.imageRect        = {{0,0},{int32_t(Impl::HandleW),int32_t(Impl::HandleH)}};
+    handle.subImage.imageArrayIndex  = s.grabbed==Grip::Handle ? 2u : (hoverHandle ? 1u : 0u);
+    handle.pose.orientation          = s.windowPose.orientation;
+    handle.pose.position             = toXr(toWorld(s.windowPose, s.handleCenter()));
+    handle.size                      = {0.22f, 0.0275f};
+    layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&handle));
+
+    const float halfW = s.windowWidth*0.5f, halfH = s.windowHeight()*0.5f, sz = 0.10f;
+    for(int c=0; c<2; ++c) {
+      if(!cornerOn[c])
         continue;
-      auto& c = cursors[i];
-      c = {XR_TYPE_COMPOSITION_LAYER_QUAD};
-      c.space                    = s.localSpace;
-      c.eyeVisibility            = XR_EYE_VISIBILITY_BOTH;
-      c.subImage.swapchain       = s.cursorSwapchain;
-      c.subImage.imageRect       = {{0,0},{16,16}};
-      c.pose.orientation         = s.windowPose.orientation;
-      // Slightly in front of the window so it never sinks into the image
-      c.pose.position            = toXr(h.hit + rotate(s.windowPose.orientation, V3{0,0,0.005f}));
-      const float sz             = s.grabbedBy==int(i) ? 0.018f : 0.012f;
-      c.size                     = {sz, sz};
-      layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&c));
+      // The bracket's inner corner sits just outside the window corner
+      const float sx = c==0 ? -1.f : 1.f;
+      const float k  = sz*(44.f/64.f - 0.5f);   // bracket corner offset from the quad centre
+      const V3 at{sx*(halfW + 0.012f - k), -halfH - 0.012f + k, 0.002f};
+      auto& q = corners[size_t(c)];
+      q = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+      q.layerFlags               = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+      q.space                    = s.localSpace;
+      q.eyeVisibility            = XR_EYE_VISIBILITY_BOTH;
+      q.subImage.swapchain       = s.cornerSwapchain;
+      q.subImage.imageRect       = {{0,0},{int32_t(Impl::CornerSize),int32_t(Impl::CornerSize)}};
+      q.subImage.imageArrayIndex = uint32_t((c==0 ? 2 : 0) + (cornerHeld[c] ? 1 : 0));
+      q.pose.orientation         = s.windowPose.orientation;
+      q.pose.position            = toXr(toWorld(s.windowPose, at));
+      q.size                     = {sz, sz};
+      layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&q));
       }
     }
 

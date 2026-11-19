@@ -57,7 +57,10 @@ class DrawCommands {
     void     visibilityVsm(Tempest::Encoder<Tempest::CommandBuffer>& cmd);
 
     void     drawHiZ(Tempest::Encoder<Tempest::CommandBuffer>& cmd);
-    void     drawCommon(Tempest::Encoder<Tempest::CommandBuffer>& cmd, SceneGlobals::VisCamera viewId, Material::AlphaFunc func);
+    // Shadow casters that never move (landscape, static objects) can be cached apart from the rest
+    enum class Casters : uint8_t { All, Static, Dynamic, Movable, Animated };
+    void     drawCommon(Tempest::Encoder<Tempest::CommandBuffer>& cmd, SceneGlobals::VisCamera viewId, Material::AlphaFunc func,
+                        Casters casters = Casters::All);
 
     void     drawVsm(Tempest::Encoder<Tempest::CommandBuffer>& cmd);
 

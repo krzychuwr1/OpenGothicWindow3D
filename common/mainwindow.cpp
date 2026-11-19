@@ -27,6 +27,11 @@
 #include "commandline.h"
 #include "gothic.h"
 #include "xr/xrwindow.h"
+#include "marvin.h"
+
+#include <Tempest/VulkanInterop>
+
+#include <chrono>
 
 #if defined(__ANDROID__)
 #include <Tempest/AndroidApi>
@@ -1154,7 +1159,7 @@ void MainWindow::saveGame(std::string_view slot, std::string_view name) {
   }
 
 void MainWindow::onVideo(std::string_view fname) {
-  if(Gothic::inst().isBenchmarkMode())
+  if(Gothic::inst().isBenchmarkMode() || CommandLine::inst().noVideo())
     return;
   video.pushVideo(fname);
   }
@@ -1287,11 +1292,70 @@ void MainWindow::tickPad(uint64_t dt) {
   dMouse  += whole;
   }
 
+static uint64_t nowUs() {
+  return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+  }
+
+void MainWindow::FrameTiming::report() {
+  frames++;
+  const uint64_t t = nowUs();
+  if(last==0)
+    last = t;
+  if(t-last<3000000 || frames==0)
+    return;
+  auto ms = [this](uint64_t v) { return double(v)/double(frames)/1000.0; };
+  Log::i("Frame CPU ms: total ", ms(total), " | xr wait ", ms(wait), " | update ", ms(update),
+         " | gpu wait ", ms(gpuWait), " | record ", ms(record), " | xr submit ", ms(present),
+         " | fps ", double(frames)*1e6/double(t-last));
+  if(Tempest::vulkanGpuProfiling()) {
+    Log::i(Tempest::vulkanGpuProfileReport());
+    if(auto wv = Gothic::inst().worldView())
+      wv->dbgCountVisible();
+    }
+  *this = FrameTiming();
+  last  = t;
+  }
+
+void MainWindow::runStartupCommands() {
+  if(startupDone)
+    return;
+  const auto cmds = CommandLine::inst().startupCommands();
+  if(cmds.empty() || Gothic::inst().world()==nullptr || Gothic::inst().player()==nullptr ||
+     Gothic::inst().checkLoading()!=Gothic::LoadState::Idle) {
+    startupFrames = 0;
+    return;
+    }
+  // Let the world settle (scripts, start routines) before teleporting
+  if(++startupFrames<60)
+    return;
+  startupDone = true;
+  // A new game opens with a conversation; end it so the camera follows the hero again
+  dialogs.onWorldChanged();
+  Marvin marvin;
+  size_t at = 0;
+  while(at<=cmds.size()) {
+    size_t end = cmds.find(';',at);
+    if(end==std::string_view::npos)
+      end = cmds.size();
+    auto cmd = cmds.substr(at,end-at);
+    while(!cmd.empty() && cmd.front()==' ')
+      cmd.remove_prefix(1);
+    if(!cmd.empty())
+      Log::i("startup command \"",cmd,"\": ",marvin.exec(cmd) ? "ok" : "failed");
+    at = end+1;
+    }
+  if(auto c = Gothic::inst().camera())
+    c->reset(Gothic::inst().player());
+  }
+
 void MainWindow::render(){
   try {
     if(auto xr = XrWindow::inst()) {
+      const uint64_t t0 = nowUs();
       if(!xr->beginFrame())
         return;
+      const uint64_t t1 = nowUs();
       try {
         renderFrame(true);
         }
@@ -1299,7 +1363,13 @@ void MainWindow::render(){
         xr->submit(nullptr);
         throw;
         }
+      const uint64_t t2 = nowUs();
       xr->submit(&xrTarget[0], &xrTarget[1]);
+      const uint64_t t3 = nowUs();
+      timing.wait    += t1-t0;
+      timing.present += t3-t2;
+      timing.total   += t3-t0;
+      timing.report();
       return;
       }
     renderFrame(false);
@@ -1340,9 +1410,12 @@ void MainWindow::renderFrame(bool xr) {
     once player position is updated, animation bones(cameraBone in particular) can be updated
     lastly - camera position
     */
+  const uint64_t tu0 = nowUs();
+  runStartupCommands();
   const uint64_t dt = tick();
   updateAnimation(dt);
   tickCamera(dt);
+  timing.update += nowUs()-tu0;
 
   // XR draws the scene once per eye, each eye in its own frame slot; the interface is painted once
   const int views = xr ? 2 : 1;
@@ -1350,13 +1423,16 @@ void MainWindow::renderFrame(bool xr) {
     auto& sync = fence[cmdId];
     if(xr) {
       // The runtime paces frames; never skip one that has already begun
+      const uint64_t tw = nowUs();
       sync.wait();
+      timing.gpuWait += nowUs()-tw;
       }
     else if(!sync.wait(0)) {
       // GPU rendering is not done, pass to next frame
       std::this_thread::yield();
       return;
       }
+    const uint64_t tr = nowUs();
     Resources::resetRecycled(cmdId);
 
     auto& backbuf = xr ? xrTarget[view] : swapchain->acquire();
@@ -1385,6 +1461,7 @@ void MainWindow::renderFrame(bool xr) {
     const bool      stereo = camera!=nullptr && XrWindow::inst()->eyeView(uint8_t(view), Gothic::options().cameraFov, eye);
     if(stereo)
       camera->setEyeView(&eye);
+    renderer.setSecondView(stereo && view==1);
 
     CommandBuffer& cmd = commands[cmdId];
     {
@@ -1394,6 +1471,7 @@ void MainWindow::renderFrame(bool xr) {
     if(stereo)
       camera->setEyeView(nullptr);
     sync = device.submit(cmd);
+    timing.record += nowUs()-tr;
     if(!xr)
       device.present(*swapchain);
     cmdId = (cmdId+1u)%Resources::MaxFramesInFlight;
