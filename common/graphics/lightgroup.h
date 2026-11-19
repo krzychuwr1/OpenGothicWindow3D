@@ -54,6 +54,7 @@ class LightGroup final {
     auto&  lightsSsbo() const { return lightSourceSsbo; }
     // Indices of lights whose range intersects the frustum
     void   visibleLights(const Frustrum& f, std::vector<uint32_t>& out) const;
+    auto&  lightData(size_t i) const { return lightSourceData[i]; }
 
     void   prepareGlobals(Tempest::Encoder<Tempest::CommandBuffer> &cmd, uint8_t fId);
 

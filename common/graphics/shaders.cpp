@@ -180,6 +180,17 @@ void Shaders::compileShaders() noexcept {
   sh           = GothicShader::get("light.frag.sprv");
   auto fsLight = device.shader(sh.data,sh.len);
   lights       = device.pipeline(Triangles, state, vsLight, fsLight);
+  {
+    // Full-screen tiled variant (Renderer::drawLights)
+    RenderState st;
+    st.setBlendSource  (RenderState::BlendMode::One);
+    st.setBlendDest    (RenderState::BlendMode::One);
+    st.setZTestMode    (RenderState::ZTestMode::Always);
+    st.setZWriteEnabled(false);
+    auto vs = GothicShader::get("triangle.vert.sprv");
+    auto fs = GothicShader::get("light_tiled.frag.sprv");
+    lightsTiled = device.pipeline(Triangles, st, device.shader(vs.data,vs.len), device.shader(fs.data,fs.len));
+  }
   if(opts.doRtScene) {
     if(opts.doRayQuery) {
       sh      = GothicShader::get("light_rq_at.frag.sprv");

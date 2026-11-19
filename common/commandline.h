@@ -54,6 +54,8 @@ class CommandLine {
     bool                isGpuProfile()     const { return gpuProfile; }
     // Profiling aid: -skip sun,ambient,lights,sky leaves those passes out
     bool                debugSkip(std::string_view pass) const { return skipPasses.find(pass)!=std::string::npos; }
+    // XR CPU/GPU performance level request: "low" (testing, battery and heat), default high
+    std::string_view    xrPerfLevel() const { return perfLevel; }
 
     std::string         wrldDef;
 
@@ -69,6 +71,7 @@ class CommandLine {
     bool                skipVideo    = false;
     bool                gpuProfile   = false;
     std::string         skipPasses;
+    std::string         perfLevel;
     bool                devmode      = false;
     bool                noMenu       = false;
     Benchmark           isBenchmark  = Benchmark::None;

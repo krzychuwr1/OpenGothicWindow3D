@@ -17,22 +17,38 @@ param(
   [string]$Package  = 'org.opengothic.window3d',
   [int]$LoadSeconds = 50,
   [int]$Samples     = 12,
-  [string]$Extra    = ''
+  [string]$Extra    = '',
+  # Test runs ask for low clocks: less heat and battery drain (compare runs at the same level)
+  [ValidateSet('low','high')]
+  [string]$Perf     = 'low'
 )
 $ErrorActionPreference = 'Stop'
 $argsFile = [IO.Path]::GetTempFileName()
-"-nomenu -novideo -gpuprofile $Extra -exec `"goto waypoint $Waypoint;set time $Time`"" | Set-Content $argsFile -NoNewline -Encoding ascii
+"-nomenu -novideo -gpuprofile -perf $Perf $Extra -exec `"goto waypoint $Waypoint;set time $Time`"" | Set-Content $argsFile -NoNewline -Encoding ascii
 adb push $argsFile /sdcard/OpenGothic/args.txt | Out-Null
 Remove-Item $argsFile
 
 adb shell am force-stop $Package
+# Low forced clocks for unattended runs (heat, battery); cleared again after the run
+if ($Perf -eq 'low') {
+  adb shell setprop debug.oculus.cpuLevel 1
+  adb shell setprop debug.oculus.gpuLevel 0
+}
+# Keep the display on for this run only (proximity sensor override)
+adb shell input keyevent KEYCODE_WAKEUP
+adb shell am broadcast -a com.oculus.vrpowermanager.prox_close | Out-Null
 adb shell am start -n "$Package/android.app.NativeActivity" | Out-Null
 Start-Sleep $LoadSeconds
 adb logcat -c
 Start-Sleep ($Samples + 1)
 $vr  = adb logcat -d -s VrApi:* | Select-String 'App='
-$cpu = adb logcat -d -s app:* | Select-String 'Frame CPU ms|Update:|Draw CPU|eye 1|Per frame|XR submit|GPU ms per view|^.*app\s+:\s+[ A-Za-z#0-9&\-]+ [\d.]+;' | Select-Object -Last 8
+$cpu = adb logcat -d -s app:* | Select-String 'Frame CPU ms|Point lights:|Update:|Draw CPU|eye 1|Per frame|XR submit|GPU ms per view|^.*app\s+:\s+[ A-Za-z#0-9&\-]+ [\d.]+;' | Select-Object -Last 8
 adb shell rm -f /sdcard/OpenGothic/args.txt
+# Stop the game and let the headset sleep again between runs
+adb shell am force-stop $Package
+adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable | Out-Null
+adb shell setprop debug.oculus.cpuLevel "''"
+adb shell setprop debug.oculus.gpuLevel "''"
 
 $fps = @(); $gpu = @(); $cg = @()
 foreach ($l in $vr) {

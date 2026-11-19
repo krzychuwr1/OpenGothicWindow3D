@@ -94,6 +94,7 @@ class Renderer final {
     void drawGWater       (Tempest::Encoder<Tempest::CommandBuffer>& cmd, WorldView& view);
     void drawShadowMap    (Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t fId, WorldView& view);
     void drawShadowResolve(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const WorldView& view);
+    bool drawLightsTiled  (Tempest::Encoder<Tempest::CommandBuffer>& cmd, const WorldView& wview);
     void drawLights       (Tempest::Encoder<Tempest::CommandBuffer>& cmd, const WorldView& view);
     void drawSky          (Tempest::Encoder<Tempest::CommandBuffer>& cmd, const WorldView& view);
     void drawAmbient      (Tempest::Encoder<Tempest::CommandBuffer>& cmd, const WorldView& view);
@@ -175,6 +176,7 @@ class Renderer final {
     // Point lights visible to the view being drawn, one list per frame slot
     Tempest::StorageBuffer    visibleLightsSsbo[Resources::MaxFramesInFlight];
     std::vector<uint32_t>     visibleLights;
+    std::vector<uint32_t>     lightTiles;
     uint8_t                   lightSlot = 0;
     bool                      shadowWasLit = false;
     Tempest::Vec3             clipInfo;

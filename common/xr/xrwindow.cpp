@@ -1,4 +1,5 @@
 #include "xrwindow.h"
+#include "commandline.h"
 
 #if defined(__ANDROID__) && defined(OPENGOTHIC_XR)
 
@@ -600,9 +601,12 @@ void XrWindow::Impl::pollEvents() {
           begin.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
           running = ok(xrBeginSession(session, &begin), "xrBeginSession");
           if(running && hasPerfSettings) {
-            // The game is heavy on both: ask for the highest clocks the headset can sustain
-            ok(xrSetPerfLevel(session, XR_PERF_SETTINGS_DOMAIN_CPU_EXT, XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT), "CPU level");
-            ok(xrSetPerfLevel(session, XR_PERF_SETTINGS_DOMAIN_GPU_EXT, XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT), "GPU level");
+            // The game is heavy on both: ask for the highest clocks the headset can sustain,
+            // or the lowest ones for unattended test runs (-perf low)
+            const bool low = CommandLine::inst().xrPerfLevel()=="low";
+            const auto lvl = low ? XR_PERF_SETTINGS_LEVEL_POWER_SAVINGS_EXT : XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT;
+            ok(xrSetPerfLevel(session, XR_PERF_SETTINGS_DOMAIN_CPU_EXT, lvl), "CPU level");
+            ok(xrSetPerfLevel(session, XR_PERF_SETTINGS_DOMAIN_GPU_EXT, lvl), "GPU level");
             }
           }
         else if(state==XR_SESSION_STATE_STOPPING) {

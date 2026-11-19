@@ -117,6 +117,11 @@ CommandLine::CommandLine(int argc, const char** argv) {
       if(i<argc)
         execCmds = argv[i];
       }
+    else if(arg=="-perf") {
+      ++i;
+      if(i<argc)
+        perfLevel = argv[i];
+      }
     else if(arg=="-skip") {
       ++i;
       if(i<argc)

@@ -47,7 +47,7 @@ class Shaders {
     static bool isGi1Supported();
     static bool isGi2Supported();
 
-    Tempest::RenderPipeline  lights, lightsRq, lightsVsm;
+    Tempest::RenderPipeline  lights, lightsRq, lightsVsm, lightsTiled;
     Tempest::RenderPipeline  directLight,  directLightSh, directLightRq;
     Tempest::RenderPipeline  ambientLight, ambientLightSsao, ambientLightSurf;
 
