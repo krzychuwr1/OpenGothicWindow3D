@@ -16,6 +16,8 @@
 #include <openxr/openxr_platform.h>
 
 #include <array>
+#include <chrono>
+#include <cstdio>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -102,6 +104,8 @@ struct XrWindow::Impl {
   XrSystemId               system   = XR_NULL_SYSTEM_ID;
   bool                     hasPassthrough     = false;
   bool                     hasHandInteraction = false;
+  bool                     hasPerfSettings    = false;
+  PFN_xrPerfSettingsSetPerformanceLevelEXT xrSetPerfLevel = nullptr;
 
   PFN_xrCreateVulkanInstanceKHR         xrCreateVulkanInstance      = nullptr;
   PFN_xrGetVulkanGraphicsDevice2KHR     xrGetVulkanGraphicsDevice   = nullptr;
@@ -127,6 +131,10 @@ struct XrWindow::Impl {
   uint32_t                 height = 900;
   XrSwapchain              swapchain[2] = {};
   std::vector<VkImage>     images[2];
+  Tempest::Device*         device = nullptr;
+  // The game renders straight into the swapchain images through these
+  std::vector<Attachment>  targets[2];
+  int32_t                  acquired[2] = {-1, -1};
   VkCommandPool            pool = VK_NULL_HANDLE;
   static constexpr uint32_t Ring = 3;
   VkCommandBuffer          cmd  [Ring] = {};
@@ -183,13 +191,19 @@ struct XrWindow::Impl {
   void fillChrome();
   Grip targetAt(float x, float y) const;
   V3   handleCenter() const;
-  bool copyImage(uint8_t eye, const Attachment& img);
+  void releaseEyes();
   void locateEyes();
   XrPath path(const char* p) const { XrPath r = XR_NULL_PATH; xrStringToPath(instance, p, &r); return r; }
   float  windowHeight() const { return windowWidth*float(height)/float(width); }
   };
 
 static XrWindow* instance = nullptr;
+
+// Where submit() and the eye targets spend their time (microseconds since the last report)
+static uint64_t xrUs() {
+  return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+  }
+static uint64_t tAcquire = 0, tSwapWait = 0, tRelease = 0, tEndFrame = 0;
 
 XrWindow::XrWindow() : impl(new Impl()) {
   }
@@ -268,6 +282,9 @@ bool XrWindow::Impl::createInstance() {
       }
   hasPassthrough     = has(XR_FB_PASSTHROUGH_EXTENSION_NAME);
   hasHandInteraction = has(XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
+  hasPerfSettings    = has(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
+  if(hasPerfSettings)
+    ext.push_back(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
   if(hasPassthrough)
     ext.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
   if(hasHandInteraction)
@@ -302,6 +319,8 @@ bool XrWindow::Impl::createInstance() {
      !fn("xrCreateVulkanDeviceKHR",            xrCreateVulkanDevice)      ||
      !fn("xrGetVulkanGraphicsRequirements2KHR",xrGetVulkanRequirements))
     return false;
+  if(hasPerfSettings)
+    hasPerfSettings = fn("xrPerfSettingsSetPerformanceLevelEXT", xrSetPerfLevel);
   if(hasPassthrough) {
     hasPassthrough = fn("xrCreatePassthroughFB",       xrCreatePassthrough)      &&
                      fn("xrDestroyPassthroughFB",      xrDestroyPassthrough)     &&
@@ -365,7 +384,8 @@ bool XrWindow::preInit() {
   }
 
 void XrWindow::attach(Device& device) {
-  impl->vk = vulkanNativeContext(device);
+  impl->vk     = vulkanNativeContext(device);
+  impl->device = &device;
   impl->createSession();
   AndroidApi::setExternalPresentation(int(impl->width), int(impl->height), uiScale());
   }
@@ -430,7 +450,9 @@ void XrWindow::Impl::createSwapchains() {
     }
 
   XrSwapchainCreateInfo info = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
-  info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+  // Mutable format: the game writes its gamma-encoded RGBA8 through a UNORM view of the sRGB image
+  info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT |
+                     XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT;
   info.format      = format;
   info.sampleCount = 1;
   info.width       = width;
@@ -444,11 +466,14 @@ void XrWindow::Impl::createSwapchains() {
     xrEnumerateSwapchainImages(swapchain[eye], 0, &count, nullptr);
     std::vector<XrSwapchainImageVulkan2KHR> img(count, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR});
     xrEnumerateSwapchainImages(swapchain[eye], count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(img.data()));
-    for(auto& i:img)
+    for(auto& i:img) {
       images[eye].push_back(i.image);
+      targets[eye].push_back(vulkanBorrowColorAttachment(*device, i.image, width, height));
+      }
     }
 
   info.createFlags = XR_SWAPCHAIN_CREATE_STATIC_IMAGE_BIT;
+  info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
   info.width       = HandleW;
   info.height      = HandleH;
   info.arraySize   = 3;
@@ -574,6 +599,11 @@ void XrWindow::Impl::pollEvents() {
           XrSessionBeginInfo begin = {XR_TYPE_SESSION_BEGIN_INFO};
           begin.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
           running = ok(xrBeginSession(session, &begin), "xrBeginSession");
+          if(running && hasPerfSettings) {
+            // The game is heavy on both: ask for the highest clocks the headset can sustain
+            ok(xrSetPerfLevel(session, XR_PERF_SETTINGS_DOMAIN_CPU_EXT, XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT), "CPU level");
+            ok(xrSetPerfLevel(session, XR_PERF_SETTINGS_DOMAIN_GPU_EXT, XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT), "GPU level");
+            }
           }
         else if(state==XR_SESSION_STATE_STOPPING) {
           xrEndSession(session);
@@ -872,7 +902,7 @@ bool XrWindow::beginFrame() {
   s.locateEyes();
 
   if(!s.frame.shouldRender) {
-    submit(nullptr);
+    submit(false);
     return false;
     }
   return true;
@@ -1018,90 +1048,52 @@ void XrWindow::Impl::fillChrome() {
   }
   }
 
-bool XrWindow::Impl::copyImage(uint8_t eye, const Attachment& src) {
-  const VulkanNativeImage from = vulkanNativeImage(src);
-  if(from.image==VK_NULL_HANDLE || src.w()!=int(width) || src.h()!=int(height))
-    return false;
-
-  uint32_t index = 0;
-  XrSwapchainImageAcquireInfo acq = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-  if(!ok(xrAcquireSwapchainImage(swapchain[eye], &acq, &index), "acquire window image"))
-    return false;
-  XrSwapchainImageWaitInfo wait = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-  wait.timeout = XR_INFINITE_DURATION;
-  xrWaitSwapchainImage(swapchain[eye], &wait);
-
-  const uint32_t  slot = ringAt;
-  ringAt = (ringAt+1)%Ring;
-  VkCommandBuffer cb = cmd[slot];
-  vkWaitForFences(vk.device, 1, &fence[slot], VK_TRUE, UINT64_MAX);
-  vkResetFences(vk.device, 1, &fence[slot]);
-  vkResetCommandBuffer(cb, 0);
-
-  VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-  bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  vkBeginCommandBuffer(cb, &bi);
-
-  VkImageMemoryBarrier b[2] = {};
-  for(auto& i:b) {
-    i.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    i.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    i.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    i.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+Attachment* XrWindow::eyeTarget(uint8_t eye) {
+  auto& s = *impl;
+  if(eye>1 || s.targets[eye].empty())
+    return nullptr;
+  if(s.acquired[eye]<0) {
+    std::lock_guard<std::mutex> guard(*s.vk.queueLock);
+    uint32_t index = 0;
+    const uint64_t t0 = xrUs();
+    XrSwapchainImageAcquireInfo acq = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    if(!ok(xrAcquireSwapchainImage(s.swapchain[eye], &acq, &index), "acquire window image"))
+      return nullptr;
+    const uint64_t t1 = xrUs();
+    XrSwapchainImageWaitInfo wait = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wait.timeout = XR_INFINITE_DURATION;
+    xrWaitSwapchainImage(s.swapchain[eye], &wait);
+    tAcquire  += t1-t0;
+    tSwapWait += xrUs()-t1;
+    s.acquired[eye] = int32_t(index);
     }
-  // The game's frame was submitted earlier on this queue; wait for its writes
-  b[0].image         = from.image;
-  b[0].oldLayout     = from.restingLayout;
-  b[0].newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  b[0].srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-  b[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-  b[1].image         = images[eye][index];
-  b[1].oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-  b[1].newLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-  b[1].srcAccessMask = 0;
-  b[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, b);
-
-  VkImageCopy region = {};
-  region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-  region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-  region.extent         = {width, height, 1};
-  vkCmdCopyImage(cb, from.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, images[eye][index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-  // Hand the image back to the game in its resting layout and the swapchain image to the compositor
-  b[0].oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  b[0].newLayout     = from.restingLayout;
-  b[0].srcAccessMask = 0;
-  b[0].dstAccessMask = 0;
-  b[1].oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-  b[1].newLayout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  b[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  b[1].dstAccessMask = 0;
-  vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 2, b);
-  vkEndCommandBuffer(cb);
-
-  VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-  si.commandBufferCount = 1;
-  si.pCommandBuffers    = &cb;
-  vkQueueSubmit(vk.queue, 1, &si, fence[slot]);
-
-  XrSwapchainImageReleaseInfo rel = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-  xrReleaseSwapchainImage(swapchain[eye], &rel);
-  return true;
+  return &s.targets[eye][size_t(s.acquired[eye])];
   }
 
-void XrWindow::submit(const Attachment* left, const Attachment* right) {
+void XrWindow::Impl::releaseEyes() {
+  const uint64_t t0 = xrUs();
+  for(int eye=0; eye<2; ++eye) {
+    if(acquired[eye]<0)
+      continue;
+    // The game's commands for this image are already submitted to the queue
+    XrSwapchainImageReleaseInfo rel = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    xrReleaseSwapchainImage(swapchain[eye], &rel);
+    acquired[eye] = -1;
+    }
+  tRelease += xrUs()-t0;
+  }
+
+void XrWindow::submit(bool rendered) {
   auto& s = *impl;
   if(!s.frameBegun)
     return;
   s.frameBegun = false;
-  if(right==nullptr)
-    right = left;
 
   std::lock_guard<std::mutex> guard(*s.vk.queueLock);
   if(!s.chromeReady)
     s.fillChrome();
-  const bool hasImage = left!=nullptr && s.copyImage(0,*left) && s.copyImage(1,*right);
+  const bool hasImage = rendered && s.acquired[0]>=0 && s.acquired[1]>=0;
+  s.releaseEyes();
 
   std::vector<const XrCompositionLayerBaseHeader*> layers;
 
@@ -1179,11 +1171,23 @@ void XrWindow::submit(const Attachment* left, const Attachment* right) {
   end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
   end.layerCount           = s.frame.shouldRender ? uint32_t(layers.size()) : 0;
   end.layers               = layers.data();
+  {
+  const uint64_t t0 = xrUs();
   ok(xrEndFrame(s.session, &end), "xrEndFrame");
+  tEndFrame += xrUs()-t0;
+  }
   }
 
 Size XrWindow::resolution() const {
   return Size(int(impl->width), int(impl->height));
+  }
+
+std::string XrWindow::timingReport() {
+  char buf[160];
+  std::snprintf(buf, sizeof(buf), "acquire %.0f swap-wait %.0f release %.0f end %.0f (ms total)",
+                double(tAcquire)/1000.0, double(tSwapWait)/1000.0, double(tRelease)/1000.0, double(tEndFrame)/1000.0);
+  tAcquire = tSwapWait = tRelease = tEndFrame = 0;
+  return buf;
   }
 
 void XrWindow::setVerticalFov(float degrees) {
@@ -1211,9 +1215,11 @@ void      XrWindow::shutdown() {}
 void      XrWindow::attach(Tempest::Device&) {}
 Tempest::Size XrWindow::resolution() const { return {}; }
 bool      XrWindow::beginFrame() { return false; }
-void      XrWindow::submit(const Tempest::Attachment*, const Tempest::Attachment*) {}
+void      XrWindow::submit(bool) {}
+Tempest::Attachment* XrWindow::eyeTarget(uint8_t) { return nullptr; }
 bool      XrWindow::eyeView(uint8_t, float, Camera::EyeView&) const { return false; }
 void      XrWindow::setVerticalFov(float) {}
+std::string XrWindow::timingReport() { return ""; }
 PadState  XrWindow::pad() const { return {}; }
 bool      XrWindow::isFocused() const { return false; }
 

@@ -58,7 +58,9 @@ class DrawCommands {
 
     void     drawHiZ(Tempest::Encoder<Tempest::CommandBuffer>& cmd);
     // Shadow casters that never move (landscape, static objects) can be cached apart from the rest
-    enum class Casters : uint8_t { All, Static, Dynamic, Movable, Animated };
+    // Static: landscape and static objects; Dynamic: everything else.
+    // StaticAndMovable / Animated split the same way with movable props on the static side.
+    enum class Casters : uint8_t { All, Static, Dynamic, Movable, Animated, StaticAndMovable };
     void     drawCommon(Tempest::Encoder<Tempest::CommandBuffer>& cmd, SceneGlobals::VisCamera viewId, Material::AlphaFunc func,
                         Casters casters = Casters::All);
 

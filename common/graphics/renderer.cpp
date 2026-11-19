@@ -3,6 +3,8 @@
 #include <Tempest/VulkanInterop>
 #include <cstring>
 
+#include "commandline.h"
+
 #include <Tempest/Color>
 #include <Tempest/Fence>
 #include <Tempest/Log>
@@ -228,7 +230,8 @@ void Renderer::togglePathtrace() {
 
 void Renderer::onWorldChanged() {
   sky.lutIsInitialized = false;
-  shadowStaticValid    = false;
+  for(auto& v:shadowStaticValid)
+    v = false;
   resetSkyFog();
   }
 
@@ -442,10 +445,12 @@ void Renderer::resetShadowmap() {
     shadowMap[i] = device.zbuffer(shadowFormat, settings.shadowResolution, settings.shadowResolution);
     }
 #if defined(OPENGOTHIC_XR)
-  Resources::recycle(std::move(shadowStatic));
-  if(!shadowMap[0].isEmpty())
-    shadowStatic = device.zbuffer(shadowFormat, settings.shadowResolution, settings.shadowResolution);
-  shadowStaticValid = false;
+  for(int i=0; i<Resources::ShadowLayers; ++i) {
+    Resources::recycle(std::move(shadowStatic[i]));
+    if(!shadowMap[i].isEmpty())
+      shadowStatic[i] = device.zbuffer(shadowFormat, settings.shadowResolution, settings.shadowResolution);
+    shadowStaticValid[i] = false;
+    }
 #endif
   }
 
@@ -1786,30 +1791,21 @@ void Renderer::drawShadowMap(Encoder<CommandBuffer>& cmd, uint8_t fId, WorldView
   for(uint8_t i=0; i<Resources::ShadowLayers; ++i) {
     if(shadowMap[i].isEmpty())
       continue;
-    if(i==0 && lit && !shadowStatic.isEmpty()) {
+    if(lit && !shadowStatic[i].isEmpty()) {
       // Landscape and static objects change only when the cascade moves: render them into a cache
-      if(!shadowStaticValid || std::memcmp(shadowStaticMatrix.data(), shadowMatrix[0].data(), sizeof(float)*16)!=0) {
-        cmd.setDebugMarker("ShadowMap #0 static");
-        cmd.setFramebuffer({}, {shadowStatic, 0.f, Tempest::Preserve});
-        view.drawShadowStatic(cmd,0);
-        shadowStaticMatrix = shadowMatrix[0];
-        shadowStaticValid  = true;
+      if(!shadowStaticValid[i] || std::memcmp(shadowStaticMatrix[i].data(), shadowMatrix[i].data(), sizeof(float)*16)!=0) {
+        cmd.setDebugMarker(string_frm("ShadowMap #",i," static"));
+        cmd.setFramebuffer({}, {shadowStatic[i], 0.f, Tempest::Preserve});
+        view.drawShadowStatic(cmd,i);
+        shadowStaticMatrix[i] = shadowMatrix[i];
+        shadowStaticValid[i]  = true;
         }
-      cmd.setDebugMarker("ShadowMap #0");
-      cmd.setFramebuffer({}, {shadowMap[0], Tempest::Discard, Tempest::Preserve});
-      cmd.setBinding(0, shadowStatic, Sampler::nearest());
+      cmd.setDebugMarker(string_frm("ShadowMap #",i));
+      cmd.setFramebuffer({}, {shadowMap[i], Tempest::Discard, Tempest::Preserve});
+      cmd.setBinding(0, shadowStatic[i], Sampler::nearest());
       cmd.setPipeline(shaders.copyDepth);
       cmd.draw(nullptr, 0, 3);
-      if(Tempest::vulkanGpuProfiling()) {
-        const char* names[] = {"ShadowMap #0 movable", "ShadowMap #0 animated", "ShadowMap #0 particles"};
-        for(int p=0; p<3; ++p) {
-          cmd.setDebugMarker(names[p]);
-          cmd.setFramebuffer({}, {shadowMap[0], Tempest::Preserve, Tempest::Preserve});
-          view.drawShadowProfiled(cmd,fId,0,p);
-          }
-        } else {
-        view.drawShadowDynamic(cmd,fId,0);
-        }
+      view.drawShadowDynamic(cmd,fId,i);
       continue;
       }
     cmd.setDebugMarker(string_frm("ShadowMap #",i));
@@ -1820,6 +1816,8 @@ void Renderer::drawShadowMap(Encoder<CommandBuffer>& cmd, uint8_t fId, WorldView
   }
 
 void Renderer::drawShadowResolve(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
+  if(CommandLine::inst().debugSkip("sun"))
+    return;
   static bool light = true;
   if(!light)
     return;
@@ -1873,6 +1871,8 @@ void Renderer::drawShadowResolve(Encoder<CommandBuffer>& cmd, const WorldView& w
   }
 
 void Renderer::drawLights(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
+  if(CommandLine::inst().debugSkip("lights"))
+    return;
   static bool light = true;
   if(!light)
     return;
@@ -1909,6 +1909,8 @@ void Renderer::drawLights(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
   }
 
 void Renderer::drawSky(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
+  if(CommandLine::inst().debugSkip("sky"))
+    return;
   auto& scene = wview.sceneGlobals();
 
   cmd.setDebugMarker("Sky");
@@ -2716,6 +2718,8 @@ void Renderer::drawProbesHitDbg(Encoder<CommandBuffer>& cmd) {
   }
 
 void Renderer::drawAmbient(Encoder<CommandBuffer>& cmd, const WorldView& view) {
+  if(CommandLine::inst().debugSkip("ambient"))
+    return;
   static bool enable = true;
   if(!enable)
     return;

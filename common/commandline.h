@@ -52,6 +52,8 @@ class CommandLine {
     std::string_view    startupCommands()  const { return execCmds;   }
     bool                noVideo()          const { return skipVideo;  }
     bool                isGpuProfile()     const { return gpuProfile; }
+    // Profiling aid: -skip sun,ambient,lights,sky leaves those passes out
+    bool                debugSkip(std::string_view pass) const { return skipPasses.find(pass)!=std::string::npos; }
 
     std::string         wrldDef;
 
@@ -66,6 +68,7 @@ class CommandLine {
     std::string         execCmds;
     bool                skipVideo    = false;
     bool                gpuProfile   = false;
+    std::string         skipPasses;
     bool                devmode      = false;
     bool                noMenu       = false;
     Benchmark           isBenchmark  = Benchmark::None;

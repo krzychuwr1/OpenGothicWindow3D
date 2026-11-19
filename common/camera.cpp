@@ -410,14 +410,14 @@ Matrix4x4 Camera::viewShadow(const Vec3& lightDir, size_t layer) const {
   vp.mul(mkView(origin+shake, angles));
   float rotation = (angles.y-90);
 #if defined(OPENGOTHIC_XR)
-  if(layer==0) {
-    // A near cascade that holds still while the view turns a little, the player takes a step
-    // or the sun creeps, so its static casters can be cached (Renderer::drawShadowMap)
+  {
+    // Cascades that hold still while the view turns a little, the player takes a few steps or
+    // the sun creeps, so their static casters can be cached (Renderer::drawShadowMap)
     rotation = std::round(rotation/45.f)*45.f;
     const Vec3 l = Vec3::normalize(lightDir);
     if(Vec3::dotProduct(l, shadowLight)<0.99999f)  // ~0.25 degrees
       shadowLight = l;
-    const float step = 256.f;
+    const float step = layer==0 ? 256.f : 1024.f;
     const Vec3  at   = Vec3(std::round(inter.target.x/step)*step, std::round(inter.target.y/step)*step,
                             std::round(inter.target.z/step)*step);
     return mkViewShadow(at,rotation,vp,shadowLight,layer);

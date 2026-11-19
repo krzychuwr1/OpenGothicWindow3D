@@ -455,6 +455,8 @@ void DrawCommands::drawCommon(Tempest::Encoder<Tempest::CommandBuffer>& cmd, Sce
         continue;
       if((casters==Casters::Movable || casters==Casters::Animated) && isStatic)
         continue;
+      if(casters==Casters::StaticAndMovable && !(isStatic || cx.type==Type::Movable))
+        continue;
       }
 
     if(cx.maxPayload==0)

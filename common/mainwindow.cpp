@@ -51,8 +51,7 @@ MainWindow::MainWindow(Device& device)
     player(dialogs,inventory) {
   if(auto xr = XrWindow::inst()) {
     const auto sz = xr->resolution();
-    for(auto& t:xrTarget)
-      t = device.attachment(TextureFormat::RGBA8, uint32_t(sz.w), uint32_t(sz.h));
+    xrSize = sz;
     xr->setVerticalFov(Gothic::options().cameraFov);
     } else {
     swapchain.emplace(device,hwnd());
@@ -1256,11 +1255,11 @@ void MainWindow::setFullscreen(bool fs) {
   }
 
 uint32_t MainWindow::outW() const {
-  return swapchain ? swapchain->w() : uint32_t(xrTarget[0].w());
+  return swapchain ? swapchain->w() : uint32_t(xrSize.w);
   }
 
 uint32_t MainWindow::outH() const {
-  return swapchain ? swapchain->h() : uint32_t(xrTarget[0].h());
+  return swapchain ? swapchain->h() : uint32_t(xrSize.h);
   }
 
 bool MainWindow::padMenuContext() const {
@@ -1298,6 +1297,8 @@ static uint64_t nowUs() {
   }
 
 void MainWindow::FrameTiming::report() {
+  if(!Tempest::vulkanGpuProfiling())
+    return; // timing is logged only while profiling (-gpuprofile)
   frames++;
   const uint64_t t = nowUs();
   if(last==0)
@@ -1308,8 +1309,13 @@ void MainWindow::FrameTiming::report() {
   Log::i("Frame CPU ms: total ", ms(total), " | xr wait ", ms(wait), " | update ", ms(update),
          " | gpu wait ", ms(gpuWait), " | record ", ms(record), " | xr submit ", ms(present),
          " | fps ", double(frames)*1e6/double(t-last));
+  if(XrWindow::inst()!=nullptr)
+    Log::i("XR submit over ", double(t-last)/1e6, " s: ", XrWindow::timingReport());
   if(Tempest::vulkanGpuProfiling()) {
-    Log::i(Tempest::vulkanGpuProfileReport());
+    // Log lines are limited to 256 characters
+    const std::string rep = Tempest::vulkanGpuProfileReport();
+    for(size_t at=0; at<rep.size(); at+=200)
+      Log::i(std::string_view(rep).substr(at,200));
     if(auto wv = Gothic::inst().worldView())
       wv->dbgCountVisible();
     }
@@ -1352,6 +1358,10 @@ void MainWindow::runStartupCommands() {
 void MainWindow::render(){
   try {
     if(auto xr = XrWindow::inst()) {
+      // The game update runs while the GPU still works on the previous frame;
+      // only recording the eyes waits for the runtime's frame timing
+      const uint64_t tu = nowUs();
+      updateFrame();
       const uint64_t t0 = nowUs();
       if(!xr->beginFrame())
         return;
@@ -1360,15 +1370,15 @@ void MainWindow::render(){
         renderFrame(true);
         }
       catch(...) {
-        xr->submit(nullptr);
+        xr->submit(false);
         throw;
         }
       const uint64_t t2 = nowUs();
-      xr->submit(&xrTarget[0], &xrTarget[1]);
+      xr->submit(true);
       const uint64_t t3 = nowUs();
       timing.wait    += t1-t0;
       timing.present += t3-t2;
-      timing.total   += t3-t0;
+      timing.total   += t3-tu;
       timing.report();
       return;
       }
@@ -1380,6 +1390,26 @@ void MainWindow::render(){
     if(swapchain)
       swapchain->reset();
     }
+  }
+
+void MainWindow::updateFrame() {
+  {
+  const uint64_t now = Application::tickCount();
+  tickPad(padTime==0 ? 0 : std::min<uint64_t>(now-padTime, 50));
+  padTime = now;
+  }
+
+  /*
+    Note: game update goes first
+    once player position is updated, animation bones(cameraBone in particular) can be updated
+    lastly - camera position
+    */
+  const uint64_t tu0 = nowUs();
+  runStartupCommands();
+  const uint64_t dt = tick();
+  updateAnimation(dt);
+  tickCamera(dt);
+  timing.update += nowUs()-tu0;
   }
 
 void MainWindow::renderFrame(bool xr) {
@@ -1399,23 +1429,9 @@ void MainWindow::renderFrame(bool xr) {
       }
     }
 
-  {
-  const uint64_t now = Application::tickCount();
-  tickPad(padTime==0 ? 0 : std::min<uint64_t>(now-padTime, 50));
-  padTime = now;
-  }
-
-  /*
-    Note: game update goes first
-    once player position is updated, animation bones(cameraBone in particular) can be updated
-    lastly - camera position
-    */
-  const uint64_t tu0 = nowUs();
-  runStartupCommands();
-  const uint64_t dt = tick();
-  updateAnimation(dt);
-  tickCamera(dt);
-  timing.update += nowUs()-tu0;
+  // XR updates the game before waiting for the display frame (see render)
+  if(!xr)
+    updateFrame();
 
   // XR draws the scene once per eye, each eye in its own frame slot; the interface is painted once
   const int views = xr ? 2 : 1;
@@ -1435,7 +1451,10 @@ void MainWindow::renderFrame(bool xr) {
     const uint64_t tr = nowUs();
     Resources::resetRecycled(cmdId);
 
-    auto& backbuf = xr ? xrTarget[view] : swapchain->acquire();
+    Attachment* xrImage = xr ? XrWindow::inst()->eyeTarget(uint8_t(view)) : nullptr;
+    if(xr && xrImage==nullptr)
+      return;
+    auto& backbuf = xr ? *xrImage : swapchain->acquire();
 
     if(view==0) {
       if(video.isActive()) {

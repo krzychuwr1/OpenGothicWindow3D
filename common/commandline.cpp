@@ -117,6 +117,11 @@ CommandLine::CommandLine(int argc, const char** argv) {
       if(i<argc)
         execCmds = argv[i];
       }
+    else if(arg=="-skip") {
+      ++i;
+      if(i<argc)
+        skipPasses = argv[i];
+      }
     else if(arg=="-gpuprofile") {
       gpuProfile = true;
       }

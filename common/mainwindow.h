@@ -103,6 +103,7 @@ class MainWindow : public Tempest::Window {
     void     tickPad(uint64_t dt);
     bool     padMenuContext() const;
     void     renderFrame(bool xr);
+    void     updateFrame();
     void     runStartupCommands();
 
     struct FrameTiming {
@@ -132,7 +133,7 @@ class MainWindow : public Tempest::Window {
 
     Tempest::Device&      device;
     std::optional<Tempest::Swapchain> swapchain;
-    Tempest::Attachment   xrTarget[2];
+    Tempest::Size         xrSize;
     GamepadInput          pad;
     Tempest::PointF       padLook;
     uint64_t              padTime = 0;

@@ -5,6 +5,7 @@
 #include <Tempest/Size>
 
 #include <memory>
+#include <string>
 
 #include "gamepadinput.h"
 #include "camera.h"
@@ -29,13 +30,16 @@ class XrWindow final {
     float             uiScale() const { return 1.25f; }
     // Game camera field of view; places the window where it shows the whole view.
     void              setVerticalFov(float degrees);
+    // Time spent waiting inside submit() since the previous report
+    static std::string timingReport();
 
     // Processes runtime events and waits for the next display frame.
     // Returns true when the application should render and then call submit().
     bool              beginFrame();
-    // Copies the eye images into the window layers and ends the frame.
-    // Null images show passthrough only; a single image is shown to both eyes.
-    void              submit(const Tempest::Attachment* left, const Tempest::Attachment* right = nullptr);
+    // Render target of one eye for this frame (the window layer's swapchain image).
+    Tempest::Attachment* eyeTarget(uint8_t eye);
+    // Ends the frame; without a rendered image only passthrough shows.
+    void              submit(bool rendered);
 
     // Camera of one eye looking through the window into the game world, for this frame's
     // predicted eye positions. False while the eyes are not tracked.

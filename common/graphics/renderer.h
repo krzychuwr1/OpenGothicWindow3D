@@ -166,9 +166,10 @@ class Renderer final {
     Tempest::Matrix4x4        shadowMatrix[Resources::ShadowLayers];
     Tempest::Matrix4x4        shadowMatrixVsm;
     // Static casters of the near cascade, re-rendered only when the cascade moves (XR builds)
-    Tempest::ZBuffer          shadowStatic;
-    Tempest::Matrix4x4        shadowStaticMatrix;
-    bool                      shadowStaticValid = false;
+    // Static casters per cascade, re-rendered only when the cascade moves (XR builds)
+    Tempest::ZBuffer          shadowStatic      [Resources::ShadowLayers];
+    Tempest::Matrix4x4        shadowStaticMatrix[Resources::ShadowLayers];
+    bool                      shadowStaticValid [Resources::ShadowLayers] = {};
     Tempest::Vec3             clipInfo;
 
     Tempest::Attachment       sceneLinear;

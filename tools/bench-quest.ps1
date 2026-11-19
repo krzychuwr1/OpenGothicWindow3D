@@ -16,11 +16,12 @@ param(
   [string]$Time     = '12 0',
   [string]$Package  = 'org.opengothic.window3d',
   [int]$LoadSeconds = 50,
-  [int]$Samples     = 12
+  [int]$Samples     = 12,
+  [string]$Extra    = ''
 )
 $ErrorActionPreference = 'Stop'
 $argsFile = [IO.Path]::GetTempFileName()
-"-nomenu -novideo -gpuprofile -exec `"goto waypoint $Waypoint;set time $Time`"" | Set-Content $argsFile -NoNewline -Encoding ascii
+"-nomenu -novideo -gpuprofile $Extra -exec `"goto waypoint $Waypoint;set time $Time`"" | Set-Content $argsFile -NoNewline -Encoding ascii
 adb push $argsFile /sdcard/OpenGothic/args.txt | Out-Null
 Remove-Item $argsFile
 
@@ -30,7 +31,7 @@ Start-Sleep $LoadSeconds
 adb logcat -c
 Start-Sleep ($Samples + 1)
 $vr  = adb logcat -d -s VrApi:* | Select-String 'App='
-$cpu = adb logcat -d -s app:* | Select-String 'Frame CPU ms|GPU ms per view'
+$cpu = adb logcat -d -s app:* | Select-String 'Frame CPU ms|XR submit|GPU ms per view|^.*app\s+:\s+[ A-Za-z#0-9&\-]+ [\d.]+;' | Select-Object -Last 8
 adb shell rm -f /sdcard/OpenGothic/args.txt
 
 $fps = @(); $gpu = @(); $cg = @()
@@ -43,4 +44,5 @@ if ($fps.Count -eq 0) { throw 'No VrApi samples: is the app in front and the hea
 '{0}: fps {1:N1}  GPU busy {2:P0}  CPU&GPU {3:N1} ms ({4} samples)' -f $Waypoint,
   ($fps | Measure-Object -Average).Average, ($gpu | Measure-Object -Average).Average,
   ($cg | Measure-Object -Average).Average, $fps.Count
+if ($vr[-1] -match '(CPU4/GPU=[^,]+,[^,]+)') { "clocks: $($Matches[1])" }
 $cpu | ForEach-Object { ($_ -split 'app\s+:\s+')[-1] }
