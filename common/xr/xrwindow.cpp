@@ -32,6 +32,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -322,9 +323,12 @@ bool XrWindow::Impl::createInstance() {
     return false;
 
   uint32_t count = 0;
-  xrEnumerateInstanceExtensionProperties(nullptr, 0, &count, nullptr);
+  if(!ok(xrEnumerateInstanceExtensionProperties(nullptr, 0, &count, nullptr), "count instance extensions") || count==0)
+    return false;
   std::vector<XrExtensionProperties> props(count, {XR_TYPE_EXTENSION_PROPERTIES});
-  xrEnumerateInstanceExtensionProperties(nullptr, count, &count, props.data());
+  if(!ok(xrEnumerateInstanceExtensionProperties(nullptr, count, &count, props.data()), "enumerate instance extensions"))
+    return false;
+  props.resize(count);
   auto has = [&](const char* name) {
     for(auto& p:props)
       if(std::strcmp(p.extensionName,name)==0)
@@ -384,8 +388,10 @@ bool XrWindow::Impl::createInstance() {
   info.applicationInfo.apiVersion         = XR_MAKE_VERSION(1, 0, 34);
   info.enabledExtensionCount = uint32_t(ext.size());
   info.enabledExtensionNames = ext.data();
-  if(!ok(xrCreateInstance(&info, &instance), "xrCreateInstance"))
+  XrInstance created = XR_NULL_HANDLE;
+  if(!ok(xrCreateInstance(&info, &created), "xrCreateInstance"))
     return false;
+  instance = created;
 
   XrSystemGetInfo sys = {XR_TYPE_SYSTEM_GET_INFO};
   sys.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
@@ -393,7 +399,11 @@ bool XrWindow::Impl::createInstance() {
     return false;
 
   auto fn = [this](const char* name, auto& out) {
-    return ok(xrGetInstanceProcAddr(instance, name, reinterpret_cast<PFN_xrVoidFunction*>(&out)), name);
+    PFN_xrVoidFunction proc = nullptr;
+    if(!ok(xrGetInstanceProcAddr(instance, name, &proc), name) || proc==nullptr)
+      return false;
+    out = reinterpret_cast<std::remove_reference_t<decltype(out)>>(proc);
+    return true;
     };
   if(!fn("xrCreateVulkanInstanceKHR",          xrCreateVulkanInstance)    ||
      !fn("xrGetVulkanGraphicsDevice2KHR",      xrGetVulkanGraphicsDevice) ||
@@ -525,8 +535,10 @@ void XrWindow::Impl::createSession() {
   XrSessionCreateInfo info = {XR_TYPE_SESSION_CREATE_INFO};
   info.next     = &binding;
   info.systemId = system;
-  if(!ok(xrCreateSession(instance, &info, &session), "xrCreateSession"))
+  XrSession created = XR_NULL_HANDLE;
+  if(!ok(xrCreateSession(instance, &info, &created), "xrCreateSession"))
     throw std::runtime_error("OpenXR session");
+  session = created;
 
   XrReferenceSpaceCreateInfo space = {XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
   space.poseInReferenceSpace = {{0,0,0,1},{0,0,0}};
@@ -568,11 +580,24 @@ static std::vector<XrSwapchainImageVulkan2KHR> swapchainImages(XrSwapchain chain
   return images;
   }
 
-void XrWindow::Impl::createSwapchains() {
+static std::vector<int64_t> swapchainFormats(XrSession session) {
   uint32_t count = 0;
-  xrEnumerateSwapchainFormats(session, 0, &count, nullptr);
+  if(!ok(xrEnumerateSwapchainFormats(session, 0, &count, nullptr), "count swapchain formats") || count==0)
+    return {};
   std::vector<int64_t> formats(count);
-  xrEnumerateSwapchainFormats(session, count, &count, formats.data());
+  if(!ok(xrEnumerateSwapchainFormats(session, count, &count, formats.data()), "enumerate swapchain formats"))
+    return {};
+  formats.resize(count);
+  return formats;
+  }
+
+static XrSwapchain makeSwapchain(XrSession session, const XrSwapchainCreateInfo& info, const char* name) {
+  XrSwapchain chain = XR_NULL_HANDLE;
+  return ok(xrCreateSwapchain(session, &info, &chain), name) ? chain : XR_NULL_HANDLE;
+  }
+
+void XrWindow::Impl::createSwapchains() {
+  const auto formats = swapchainFormats(session);
 
   // The renderer and static uploads both require four RGBA8 channels.
   auto supported = [&](int64_t f) { return std::find(formats.begin(), formats.end(), f)!=formats.end(); };
@@ -594,7 +619,8 @@ void XrWindow::Impl::createSwapchains() {
   info.arraySize   = 1;
   info.mipCount    = 1;
   for(int eye=0; eye<2; ++eye) {
-    if(!ok(xrCreateSwapchain(session, &info, &swapchain[eye]), "window swapchain"))
+    swapchain[eye] = makeSwapchain(session, info, "window swapchain");
+    if(swapchain[eye]==XR_NULL_HANDLE)
       throw std::runtime_error("OpenXR swapchain");
     auto img = swapchainImages(swapchain[eye]);
     if(img.empty())
@@ -609,18 +635,19 @@ void XrWindow::Impl::createSwapchains() {
   info.width       = HandleW;
   info.height      = HandleH;
   info.arraySize   = 3;
-  ok(xrCreateSwapchain(session, &info, &handleSwapchain), "handle swapchain");
+  handleSwapchain = makeSwapchain(session, info, "handle swapchain");
   info.width       = CornerSize;
   info.height      = CornerSize;
   info.arraySize   = 4;
-  ok(xrCreateSwapchain(session, &info, &cornerSwapchain), "corner swapchain");
+  cornerSwapchain = makeSwapchain(session, info, "corner swapchain");
 
   if(hasPanorama) {
     info.width = SkyW;
     info.height = SkyH;
     info.arraySize = 1;
     info.usageFlags |= XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
-    if(ok(xrCreateSwapchain(session, &info, &panorama), "static environment swapchain")) {
+    panorama = makeSwapchain(session, info, "static environment swapchain");
+    if(panorama!=XR_NULL_HANDLE) {
       if(xrGetSwapchainState && xrUpdateSwapchain) {
         XrSwapchainStateSamplerVulkanFB sampler = {XR_TYPE_SWAPCHAIN_STATE_SAMPLER_VULKAN_FB};
         auto* state = reinterpret_cast<XrSwapchainStateBaseHeaderFB*>(&sampler);
@@ -634,7 +661,7 @@ void XrWindow::Impl::createSwapchains() {
       info.width = ButtonW;
       info.height = ButtonH;
       info.arraySize = 4; // room / sky icons, each idle or hovered
-      ok(xrCreateSwapchain(session, &info, &environmentButton), "environment button swapchain");
+      environmentButton = makeSwapchain(session, info, "environment button swapchain");
       }
     }
   }
@@ -644,13 +671,7 @@ bool XrWindow::Impl::createSpaceWarpSwapchains() {
   mvWidth  = std::max(width/4u,  16u);
   mvHeight = std::max(height/4u, 16u);
 
-  uint32_t count = 0;
-  if(!ok(xrEnumerateSwapchainFormats(session,0,&count,nullptr),"count SpaceWarp formats") || count==0)
-    return false;
-  std::vector<int64_t> formats(count);
-  if(!ok(xrEnumerateSwapchainFormats(session,count,&count,formats.data()),"enumerate SpaceWarp formats"))
-    return false;
-  formats.resize(count);
+  const auto formats = swapchainFormats(session);
   auto supported = [&](int64_t f) { return std::find(formats.begin(), formats.end(), f)!=formats.end(); };
   if(!supported(VK_FORMAT_R16G16B16A16_SFLOAT) || !supported(VK_FORMAT_D32_SFLOAT)) {
     Log::e("OpenXR: SpaceWarp needs RGBA16F and D32F swapchains");
@@ -667,16 +688,14 @@ bool XrWindow::Impl::createSpaceWarpSwapchains() {
     info.faceCount   = 1;
     info.arraySize   = 1;
     info.mipCount    = 1;
-    XrSwapchain motion = XR_NULL_HANDLE;
-    if(!ok(xrCreateSwapchain(session, &info, &motion), "motion vector swapchain"))
+    mvSwapchain[eye] = makeSwapchain(session, info, "motion vector swapchain");
+    if(mvSwapchain[eye]==XR_NULL_HANDLE)
       return false;
-    mvSwapchain[eye] = motion;
     info.usageFlags  = XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
     info.format      = VK_FORMAT_D32_SFLOAT;
-    XrSwapchain depth = XR_NULL_HANDLE;
-    if(!ok(xrCreateSwapchain(session, &info, &depth), "depth swapchain"))
+    depthSwapchain[eye] = makeSwapchain(session, info, "depth swapchain");
+    if(depthSwapchain[eye]==XR_NULL_HANDLE)
       return false;
-    depthSwapchain[eye] = depth;
     for(auto& i:swapchainImages(mvSwapchain[eye]))
       mvTargets[eye].push_back(vulkanBorrowColorAttachment(*device, i.image, mvWidth, mvHeight, TextureFormat::RGBA16F));
     for(auto& i:swapchainImages(depthSwapchain[eye]))
