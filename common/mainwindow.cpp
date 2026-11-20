@@ -980,9 +980,9 @@ void MainWindow::onMarvinKey() {
     }
   }
 
-uint64_t MainWindow::tick(uint64_t displayDt) {
+uint64_t MainWindow::tick(std::optional<uint64_t> displayDt) {
   auto time = Application::tickCount();
-  auto dt   = displayDt!=0 ? displayDt : time-lastTick;
+  auto dt   = displayDt.value_or(time-lastTick);
   // NOTE: limit to ~200 FPS in game logic to avoid math issues
   if(dt<5)
     return 0;
@@ -1528,6 +1528,8 @@ void MainWindow::render(){
           eyeHistoryValid = false;
           return;
           }
+        if(XrFrameClock::discontinuity(display,xr->predictedDisplayTime()))
+          eyeHistoryValid = false;
         renderFrame(true);
         }
       catch(...) {
@@ -1555,11 +1557,11 @@ void MainWindow::render(){
     }
   }
 
-void MainWindow::updateFrame(uint64_t displayDt) {
+void MainWindow::updateFrame(std::optional<uint64_t> displayDt) {
   {
   const uint64_t now = Application::tickCount();
   const auto lastPadTime = std::exchange(padTime,now);
-  const uint64_t dt = displayDt!=0 ? displayDt : (lastPadTime!=0 ? now-lastPadTime : 0);
+  const uint64_t dt = displayDt.value_or(lastPadTime!=0 ? now-lastPadTime : 0);
   tickPad(std::min<uint64_t>(dt,50));
   }
 

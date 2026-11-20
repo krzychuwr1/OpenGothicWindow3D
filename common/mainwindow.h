@@ -109,12 +109,12 @@ class MainWindow : public Tempest::Window {
 
     void render() override;
 
-    uint64_t tick(uint64_t displayDt);
+    uint64_t tick(std::optional<uint64_t> displayDt);
     void     tickPad(uint64_t dt);
     void     cancelHeldInput();
     bool     padMenuContext() const;
     void     renderFrame(bool xr);
-    void     updateFrame(uint64_t displayDt = 0);
+    void     updateFrame(std::optional<uint64_t> displayDt = std::nullopt);
     void     runStartupCommands();
 
     struct FrameTiming {

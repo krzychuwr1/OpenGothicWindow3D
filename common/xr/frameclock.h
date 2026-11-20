@@ -7,9 +7,13 @@
 // Follow the display cadence, spreading small corrections over subsequent frames.
 class XrFrameClock final {
   public:
+    static bool discontinuity(int64_t previous, int64_t target) {
+      return previous==0 || target<=previous || target-previous>100000000;
+      }
+
     uint64_t advance(int64_t target, int64_t nominal) {
       const int64_t elapsed = target-lastTarget;
-      if(lastTarget==0 || elapsed<=0 || elapsed>100000000) {
+      if(discontinuity(lastTarget,target)) {
         lastTarget = logical = target;
         estimate = 0;
         return 0;
