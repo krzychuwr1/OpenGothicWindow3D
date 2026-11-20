@@ -59,6 +59,10 @@ void GamepadInput::set(Out o, bool down) {
   if(state[o]==down)
     return;
   state[o] = down;
+  // Start and menu Back share Escape. The key stays down until both release.
+  for(int i=0; i<O_Count; ++i)
+    if(i!=o && state[i] && keyOf(Out(i))==keyOf(o))
+      return;
   KeyEvent e(keyOf(o), Event::M_NoModifier, down ? Event::KeyDown : Event::KeyUp);
   sink(e,down);
   }
@@ -77,7 +81,7 @@ void GamepadInput::tick(const PadState& p, bool menuContext) {
     set(O_Down,    pos(O_Down,p.ly)  || b[PadState::DpadDown]);
     set(O_Left,    neg(O_Left,p.lx)  || b[PadState::DpadLeft]);
     set(O_Right,   pos(O_Right,p.lx) || b[PadState::DpadRight]);
-    set(O_Confirm, b[PadState::A] || p.rt>0.6f);
+    set(O_Confirm, b[PadState::A] || p.rt>0.6f || b[PadState::RightShoulder]);
     set(O_Cancel,  b[PadState::B]);
     } else {
     for(Out o:{O_Up,O_Down,O_Left,O_Right,O_Confirm,O_Cancel})
