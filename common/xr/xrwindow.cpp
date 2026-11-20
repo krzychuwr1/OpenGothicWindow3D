@@ -153,6 +153,7 @@ struct XrWindow::Impl {
   int32_t                  mvAcquired[2]    = {-1, -1};
   int32_t                  depthAcquired[2] = {-1, -1};
   bool                     spaceWarpWanted  = false;
+  bool                     skipExtrapolation = true;
   XrPosef                  eyePose[2] = {};
   XrFovf                   eyeFov [2] = {};
   float                    eyeNear[2] = {};
@@ -797,6 +798,7 @@ void XrWindow::Impl::placeWindow() {
     placed = false;
     cancelInput();
     }
+  skipExtrapolation = !placed;
   XrSpaceLocation head = {XR_TYPE_SPACE_LOCATION};
   if(!XR_SUCCEEDED(xrLocateSpace(viewSpace, localSpace, frame.predictedDisplayTime, &head)))
     return;
@@ -1402,8 +1404,10 @@ bool XrWindow::isSpaceWarpSupported() const {
   return impl->hasSpaceWarp;
   }
 
-void XrWindow::setSpaceWarp(bool use) {
+bool XrWindow::prepareSpaceWarp(bool use, bool previousViewValid) {
   impl->spaceWarpWanted = use && impl->hasSpaceWarp;
+  impl->skipExtrapolation |= !previousViewValid;
+  return impl->spaceWarpWanted && !impl->skipExtrapolation;
   }
 
 Attachment* XrWindow::motionTarget(uint8_t eye) {
@@ -1519,6 +1523,7 @@ bool XrWindow::submit(bool rendered) {
   if(warp) {
     for(int eye=0; eye<2; ++eye) {
       auto& w = sw[eye];
+      w.layerFlags = s.skipExtrapolation ? XR_COMPOSITION_LAYER_SPACE_WARP_INFO_FRAME_SKIP_BIT_FB : 0;
       w.motionVectorSubImage.swapchain       = s.mvSwapchain[eye];
       w.motionVectorSubImage.imageRect       = {{0,0},{int32_t(s.mvWidth),int32_t(s.mvHeight)}};
       w.depthSubImage.swapchain              = s.depthSwapchain[eye];
@@ -1676,7 +1681,7 @@ Tempest::Size XrWindow::resolution() const { return Tempest::Size(0,0); }
 bool      XrWindow::beginFrame() { return false; }
 bool      XrWindow::submit(bool) { return false; }
 bool      XrWindow::isSpaceWarpSupported() const { return false; }
-void      XrWindow::setSpaceWarp(bool) {}
+bool      XrWindow::prepareSpaceWarp(bool, bool) { return false; }
 Tempest::Attachment* XrWindow::motionTarget(uint8_t) { return nullptr; }
 Tempest::ZBuffer*    XrWindow::depthTarget(uint8_t) { return nullptr; }
 Tempest::Attachment* XrWindow::eyeTarget(uint8_t) { return nullptr; }

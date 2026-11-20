@@ -43,7 +43,8 @@ class XrWindow final {
     // motion vectors and depth, the window is submitted as a projection layer and the runtime
     // renders every other display frame itself.
     bool              isSpaceWarpSupported() const;
-    void              setSpaceWarp(bool use);
+    // Returns whether motion can use the previous view across this frame boundary.
+    bool              prepareSpaceWarp(bool use, bool previousViewValid);
     Tempest::Attachment* motionTarget(uint8_t eye);
     Tempest::ZBuffer*    depthTarget(uint8_t eye);
     // Ends the frame; without a rendered image only passthrough shows.

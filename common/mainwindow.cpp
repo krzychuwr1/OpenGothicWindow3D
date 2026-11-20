@@ -1475,8 +1475,7 @@ void MainWindow::renderFrame(bool xr) {
   // Application SpaceWarp (Video settings) while a world is shown through the window
   const bool warp = xr && XrWindow::inst()->isSpaceWarpSupported() && Gothic::settingsGetI("INTERNAL","xrSpaceWarp")!=0 &&
                     Gothic::inst().camera()!=nullptr && Gothic::inst().worldView()!=nullptr && !video.isActive();
-  if(xr)
-    XrWindow::inst()->setSpaceWarp(warp);
+  const bool useHistory = xr && XrWindow::inst()->prepareSpaceWarp(warp, eyeHistoryValid);
   for(int view=0; view<views; ++view) {
     auto& sync = fence[cmdId];
     if(xr) {
@@ -1526,7 +1525,7 @@ void MainWindow::renderFrame(bool xr) {
       camera->setEyeView(&eye);
     if(xr) {
       const bool vectors = warp && stereo;
-      renderer.setMotionVectors(vectors, vectors && eyeHistoryValid ? &prevEyeViewProject[view] : nullptr);
+      renderer.setMotionVectors(vectors, vectors && useHistory ? &prevEyeViewProject[view] : nullptr);
       if(vectors)
         prevEyeViewProject[view] = camera->viewProj();
       }
