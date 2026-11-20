@@ -144,6 +144,7 @@ struct XrWindow::Impl {
   XrSession                session    = XR_NULL_HANDLE;
   XrSessionState           state      = XR_SESSION_STATE_UNKNOWN;
   bool                     running    = false;
+  uint8_t                  transitionFailures = 0;
   XrSpace                  localSpace = XR_NULL_HANDLE;
   XrSpace                  viewSpace  = XR_NULL_HANDLE;
   bool                     passthroughUnavailable = false;
@@ -235,6 +236,7 @@ struct XrWindow::Impl {
   void createActions();
   bool pollEvents();
   void stopSession();
+  void updateSessionRunning();
   bool sessionResult(XrResult result, const char* operation);
   void updateInput();
   void cancelInput();
@@ -901,8 +903,34 @@ bool XrWindow::Impl::sessionResult(XrResult result, const char* operation) {
   return ok(result, operation);
   }
 
+void XrWindow::Impl::updateSessionRunning() {
+  const bool begin = state==XR_SESSION_STATE_READY && !running;
+  const bool end = state==XR_SESSION_STATE_STOPPING && running;
+  if(!begin && !end)
+    return;
+
+  XrSessionBeginInfo info = {XR_TYPE_SESSION_BEGIN_INFO};
+  info.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+  const XrResult result = begin ? xrBeginSession(session, &info) : xrEndSession(session);
+  if(!sessionResult(result, begin ? "xrBeginSession" : "xrEndSession")) {
+    // The runtime may stay READY or STOPPING without sending a second event.
+    if(state!=XR_SESSION_STATE_EXITING && ++transitionFailures>=3)
+      stopSession();
+    return;
+    }
+  transitionFailures = 0;
+  running = begin;
+  if(begin && hasPerfSettings) {
+    const bool low = CommandLine::inst().xrPerfLevel()=="low";
+    const auto lvl = low ? XR_PERF_SETTINGS_LEVEL_POWER_SAVINGS_EXT : XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT;
+    ok(xrSetPerfLevel(session, XR_PERF_SETTINGS_DOMAIN_CPU_EXT, lvl), "CPU level");
+    ok(xrSetPerfLevel(session, XR_PERF_SETTINGS_DOMAIN_GPU_EXT, lvl), "GPU level");
+    }
+  }
+
 bool XrWindow::Impl::pollEvents() {
   bool interrupted = false;
+  bool attempted = false;
   while(state!=XR_SESSION_STATE_EXITING) {
     XrEventDataBuffer ev = {XR_TYPE_EVENT_DATA_BUFFER};
     const XrResult result = xrPollEvent(instance, &ev);
@@ -914,27 +942,18 @@ bool XrWindow::Impl::pollEvents() {
     switch(ev.type) {
       case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED: {
         auto& e = *reinterpret_cast<XrEventDataSessionStateChanged*>(&ev);
+        if(e.session!=session)
+          break;
+        if(state!=e.state)
+          transitionFailures = 0;
         interrupted |= (state==XR_SESSION_STATE_FOCUSED && e.state!=XR_SESSION_STATE_FOCUSED);
         state = e.state;
         if(state!=XR_SESSION_STATE_FOCUSED)
           cancelInput();
         Log::i("OpenXR: session state ", int(state));
-        if(state==XR_SESSION_STATE_READY) {
-          XrSessionBeginInfo begin = {XR_TYPE_SESSION_BEGIN_INFO};
-          begin.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-          running = sessionResult(xrBeginSession(session, &begin), "xrBeginSession");
-          if(running && hasPerfSettings) {
-            // The game is heavy on both: ask for the highest clocks the headset can sustain,
-            // or the lowest ones for unattended test runs (-perf low)
-            const bool low = CommandLine::inst().xrPerfLevel()=="low";
-            const auto lvl = low ? XR_PERF_SETTINGS_LEVEL_POWER_SAVINGS_EXT : XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT;
-            ok(xrSetPerfLevel(session, XR_PERF_SETTINGS_DOMAIN_CPU_EXT, lvl), "CPU level");
-            ok(xrSetPerfLevel(session, XR_PERF_SETTINGS_DOMAIN_GPU_EXT, lvl), "GPU level");
-            }
-          }
-        else if(state==XR_SESSION_STATE_STOPPING) {
-          sessionResult(xrEndSession(session), "xrEndSession");
-          running = false;
+        if(state==XR_SESSION_STATE_READY || state==XR_SESSION_STATE_STOPPING) {
+          updateSessionRunning();
+          attempted = true;
           }
         else if(state==XR_SESSION_STATE_EXITING || state==XR_SESSION_STATE_LOSS_PENDING) {
           stopSession();
@@ -957,6 +976,8 @@ bool XrWindow::Impl::pollEvents() {
         break;
       }
     }
+  if(!attempted && transitionFailures!=0)
+    updateSessionRunning();
   return interrupted;
   }
 
@@ -1351,7 +1372,7 @@ bool XrWindow::pollInputFocus(bool nativeFocusLost) {
 
 bool XrWindow::beginFrame() {
   auto& s = *impl;
-  if(!s.running) {
+  if(!s.running || s.state==XR_SESSION_STATE_STOPPING) {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     return false;
     }

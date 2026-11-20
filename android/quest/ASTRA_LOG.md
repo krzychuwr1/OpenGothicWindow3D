@@ -744,3 +744,11 @@ Required XR startup created a ring of three command buffers and three fences bef
 A host Vulkan fixture injected failures at each creation step, wrote unusable handles on failure, and threw from each independent artwork fill. It checked eye availability, creation and release counts, device loss, and sessions without artwork. The original failed 265 of 433 checks. The new code passed all 433. The uninstrumented Android Release linked.
 
 On Quest, a diagnostic substituted a GPU allocation failure for the artwork fence after allocating the command buffer. Six SpaceWarp combat frames reported room passthrough available and all four artwork readiness flags clear. I inspected native 1600 × 900 stereo pairs 005 and 015, which showed the city, characters, focus text and health bar. The run reported 35.9 fps at CPU 1 / GPU 0 and ended stopped and released to sleep at 95% and 40.0 °C. The allocation error was injected.
+
+### Retry an interrupted OpenXR session transition
+
+Beginning or ending a session was attempted only on receipt of a state-change event. A runtime failure could leave the app indefinitely idle in READY or incorrectly mark a still-running STOPPING session as ended. The frame loop now retries on the next paced poll while that transition remains pending. It suppresses frames during STOPPING, applies the requested performance level after a successful begin, exits immediately on session or instance loss, and exits cleanly after three consecutive transition failures. Events from other sessions are ignored.
+
+A host runtime covered zero through four consecutive failures to begin or end, terminal loss, state changes between attempts, foreign-session events and both performance settings. Old code failed 62 of 844 checks. The fixed code passed all 844. The uninstrumented Android Release linked.
+
+The artwork-failure combat run also rejected the first begin with a simulated XR runtime error. The next poll successfully called the real `xrBeginSession` without another READY event. The runtime then reported SYNCHRONIZED, VISIBLE and FOCUSED and rendered both captured eyes. STOPPING error retries were exercised on the host. No physical headset removal or OS-driven stop failure was observed.
