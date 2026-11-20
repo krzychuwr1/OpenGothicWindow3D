@@ -181,6 +181,8 @@ Gothic::Gothic(GameModDescriptor desc) {
   if(!iniFile->has("INTERNAL", "vidResIndex")) {
     iniFile->set("INTERNAL", "vidResIndex", defaultResIndex);
     }
+  for(auto& o:CommandLine::inst().settingsOverrides())
+    iniFile->set(o.section, o.key, o.value);
 #if defined(__ANDROID__)
   // The original Gothic.ini (copied with the game) enables desktop-cost effects;
   // start mobile installs without them. The video menu still changes these.

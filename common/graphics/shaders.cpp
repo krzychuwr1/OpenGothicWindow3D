@@ -90,6 +90,9 @@ void Shaders::compileShaders() noexcept {
     auto fs = GothicShader::get("copy_depth.frag.sprv");
     copyDepth = Resources::device().pipeline(Triangles, st, Resources::device().shader(vs.data,vs.len),
                                              Resources::device().shader(fs.data,fs.len));
+    auto mv   = GothicShader::get("spacewarp_mv.frag.sprv");
+    spaceWarpMv = Resources::device().pipeline(Triangles, st, Resources::device().shader(vs.data,vs.len),
+                                               Resources::device().shader(mv.data,mv.len));
   }
 
   patch     = computeShader("patch.comp.sprv");

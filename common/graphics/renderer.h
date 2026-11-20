@@ -35,6 +35,10 @@ class Renderer final {
 
     void dbgDraw(Tempest::Painter& painter);
 
+    // Application SpaceWarp: motion vectors and depth of the last drawn view (XR)
+    void drawSpaceWarp(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const WorldView& wview,
+                       Tempest::Attachment& motion, Tempest::ZBuffer& depth, const Tempest::Matrix4x4& prevViewProject);
+
     Tempest::Attachment screenshoot(uint8_t frameId, Tempest::Size size);
 
   private:

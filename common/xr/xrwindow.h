@@ -38,6 +38,14 @@ class XrWindow final {
     bool              beginFrame();
     // Render target of one eye for this frame (the window layer's swapchain image).
     Tempest::Attachment* eyeTarget(uint8_t eye);
+
+    // Application SpaceWarp (XR_FB_space_warp): when used for a frame, each eye also provides
+    // motion vectors and depth, the window is submitted as a projection layer and the runtime
+    // renders every other display frame itself.
+    bool              isSpaceWarpSupported() const;
+    void              setSpaceWarp(bool use);
+    Tempest::Attachment* motionTarget(uint8_t eye);
+    Tempest::ZBuffer*    depthTarget(uint8_t eye);
     // Ends the frame; without a rendered image only passthrough shows.
     void              submit(bool rendered);
 

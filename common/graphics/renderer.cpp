@@ -2102,6 +2102,27 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
   return true;
   }
 
+void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, const WorldView& wview,
+                             Attachment& motion, ZBuffer& depth, const Matrix4x4& prevViewProject) {
+  struct Push {
+    Matrix4x4 prevViewProject;
+    Vec4      originLwc;
+    Vec2      invSize;
+    } push;
+  auto& scene = wview.sceneGlobals();
+  push.prevViewProject = prevViewProject;
+  push.originLwc       = Vec4(scene.originLwc.x, scene.originLwc.y, scene.originLwc.z, 0);
+  push.invSize         = Vec2(1.f/float(motion.w()), 1.f/float(motion.h()));
+
+  cmd.setDebugMarker("SpaceWarp vectors");
+  cmd.setFramebuffer({{motion, Vec4(), Tempest::Preserve}}, {depth, 1.f, Tempest::Preserve});
+  cmd.setBinding(0, scene.uboGlobal[SceneGlobals::V_Main]);
+  cmd.setBinding(1, zbuffer, Sampler::nearest());
+  cmd.setPushData(&push, sizeof(push));
+  cmd.setPipeline(shaders.spaceWarpMv);
+  cmd.draw(nullptr, 0, 3);
+  }
+
 void Renderer::drawSky(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
   if(CommandLine::inst().debugSkip("sky"))
     return;

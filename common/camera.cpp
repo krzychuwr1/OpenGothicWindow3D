@@ -170,6 +170,7 @@ void Camera::setEyeView(const EyeView* v) {
                        0.f,       0.f,         k,           -n*k,
                        0.f,       0.f,         1.f,          0.f);
   eye.pos    = origin + shake + Vec3(wx,wy,wz);
+  eye.offset = v->offset;
   eye.zNear  = n;
   eye.active = true;
   }
@@ -1088,6 +1089,21 @@ Vec3 Camera::destTarget() const {
 Matrix4x4 Camera::viewProj() const {
   Matrix4x4 ret=projective();
   ret.mul(view());
+  return ret;
+  }
+
+Matrix4x4 Camera::baseView() const {
+  return mkView(origin+shake, angles);
+  }
+
+Matrix4x4 Camera::eyeViewProjectFrom(const Matrix4x4& base) const {
+  auto ret = projective();
+  if(eye.active) {
+    Matrix4x4 t = Matrix4x4::mkIdentity();
+    t.translate(-eye.offset);
+    ret.mul(t);
+    }
+  ret.mul(base);
   return ret;
   }
 

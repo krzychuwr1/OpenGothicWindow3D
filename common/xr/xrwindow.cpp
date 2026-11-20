@@ -16,6 +16,7 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -106,6 +107,7 @@ struct XrWindow::Impl {
   bool                     hasPassthrough     = false;
   bool                     hasHandInteraction = false;
   bool                     hasPerfSettings    = false;
+  bool                     hasSpaceWarp       = false;
   PFN_xrPerfSettingsSetPerformanceLevelEXT xrSetPerfLevel = nullptr;
 
   PFN_xrCreateVulkanInstanceKHR         xrCreateVulkanInstance      = nullptr;
@@ -136,6 +138,21 @@ struct XrWindow::Impl {
   // The game renders straight into the swapchain images through these
   std::vector<Attachment>  targets[2];
   int32_t                  acquired[2] = {-1, -1};
+
+  // Application SpaceWarp
+  uint32_t                 mvWidth = 0, mvHeight = 0;
+  XrSwapchain              mvSwapchain[2]    = {};
+  XrSwapchain              depthSwapchain[2] = {};
+  std::vector<Attachment>  mvTargets[2];
+  std::vector<ZBuffer>     depthTargets[2];
+  int32_t                  mvAcquired[2]    = {-1, -1};
+  int32_t                  depthAcquired[2] = {-1, -1};
+  bool                     spaceWarpWanted  = false;
+  XrPosef                  eyePose[2] = {};
+  XrFovf                   eyeFov [2] = {};
+  float                    eyeNear[2] = {};
+  void createSpaceWarpSwapchains();
+  void releaseSpaceWarp();
   VkCommandPool            pool = VK_NULL_HANDLE;
   static constexpr uint32_t Ring = 3;
   VkCommandBuffer          cmd  [Ring] = {};
@@ -241,6 +258,12 @@ XrWindow::Impl::~Impl() {
   for(auto sw:swapchain)
     if(sw!=XR_NULL_HANDLE)
       xrDestroySwapchain(sw);
+  for(int eye=0; eye<2; ++eye) {
+    if(mvSwapchain[eye]!=XR_NULL_HANDLE)
+      xrDestroySwapchain(mvSwapchain[eye]);
+    if(depthSwapchain[eye]!=XR_NULL_HANDLE)
+      xrDestroySwapchain(depthSwapchain[eye]);
+    }
   if(session!=XR_NULL_HANDLE)
     xrDestroySession(session);
   if(instance!=XR_NULL_HANDLE)
@@ -284,6 +307,9 @@ bool XrWindow::Impl::createInstance() {
   hasPassthrough     = has(XR_FB_PASSTHROUGH_EXTENSION_NAME);
   hasHandInteraction = has(XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
   hasPerfSettings    = has(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
+  hasSpaceWarp       = has(XR_FB_SPACE_WARP_EXTENSION_NAME);
+  if(hasSpaceWarp)
+    ext.push_back(XR_FB_SPACE_WARP_EXTENSION_NAME);
   if(hasPerfSettings)
     ext.push_back(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
   if(hasPassthrough)
@@ -428,6 +454,7 @@ void XrWindow::Impl::createSession() {
     }
 
   createSwapchains();
+  createSpaceWarpSwapchains();
   createPassthrough();
   createActions();
   }
@@ -483,6 +510,70 @@ void XrWindow::Impl::createSwapchains() {
   info.height      = CornerSize;
   info.arraySize   = 4;
   ok(xrCreateSwapchain(session, &info, &cornerSwapchain), "corner swapchain");
+  }
+
+void XrWindow::Impl::createSpaceWarpSwapchains() {
+  if(!hasSpaceWarp)
+    return;
+  // Motion vectors at a quarter of the window resolution (the runtime upsamples them)
+  mvWidth  = std::max(width/4u,  16u);
+  mvHeight = std::max(height/4u, 16u);
+
+  uint32_t count = 0;
+  xrEnumerateSwapchainFormats(session, 0, &count, nullptr);
+  std::vector<int64_t> formats(count);
+  xrEnumerateSwapchainFormats(session, count, &count, formats.data());
+  auto supported = [&](int64_t f) { return std::find(formats.begin(), formats.end(), f)!=formats.end(); };
+  if(!supported(VK_FORMAT_R16G16B16A16_SFLOAT) || !supported(VK_FORMAT_D32_SFLOAT)) {
+    Log::e("OpenXR: SpaceWarp needs RGBA16F and D32F swapchains");
+    hasSpaceWarp = false;
+    return;
+    }
+
+  for(int eye=0; eye<2; ++eye) {
+    XrSwapchainCreateInfo info = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    info.format      = VK_FORMAT_R16G16B16A16_SFLOAT;
+    info.sampleCount = 1;
+    info.width       = mvWidth;
+    info.height      = mvHeight;
+    info.faceCount   = 1;
+    info.arraySize   = 1;
+    info.mipCount    = 1;
+    if(!ok(xrCreateSwapchain(session, &info, &mvSwapchain[eye]), "motion vector swapchain")) {
+      hasSpaceWarp = false;
+      return;
+      }
+    info.usageFlags  = XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    info.format      = VK_FORMAT_D32_SFLOAT;
+    if(!ok(xrCreateSwapchain(session, &info, &depthSwapchain[eye]), "depth swapchain")) {
+      hasSpaceWarp = false;
+      return;
+      }
+    auto images = [&](XrSwapchain sc) {
+      xrEnumerateSwapchainImages(sc, 0, &count, nullptr);
+      std::vector<XrSwapchainImageVulkan2KHR> img(count, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR});
+      xrEnumerateSwapchainImages(sc, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(img.data()));
+      return img;
+      };
+    for(auto& i:images(mvSwapchain[eye]))
+      mvTargets[eye].push_back(vulkanBorrowColorAttachment(*device, i.image, mvWidth, mvHeight, TextureFormat::RGBA16F));
+    for(auto& i:images(depthSwapchain[eye]))
+      depthTargets[eye].push_back(vulkanBorrowDepthAttachment(*device, i.image, mvWidth, mvHeight, TextureFormat::Depth32F));
+    }
+  Log::i("OpenXR: SpaceWarp available, motion vectors ", mvWidth, "x", mvHeight);
+  }
+
+void XrWindow::Impl::releaseSpaceWarp() {
+  for(int eye=0; eye<2; ++eye) {
+    XrSwapchainImageReleaseInfo rel = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    if(mvAcquired[eye]>=0)
+      xrReleaseSwapchainImage(mvSwapchain[eye], &rel);
+    if(depthAcquired[eye]>=0)
+      xrReleaseSwapchainImage(depthSwapchain[eye], &rel);
+    mvAcquired[eye]    = -1;
+    depthAcquired[eye] = -1;
+    }
   }
 
 void XrWindow::Impl::createPassthrough() {
@@ -851,6 +942,21 @@ void XrWindow::Impl::locateEyes() {
   const XrQuaternionf inv = conjugate(windowPose.orientation);
   for(int i=0; i<2; ++i)
     eyeInWindow[i] = rotate(inv, toV3(views[i].pose.position) - toV3(windowPose.position));
+
+  // The same view as a projection layer: from the eye, facing the window plane, with an
+  // asymmetric field of view that frames exactly the window rectangle (used with SpaceWarp)
+  const float halfW = windowWidth*0.5f, halfH = windowHeight()*0.5f;
+  for(int i=0; i<2; ++i) {
+    V3 e = eyeInWindow[i];
+    e.z  = std::max(e.z, 0.05f);
+    eyePose[i].orientation = windowPose.orientation;
+    eyePose[i].position    = toXr(toWorld(windowPose, e));
+    eyeFov[i].angleLeft    = std::atan((-halfW - e.x)/e.z);
+    eyeFov[i].angleRight   = std::atan(( halfW - e.x)/e.z);
+    eyeFov[i].angleDown    = std::atan((-halfH - e.y)/e.z);
+    eyeFov[i].angleUp      = std::atan(( halfH - e.y)/e.z);
+    eyeNear[i]             = e.z;
+    }
   }
 
 bool XrWindow::eyeView(uint8_t eye, float verticalFovDeg, Camera::EyeView& out) const {
@@ -1074,6 +1180,50 @@ Attachment* XrWindow::eyeTarget(uint8_t eye) {
   return &s.targets[eye][size_t(s.acquired[eye])];
   }
 
+bool XrWindow::isSpaceWarpSupported() const {
+  return impl->hasSpaceWarp;
+  }
+
+void XrWindow::setSpaceWarp(bool use) {
+  impl->spaceWarpWanted = use && impl->hasSpaceWarp;
+  }
+
+Attachment* XrWindow::motionTarget(uint8_t eye) {
+  auto& s = *impl;
+  if(!s.spaceWarpWanted || eye>1 || s.mvTargets[eye].empty())
+    return nullptr;
+  if(s.mvAcquired[eye]<0) {
+    std::lock_guard<std::mutex> guard(*s.vk.queueLock);
+    uint32_t index = 0;
+    XrSwapchainImageAcquireInfo acq = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    if(!ok(xrAcquireSwapchainImage(s.mvSwapchain[eye], &acq, &index), "acquire motion vectors"))
+      return nullptr;
+    XrSwapchainImageWaitInfo wait = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wait.timeout = XR_INFINITE_DURATION;
+    xrWaitSwapchainImage(s.mvSwapchain[eye], &wait);
+    s.mvAcquired[eye] = int32_t(index);
+    }
+  return &s.mvTargets[eye][size_t(s.mvAcquired[eye])];
+  }
+
+ZBuffer* XrWindow::depthTarget(uint8_t eye) {
+  auto& s = *impl;
+  if(!s.spaceWarpWanted || eye>1 || s.depthTargets[eye].empty())
+    return nullptr;
+  if(s.depthAcquired[eye]<0) {
+    std::lock_guard<std::mutex> guard(*s.vk.queueLock);
+    uint32_t index = 0;
+    XrSwapchainImageAcquireInfo acq = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    if(!ok(xrAcquireSwapchainImage(s.depthSwapchain[eye], &acq, &index), "acquire depth"))
+      return nullptr;
+    XrSwapchainImageWaitInfo wait = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wait.timeout = XR_INFINITE_DURATION;
+    xrWaitSwapchainImage(s.depthSwapchain[eye], &wait);
+    s.depthAcquired[eye] = int32_t(index);
+    }
+  return &s.depthTargets[eye][size_t(s.depthAcquired[eye])];
+  }
+
 void XrWindow::Impl::releaseEyes() {
   const uint64_t t0 = xrUs();
   for(int eye=0; eye<2; ++eye) {
@@ -1097,7 +1247,10 @@ void XrWindow::submit(bool rendered) {
   if(!s.chromeReady)
     s.fillChrome();
   const bool hasImage = rendered && s.acquired[0]>=0 && s.acquired[1]>=0;
+  const bool warp     = hasImage && s.spaceWarpWanted &&
+                        s.mvAcquired[0]>=0 && s.mvAcquired[1]>=0 && s.depthAcquired[0]>=0 && s.depthAcquired[1]>=0;
   s.releaseEyes();
+  s.releaseSpaceWarp();
 
   std::vector<const XrCompositionLayerBaseHeader*> layers;
 
@@ -1109,7 +1262,39 @@ void XrWindow::submit(bool rendered) {
 
   // The same rectangle in the room for both eyes, each showing its own view through it
   XrCompositionLayerQuad quad[2] = {{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
-  if(hasImage) {
+  // SpaceWarp: the window as a projection layer with motion vectors and depth
+  XrCompositionLayerProjection      proj = {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+  XrCompositionLayerProjectionView  pv[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
+  XrCompositionLayerSpaceWarpInfoFB sw[2] = {{XR_TYPE_COMPOSITION_LAYER_SPACE_WARP_INFO_FB},{XR_TYPE_COMPOSITION_LAYER_SPACE_WARP_INFO_FB}};
+  if(warp) {
+    for(int eye=0; eye<2; ++eye) {
+      auto& w = sw[eye];
+      w.motionVectorSubImage.swapchain       = s.mvSwapchain[eye];
+      w.motionVectorSubImage.imageRect       = {{0,0},{int32_t(s.mvWidth),int32_t(s.mvHeight)}};
+      w.depthSubImage.swapchain              = s.depthSwapchain[eye];
+      w.depthSubImage.imageRect              = {{0,0},{int32_t(s.mvWidth),int32_t(s.mvHeight)}};
+      w.appSpaceDeltaPose                    = {{0,0,0,1},{0,0,0}};
+      w.minDepth                             = 0.f;
+      w.maxDepth                             = 1.f;
+      // Life-size portal: game depth in cm is real depth from the eye
+      w.nearZ                                = s.eyeNear[eye];
+      w.farZ                                 = 1000.f;
+
+      auto& v = pv[eye];
+      v.next                     = &w;
+      v.pose                     = s.eyePose[eye];
+      v.fov                      = s.eyeFov[eye];
+      v.subImage.swapchain       = s.swapchain[eye];
+      v.subImage.imageRect       = {{0,0},{int32_t(s.width),int32_t(s.height)}};
+      v.subImage.imageArrayIndex = 0;
+      }
+    proj.space     = s.localSpace;
+    proj.viewCount = 2;
+    proj.views     = pv;
+    layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&proj));
+    }
+
+  if(hasImage && !warp) {
     for(int eye=0; eye<2; ++eye) {
       auto& q = quad[eye];
       q.space                    = s.localSpace;
@@ -1220,6 +1405,10 @@ void      XrWindow::attach(Tempest::Device&) {}
 Tempest::Size XrWindow::resolution() const { return {}; }
 bool      XrWindow::beginFrame() { return false; }
 void      XrWindow::submit(bool) {}
+bool      XrWindow::isSpaceWarpSupported() const { return false; }
+void      XrWindow::setSpaceWarp(bool) {}
+Tempest::Attachment* XrWindow::motionTarget(uint8_t) { return nullptr; }
+Tempest::ZBuffer*    XrWindow::depthTarget(uint8_t) { return nullptr; }
 Tempest::Attachment* XrWindow::eyeTarget(uint8_t) { return nullptr; }
 bool      XrWindow::eyeView(uint8_t, float, Camera::EyeView&) const { return false; }
 void      XrWindow::setVerticalFov(float) {}

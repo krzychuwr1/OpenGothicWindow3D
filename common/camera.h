@@ -126,6 +126,10 @@ class Camera final {
       float         zNear = 0;
       };
     void               setEyeView(const EyeView* view);
+    // Game camera view without any eye offset
+    Tempest::Matrix4x4 baseView() const;
+    // View-projection of the current eye applied to another base view (e.g. the previous frame's)
+    Tempest::Matrix4x4 eyeViewProjectFrom(const Tempest::Matrix4x4& baseView) const;
 
   private:
     mutable Tempest::Vec3 shadowLight = {0,1,0};
@@ -133,6 +137,7 @@ class Camera final {
     struct {
       bool               active = false;
       Tempest::Vec3      pos;
+      Tempest::Vec3      offset;
       Tempest::Matrix4x4 proj;
       float              zNear = 0;
       } eye;

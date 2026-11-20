@@ -136,6 +136,8 @@ class MainWindow : public Tempest::Window {
     Tempest::Device&      device;
     std::optional<Tempest::Swapchain> swapchain;
     Tempest::Size         xrSize;
+    Tempest::Matrix4x4    prevBaseView;
+    bool                  prevBaseValid = false;
     GamepadInput          pad;
     Tempest::PointF       padLook;
     uint64_t              padTime = 0;

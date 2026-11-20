@@ -117,6 +117,12 @@ CommandLine::CommandLine(int argc, const char** argv) {
       if(i<argc)
         execCmds = argv[i];
       }
+    else if(arg=="-setting") {
+      if(i+3<argc) {
+        settingOverrides.push_back({argv[i+1], argv[i+2], argv[i+3]});
+        i += 3;
+        }
+      }
     else if(arg=="-perf") {
       ++i;
       if(i<argc)

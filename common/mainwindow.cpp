@@ -1444,6 +1444,12 @@ void MainWindow::renderFrame(bool xr) {
 
   // XR draws the scene once per eye, each eye in its own frame slot; the interface is painted once
   const int views = xr ? 2 : 1;
+  // Application SpaceWarp (Video settings) while a world is shown through the window
+  if(xr) {
+    const bool warp = Gothic::settingsGetI("INTERNAL","xrSpaceWarp")!=0 &&
+                      Gothic::inst().camera()!=nullptr && Gothic::inst().worldView()!=nullptr && !video.isActive();
+    XrWindow::inst()->setSpaceWarp(warp);
+    }
   for(int view=0; view<views; ++view) {
     auto& sync = fence[cmdId];
     if(xr) {
@@ -1499,6 +1505,14 @@ void MainWindow::renderFrame(bool xr) {
     auto enc = cmd.startEncoding(device);
     timing.encStart += nowUs()-ts;
     renderer.draw(backbuf,enc,cmdId,uiMesh[cmdId],numMesh[cmdId],inventory,video);
+    if(stereo) {
+      auto* motion = XrWindow::inst()->motionTarget(uint8_t(view));
+      auto* depth  = XrWindow::inst()->depthTarget (uint8_t(view));
+      if(motion!=nullptr && depth!=nullptr) {
+        const auto prev = camera->eyeViewProjectFrom(prevBaseValid ? prevBaseView : camera->baseView());
+        renderer.drawSpaceWarp(enc, *Gothic::inst().worldView(), *motion, *depth, prev);
+        }
+      }
     const uint64_t te = nowUs();
     timing.drawCall += te-ts;
     }
@@ -1511,6 +1525,16 @@ void MainWindow::renderFrame(bool xr) {
     if(!xr)
       device.present(*swapchain);
     cmdId = (cmdId+1u)%Resources::MaxFramesInFlight;
+    }
+
+  if(xr) {
+    // Motion vectors of the next frame are measured against this frame's game camera
+    if(auto camera = Gothic::inst().camera()) {
+      prevBaseView  = camera->baseView();
+      prevBaseValid = true;
+      } else {
+      prevBaseValid = false;
+      }
     }
 
   auto t = Application::tickCount();

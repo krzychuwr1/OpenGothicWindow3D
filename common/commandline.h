@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "game/constants.h"
 
@@ -56,6 +57,9 @@ class CommandLine {
     bool                debugSkip(std::string_view pass) const { return skipPasses.find(pass)!=std::string::npos; }
     // XR CPU/GPU performance level request: "low" (testing, battery and heat), default high
     std::string_view    xrPerfLevel() const { return perfLevel; }
+    // -setting SECTION KEY VALUE, applied over Gothic.ini at startup (testing)
+    struct SettingOverride { std::string section, key, value; };
+    const std::vector<SettingOverride>& settingsOverrides() const { return settingOverrides; }
 
     std::string         wrldDef;
 
@@ -72,6 +76,7 @@ class CommandLine {
     bool                gpuProfile   = false;
     std::string         skipPasses;
     std::string         perfLevel;
+    std::vector<SettingOverride> settingOverrides;
     bool                devmode      = false;
     bool                noMenu       = false;
     Benchmark           isBenchmark  = Benchmark::None;
