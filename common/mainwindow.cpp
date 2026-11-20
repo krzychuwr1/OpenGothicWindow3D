@@ -41,7 +41,11 @@ using namespace Tempest;
 
 MainWindow::MainWindow(Device& device)
   : Window(Maximized),device(device),
+#if defined(__ANDROID__)
+    pad([this](KeyEvent& e, bool) { AndroidApi::dispatchGamepadKey(*this,e); }),
+#else
     pad([this](KeyEvent& e, bool down) { if(down) keyDownEvent(e); else keyUpEvent(e); }),
+#endif
     atlas(device),rootMenu(keycodec),inventory(keycodec),
     dialogs(inventory),document(keycodec),
     console(*this),
