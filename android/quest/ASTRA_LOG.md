@@ -792,3 +792,7 @@ The host test preserved 2,452,657 drawable triples across 83,200 meshlets. Vulka
 ### Separate Android physical mouse selection from touchscreen targeting
 
 Physical mice report relative movement and clicks at the window center. The mobile menu interpreted those clicks as taps, selecting the center row regardless of wheel or keyboard selection. Tempest now gives physical mice an independent capture ID (`8e8f52ee`). Left click activates the highlighted row once, right click goes back, and touchscreen slot zero keeps positional targeting and dragging. The host input/menu fixture passed 77/77 checks versus 22/77 before. The uninstrumented Quest build linked. An actual Bluetooth mouse remains untested.
+
+### Restore signed instrument tuning in GothicKit playback
+
+DLS region tuning stores signed cents. Shifting the 16-bit field right by 16 discarded every correction. Reading the signed field and passing cents directly to the SoundFont generator restored the expected playback rates. Actual synthesized audio at seven tunings between −99 and +99 cents passed all 49 host checks (15 failed before). At −50 and +50 cents, a 44.1 kHz voice advanced 0.971532 and 1.029302 source samples per output sample, respectively. The previous converter advanced 1.0 in both cases. Soundtrack prevalence and listening on Quest remain unverified.
