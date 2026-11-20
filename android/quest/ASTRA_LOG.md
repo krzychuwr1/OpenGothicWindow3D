@@ -223,3 +223,9 @@ Kept the change for its GPU savings of about 0.88 ms per stereo frame in the tav
 Tempest's Vulkan barrier selected the depth-only attachment layout, while dynamic rendering declared the combined depth/stencil attachment layout. The device does not enable separate depth/stencil layouts. This affected the XR SpaceWarp depth target as well as ordinary depth attachments. Tempest `1b877926` uses the same combined layout for the writable transition, rendering and borrowed-image handoff.
 
 A desktop Vulkan readback used the production layout translator, dynamic rendering and two image formats. D32 float and packed D24/S8 both cleared to 0.25, transitioned through read-only and transfer-source layouts, returned the expected depth values, and transitioned back to their borrowed attachment layout. Android Release linked. This check ran without Vulkan validation layers.
+
+### GPU writes before CPU readback
+
+Tempest attached its host-read barrier to the flush immediately before an image-to-buffer copy. A fence wait and cache invalidation could then precede CPU access without a memory barrier after the transfer itself. The eye PNG tool uses this path. Tempest `4d94f7ea` accumulates the writing stages until command-buffer finalization and then publishes transfer, compute and graphics writes to host readers. A buffer without a tracked hazard ID is included.
+
+The committed command-order regression failed against the old tracker and passed against the new one in a standalone MSVC harness using the production tracker. It checks that the early flushes do not issue a host dependency, that all three writer stages appear in the final barrier and that the next empty recording inherits none of them. Android Release linked. Earlier Quest PNGs decoded correctly; they do not establish the memory ordering on all drivers.
