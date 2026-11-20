@@ -36,6 +36,7 @@ class GamepadInput final {
     Tempest::PointF look(const PadState& pad, uint64_t dtMs) const;
 
     void releaseAll();
+    void cancel();
 
   private:
     enum Out : uint8_t {
@@ -52,4 +53,5 @@ class GamepadInput final {
 
     KeySink sink;
     bool    state[O_Count] = {};
+    bool    cancelled[O_Count] = {};
   };

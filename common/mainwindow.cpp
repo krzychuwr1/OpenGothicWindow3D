@@ -1404,11 +1404,15 @@ void MainWindow::render(){
       // The game holds still while the headset is off or a system menu has the focus.
       const uint64_t tu = nowUs();
       xr->pollEvents();
-      if(xr->isFocused())
+      const bool focused = xr->isFocused();
+#if defined(__ANDROID__)
+      AndroidApi::setExternalInputFocus(focused);
+#endif
+      if(focused)
         updateFrame();
       else {
         if(padTime!=0) {
-          pad.releaseAll();
+          pad.cancel();
           clearInput();
           padLook = {};
           dMouse = {};

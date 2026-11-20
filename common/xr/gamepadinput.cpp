@@ -56,6 +56,10 @@ Event::KeyType GamepadInput::keyOf(Out o) {
   }
 
 void GamepadInput::set(Out o, bool down) {
+  if(cancelled[o]) {
+    cancelled[o] = down; // Wait for release before treating this as a new press.
+    return;
+    }
   if(state[o]==down)
     return;
   state[o] = down;
@@ -119,5 +123,13 @@ PointF GamepadInput::look(const PadState& p, uint64_t dtMs) const {
 
 void GamepadInput::releaseAll() {
   for(int i=0; i<O_Count; ++i)
-    set(Out(i),false);
+    if(state[i])
+      set(Out(i),false);
+  }
+
+void GamepadInput::cancel() {
+  for(int i=0; i<O_Count; ++i) {
+    cancelled[i] |= state[i];
+    state[i] = false;
+    }
   }
