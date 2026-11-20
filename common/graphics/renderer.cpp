@@ -2,6 +2,7 @@
 
 #if defined(__ANDROID__) && defined(OPENGOTHIC_XR)
 #include <Tempest/VulkanInterop>
+#include "xr/xrwindow.h"
 #endif
 
 #include <cstring>
@@ -796,6 +797,10 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
   prepareGi  (cmd, wview);
   prepareSurfels(cmd, wview);
 
+#if defined(__ANDROID__) && defined(OPENGOTHIC_XR)
+  if(lightingEye>=0)
+    XrWindow::inst()->prepareLightingRate(cmd,fId,uint8_t(lightingEye),uint32_t(sceneLinear.w()),uint32_t(sceneLinear.h()));
+#endif
   cmd.setFramebuffer({{sceneLinear, Tempest::Discard, Tempest::Preserve}}, {zbuffer, Tempest::Readonly});
   drawShadowResolve(cmd, wview);
   drawAmbient(cmd, wview);

@@ -43,6 +43,11 @@ class XrWindow final {
     // motion vectors and depth, the window is submitted as a projection layer and the runtime
     // renders every other display frame itself.
     bool              isSpaceWarpSupported() const;
+#ifdef OPENGOTHIC_XR
+    bool              isFoveationSupported() const;
+    void              prepareLightingRate(Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t slot,
+                                          uint8_t eye, uint32_t width, uint32_t height);
+#endif
     // Returns whether motion can use the previous view across this frame boundary.
     bool              prepareSpaceWarp(bool use, bool previousViewValid);
     Tempest::Attachment* motionTarget(uint8_t eye);

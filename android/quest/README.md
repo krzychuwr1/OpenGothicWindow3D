@@ -72,6 +72,12 @@ other display frame and the headset synthesises the rest from motion vectors and
 in the window looks like 72 fps while the game runs at 36. Details and limitations are in
 [EXPERIMENTS.md](EXPERIMENTS.md).
 
+**Foveation** in Video settings is Off by default. On supported headsets it shades peripheral
+sun, ambient and tiled point lighting at 2×2. A 25-degree cone around the direction your head faces
+stays at full rate in each eye. Looking sideways with your eyes alone can reveal coarser lighting
+at an edge. The setting works with both passthrough and the dusk environment, including SpaceWarp.
+Use `-setting INTERNAL xrFoveation 1` for a single run.
+
 ## Build from source
 
 Requirements: Android SDK with build-tools and a platform of API 34 or newer, NDK 27 or newer,

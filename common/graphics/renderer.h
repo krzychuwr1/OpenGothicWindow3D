@@ -25,6 +25,9 @@ class Renderer final {
     static std::string cpuReport();
     // The second view of a stereo frame reuses the first view's shadow maps
     void setSecondView(bool second) { secondView = second; }
+#ifdef OPENGOTHIC_XR
+    void setLightingEye(int eye) { lightingEye = eye; }
+#endif
     void setGizmo(bool enable, Tempest::Vec3 center, int mode);
     void setLightsHud(const Tempest::Texture2d* tex);
 
@@ -54,6 +57,9 @@ class Renderer final {
 
   private:
     Tempest::Attachment debugMotion;
+#ifdef OPENGOTHIC_XR
+    int lightingEye = -1;
+#endif
     bool secondView = false;
     bool motionVectors = false, historyValid = false;
     Tempest::Matrix4x4 prevEye;

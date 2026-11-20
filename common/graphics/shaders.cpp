@@ -199,6 +199,9 @@ void Shaders::compileShaders() noexcept {
     st.setZWriteEnabled(false);
     auto vs = GothicShader::get("triangle.vert.sprv");
     auto fs = GothicShader::get("light_tiled.frag.sprv");
+#ifdef OPENGOTHIC_XR
+    st.setShadingRateAttachmentEnabled(true);
+#endif
     lightsTiled = device.pipeline(Triangles, st, device.shader(vs.data,vs.len), device.shader(fs.data,fs.len));
   }
   if(opts.doRtScene) {
@@ -770,6 +773,9 @@ RenderPipeline Shaders::postEffect(std::string_view vsName, std::string_view fsN
   auto& device = Resources::device();
 
   RenderState stateFsq;
+#ifdef OPENGOTHIC_XR
+  stateFsq.setShadingRateAttachmentEnabled(fsName=="direct_light" || fsName=="direct_light_sh");
+#endif
   stateFsq.setZTestMode    (ztest);
   stateFsq.setZWriteEnabled(false);
 
@@ -854,6 +860,9 @@ RenderPipeline Shaders::ambientLightShader(std::string_view name) {
   auto& device = Resources::device();
 
   RenderState state;
+#ifdef OPENGOTHIC_XR
+  state.setShadingRateAttachmentEnabled(true);
+#endif
   state.setBlendSource  (RenderState::BlendMode::One);
   state.setBlendDest    (RenderState::BlendMode::SrcAlpha); // debug
   state.setZTestMode    (RenderState::ZTestMode::NoEqual);

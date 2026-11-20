@@ -4,6 +4,8 @@
 #if defined(__ANDROID__) && defined(OPENGOTHIC_XR)
 
 #include "gothic.h"
+#include "resources.h"
+#include "shadingrate.h"
 
 #include <Tempest/VulkanInterop>
 #include <Tempest/AndroidApi>
@@ -129,6 +131,12 @@ struct XrWindow::Impl {
 
   // Session
   VulkanNativeContext      vk;
+  VkInstance               graphicsInstance = VK_NULL_HANDLE;
+  VkExtent2D               rateTexel = {};
+  XrTime                   retryRateAfter = 0;
+  ShadingRateMap           lightingRate[Resources::MaxFramesInFlight];
+  V3                       headForward;
+  bool                     headValid = false;
   XrSession                session    = XR_NULL_HANDLE;
   XrSessionState           state      = XR_SESSION_STATE_UNKNOWN;
   bool                     running    = false;
@@ -424,6 +432,7 @@ bool XrWindow::Impl::createInstance() {
     XrVulkanGraphicsDeviceGetInfoKHR info = {XR_TYPE_VULKAN_GRAPHICS_DEVICE_GET_INFO_KHR};
     info.systemId       = self.system;
     info.vulkanInstance = vkInstance;
+    self.graphicsInstance = vkInstance;
     VkPhysicalDevice pdev = VK_NULL_HANDLE;
     ok(self.xrGetVulkanGraphicsDevice(self.instance, &info, &pdev), "xrGetVulkanGraphicsDevice2KHR");
     return pdev;
@@ -451,6 +460,27 @@ bool XrWindow::Impl::createInstance() {
              fsrp.maxFragmentSize.height);
       }
     VkResult vr = VK_ERROR_INITIALIZATION_FAILED;
+    self.rateTexel = ShadingRateMap::supported(self.graphicsInstance,pdev,*ci);
+    if(self.rateTexel.width!=0) {
+      VkDeviceCreateInfo copy = *ci;
+      std::vector<const char*> names(ci->ppEnabledExtensionNames,ci->ppEnabledExtensionNames+ci->enabledExtensionCount);
+      if(std::none_of(names.begin(),names.end(),[](const char* name){ return std::strcmp(name,VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME)==0; }))
+        names.push_back(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
+      copy.enabledExtensionCount = uint32_t(names.size());
+      copy.ppEnabledExtensionNames = names.data();
+      VkPhysicalDeviceFragmentShadingRateFeaturesKHR enable = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR};
+      enable.pipelineFragmentShadingRate = enable.attachmentFragmentShadingRate = VK_TRUE;
+      enable.pNext = const_cast<void*>(ci->pNext);
+      copy.pNext = &enable;
+      info.vulkanCreateInfo = &copy;
+      if(XR_SUCCEEDED(self.xrCreateVulkanDevice(self.instance,&info,out,&vr)) && vr==VK_SUCCESS) {
+        Log::i("OpenXR: lighting shading-rate attachment available, texels ",self.rateTexel.width,"x",self.rateTexel.height);
+        return vr;
+        }
+      Log::i("OpenXR: optional lighting shading rate unavailable, retrying device creation");
+      self.rateTexel = {};
+      info.vulkanCreateInfo = ci;
+      }
     if(!ok(self.xrCreateVulkanDevice(self.instance, &info, out, &vr), "xrCreateVulkanDeviceKHR"))
       return VK_ERROR_INITIALIZATION_FAILED;
     return vr;
@@ -864,6 +894,7 @@ void XrWindow::Impl::placeWindow() {
     cancelInput();
     }
   skipExtrapolation = !placed;
+  headValid = false;
   XrSpaceLocation head = {XR_TYPE_SPACE_LOCATION};
   if(!XR_SUCCEEDED(xrLocateSpace(viewSpace, localSpace, frame.predictedDisplayTime, &head)))
     return;
@@ -871,11 +902,13 @@ void XrWindow::Impl::placeWindow() {
                      (head.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
   if(!valid)
     return;
+  headValid = true;
+  headForward = rotate(head.pose.orientation,V3{0,0,-1});
   headPos = toV3(head.pose.position);
   if(placed)
     return;
 
-  V3 fwd = rotate(head.pose.orientation, V3{0,0,-1});
+  V3 fwd = headForward;
   fwd.y  = 0;
   fwd    = normalize(fwd);
   // The sweet spot: the window covers exactly the game's field of view, so nothing is cropped
@@ -1151,6 +1184,28 @@ bool XrWindow::eyeView(uint8_t eye, float verticalFovDeg, Camera::EyeView& out) 
   out.bottom = -halfH - ey;
   out.top    =  halfH - ey;
   return true;
+  }
+
+bool XrWindow::isFoveationSupported() const {
+  return impl->rateTexel.width!=0;
+  }
+
+void XrWindow::prepareLightingRate(Encoder<CommandBuffer>& cmd, uint8_t slot, uint8_t eye, uint32_t w, uint32_t h) {
+  auto& s = *impl;
+  if(!isFoveationSupported() || !s.placed || !s.headValid || !s.eyesValid || eye>=2 || slot>=Resources::MaxFramesInFlight)
+    return;
+  const auto e = s.eyeInWindow[eye];
+  if(!(e.z>0.f) || w==0 || h==0 || s.frame.predictedDisplayTime<s.retryRateAfter)
+    return;
+  const auto f = normalize(rotate(conjugate(s.windowPose.orientation),s.headForward));
+  auto& map = s.lightingRate[slot];
+  if(!map.prepare(s.vk,s.rateTexel,w,h,{s.windowWidth,s.windowHeight()},{e.x,e.y,e.z},{f.x,f.y,f.z})) {
+    // A transient allocation or flush failure should take both eyes back to full rate.
+    s.retryRateAfter = s.frame.predictedDisplayTime + 3'000'000'000LL;
+    Log::e("OpenXR: lighting rate map unavailable, retrying in three seconds");
+    return;
+    }
+  vulkanSetNextShadingRate(cmd,map.rate);
   }
 
 void XrWindow::pollEvents() {
@@ -1752,6 +1807,10 @@ Tempest::Size XrWindow::resolution() const { return Tempest::Size(0,0); }
 bool      XrWindow::beginFrame() { return false; }
 bool      XrWindow::submit(bool) { return false; }
 bool      XrWindow::isSpaceWarpSupported() const { return false; }
+#ifdef OPENGOTHIC_XR
+bool      XrWindow::isFoveationSupported() const { return false; }
+void      XrWindow::prepareLightingRate(Tempest::Encoder<Tempest::CommandBuffer>&, uint8_t, uint8_t, uint32_t, uint32_t) {}
+#endif
 bool      XrWindow::prepareSpaceWarp(bool, bool) { return false; }
 Tempest::Attachment* XrWindow::motionTarget(uint8_t) { return nullptr; }
 Tempest::ZBuffer*    XrWindow::depthTarget(uint8_t) { return nullptr; }

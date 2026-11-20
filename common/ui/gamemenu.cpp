@@ -301,7 +301,17 @@ GameMenu::GameMenu(MenuRoot &owner, KeyCodec& keyCodec, zenkit::DaedalusVm& vm, 
     }
   setPosition(int(infoX*float(w())),int(infoY*float(h())));
 
-  setSelection(Gothic::inst().isInGameAndAlive() ? menu->default_ingame : menu->default_outgame);
+  int initial = Gothic::inst().isInGameAndAlive() ? menu->default_ingame : menu->default_outgame;
+#ifdef OPENGOTHIC_XR
+  if(initial>=0 && initial<zenkit::IMenu::item_count && hItems[initial].name!=menu->items[initial]) {
+    for(int i=initial+1;i<zenkit::IMenu::item_count;++i)
+      if(hItems[i].name==menu->items[initial]) {
+        initial = i;
+        break;
+        }
+    }
+#endif
+  setSelection(initial);
   updateValues();
   slider = Resources::loadTexture("MENU_SLIDER_POS.TGA");
 
@@ -321,6 +331,7 @@ void GameMenu::resetVm(zenkit::DaedalusVm* inVm) {
   vm = inVm;
   for(int i=0; i<zenkit::IMenu::item_count; ++i){
     hItems[i].handle = nullptr;
+    hItems[i].name.clear();
     }
   if(vm==nullptr)
     return;
@@ -378,7 +389,53 @@ void GameMenu::initItems() {
       }
     updateItem(hItems[i]);
     }
+#ifdef OPENGOTHIC_XR
+  if(auto* xr = XrWindow::inst(); xr && xr->isFoveationSupported())
+    addFoveationChoice();
+#endif
   }
+
+#ifdef OPENGOTHIC_XR
+void GameMenu::addFoveationChoice() {
+  // Stock Video leaves one row between Resolution and Brightness. Preserve a mod's
+  // layout if it lacks those cells, their spacing, or two free slots at the end.
+  const auto end = std::end(hItems);
+  auto row = std::find_if(std::begin(hItems),end,[](const Item& i){ return i.handle && i.name=="MENUITEM_VID_RESOLUTION"; });
+  if(end-row<5 || !row[1].handle || row[1].name!="MENUITEM_VID_RESOLUTION_CHOICE" ||
+     !row[2].handle || row[2].name!="MENUITEM_VID_BRIGHTNESS" || end[-1].handle || end[-2].handle)
+    return;
+  const int spacing = (row[2].handle->pos_y-row[0].handle->pos_y)/2;
+  if(spacing<=0 || row[1].handle->pos_y+spacing>=row[2].handle->pos_y)
+    return;
+  std::move_backward(row+2,end-2,end);
+  for(int i=0;i<2;++i) {
+    auto& src = row[i];
+    auto& dst = row[i+2];
+    dst = Item{};
+    dst.name = i==0 ? "MENUITEM_XR_FOVEATION" : "MENUITEM_XR_FOVEATION_CHOICE";
+    dst.img = src.img;
+    dst.handle = std::make_shared<zenkit::IMenuItem>();
+    const auto& style = *src.handle;
+    auto& cell = *dst.handle;
+    cell.type = i==0 ? zenkit::MenuItemType::TEXT : zenkit::MenuItemType::CHOICEBOX;
+    cell.pos_x = style.pos_x;
+    cell.pos_y = style.pos_y+spacing;
+    cell.dim_x = style.dim_x;
+    cell.dim_y = style.dim_y;
+    cell.fontname = style.fontname;
+    cell.flags = i==0 ? zenkit::MenuItemFlag::SELECTABLE | zenkit::MenuItemFlag::EFFECTS : zenkit::MenuItemFlag::CENTERED;
+    if(i==0) {
+      cell.text[0] = "Foveation";
+      cell.text[1] = "Shades peripheral lighting at lower detail around the direction your head faces";
+      } else {
+      cell.text[0] = "Off|On";
+      cell.on_chg_set_option = "xrFoveation";
+      cell.on_chg_set_option_section = "INTERNAL";
+      updateItem(dst);
+      }
+    }
+  }
+#endif
 
 void GameMenu::paintEvent(PaintEvent &e) {
   const float scale = Gothic::interfaceScale(this);

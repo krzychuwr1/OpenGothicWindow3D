@@ -1507,6 +1507,7 @@ void MainWindow::renderFrame(bool xr) {
   const bool warp = xr && XrWindow::inst()->isSpaceWarpSupported() && Gothic::settingsGetI("INTERNAL","xrSpaceWarp")!=0 &&
                     Gothic::inst().camera()!=nullptr && Gothic::inst().worldView()!=nullptr && !video.isActive();
 #if defined(OPENGOTHIC_XR)
+  const bool foveate = xr && XrWindow::inst()->isFoveationSupported() && Gothic::settingsGetI("INTERNAL","xrFoveation")!=0;
   if(warp && Gothic::inst().camera()->takeCameraCut())
     eyeHistoryValid = false;
 #endif
@@ -1564,6 +1565,9 @@ void MainWindow::renderFrame(bool xr) {
       if(vectors)
         prevEyeViewProject[view] = camera->viewProj();
       }
+#ifdef OPENGOTHIC_XR
+    renderer.setLightingEye(foveate && stereo ? view : -1);
+#endif
     renderer.setSecondView(camera!=nullptr && view==1);
     CommandBuffer& cmd = commands[cmdId];
     {
@@ -1573,6 +1577,9 @@ void MainWindow::renderFrame(bool xr) {
       ~EndEye() {
         if(camera)
           camera->setEyeView(nullptr);
+#ifdef OPENGOTHIC_XR
+        renderer.setLightingEye(-1);
+#endif
         renderer.setSecondView(false);
         renderer.setMotionVectors(false,nullptr);
         }
