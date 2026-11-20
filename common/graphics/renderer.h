@@ -296,13 +296,13 @@ class Renderer final {
       Cmaa2               aa;
       HiZ                 hierarchy;
       };
-    static ViewportBuffers makeViewport(Tempest::Size size, Tempest::Size fullSize, bool aa, Tempest::TextureFormat depthFormat);
+    static ViewportBuffers makeViewport(Tempest::Size size, Tempest::Size fullSize, bool aa, Tempest::TextureFormat depthFormat, bool aaOnly = false);
     void swapViewport(ViewportBuffers& buffers);
 #ifdef OPENGOTHIC_XR
     std::future<ViewportBuffers>   pendingViewport;
     std::optional<ViewportBuffers> retiredViewport;
     Tempest::Fence*                retireAfter = nullptr;
-    Tempest::Size                  requestedViewport;
+    Tempest::Size                  viewportSize, requestedViewport, requestedSceneSize;
     uint64_t                       viewportRetryAfter = 0;
 #endif
 

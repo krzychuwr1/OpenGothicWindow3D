@@ -248,11 +248,6 @@ void Renderer::setupSettings() {
     settings.giMethod = GiMethod::None;
     }
 
-  if(settings.giMethod!=GiMethod::None) {
-    // need a projective shadow, for gi
-    resetShadowmap();
-    }
-
   resetSkyFog();
   resetShadowmap();
   }
@@ -438,14 +433,12 @@ void Renderer::prepareUniforms(WorldView& wview) {
   wview.setWindEnabled(settings.zWindEnabled, settings.windPeriod);
   }
 
-Renderer::ViewportBuffers Renderer::makeViewport(Size res, Size fullRes, bool aa, TextureFormat depthFormat) {
+Renderer::ViewportBuffers Renderer::makeViewport(Size res, Size fullRes, bool aa, TextureFormat depthFormat, bool aaOnly) {
   auto& device = Resources::device();
   ViewportBuffers out;
   out.fullSize = fullRes;
   const uint32_t w = uint32_t(res.w);
   const uint32_t h = uint32_t(res.h);
-
-  out.linear = device.attachment(TextureFormat::R11G11B10UF,w,h);
 
   if(aa) {
 #ifdef OPENGOTHIC_XR
@@ -460,7 +453,10 @@ Renderer::ViewportBuffers Renderer::makeViewport(Size res, Size fullRes, bool aa
     out.aa.controlBuffer              = device.ssbo(nullptr, 5 * sizeof(uint32_t));
     out.aa.indirectBuffer             = device.ssbo(nullptr, sizeof(DispatchIndirectCommand) + sizeof(DrawIndirectCommand));
     }
+  if(aaOnly)
+    return out;
 
+  out.linear = device.attachment(TextureFormat::R11G11B10UF,w,h);
   out.z = device.zbuffer(depthFormat,w,h);
   if(res!=fullRes)
     out.uiZ = device.zbuffer(depthFormat, fullRes); else
@@ -489,6 +485,9 @@ Renderer::ViewportBuffers Renderer::makeViewport(Size res, Size fullRes, bool aa
   }
 
 void Renderer::swapViewport(ViewportBuffers& b) {
+#ifdef OPENGOTHIC_XR
+  std::swap(viewportSize,b.fullSize);
+#endif
   std::swap(sceneLinear,b.linear);
   std::swap(sceneOpaque,b.opaque);
   std::swap(sceneDepth,b.depth);
@@ -505,25 +504,48 @@ void Renderer::swapViewport(ViewportBuffers& b) {
 Size Renderer::prepareXrViewport(Size current, Size desired, Fence* previous) {
   if(retiredViewport && (retireAfter==nullptr || retireAfter->wait(0)))
     retiredViewport.reset();
+  if(retiredViewport)
+    return current;
+  const bool live = viewportSize==current;
+  const Size desiredScene = internalResolution(desired);
+  const bool sceneChange = desired!=current || (live && desiredScene!=zbuffer.size());
+  const bool aaActive = !cmaa2.workingEdges.isEmpty();
   try {
     if(pendingViewport.valid()) {
       if(pendingViewport.wait_for(std::chrono::seconds(0))!=std::future_status::ready)
         return current;
       auto next = pendingViewport.get();
       const bool hasAa = !next.aa.workingEdges.isEmpty();
-      if(desired!=current && next.z.size()==internalResolution(next.fullSize) &&
-         hasAa==settings.aaEnabled) {
-        const Size result = next.fullSize;
-        swapViewport(next);
-        retiredViewport.emplace(std::move(next));
-        retireAfter = previous;
-        return result;
+      if(requestedSceneSize==internalResolution(next.fullSize) && hasAa==settings.aaEnabled) {
+        if(next.z.isEmpty()) {
+          // Only the AA buffers were requested. A later resize or save render may
+          // have changed which scene these resources would be used with.
+          if(live && !sceneChange && !aaActive && next.fullSize==current) {
+            cmaa2 = std::move(next.aa);
+            Log::i("XR scene ",zbuffer.w(),"x",zbuffer.h()," CMAA2 on");
+            return current;
+            }
+          } else if(sceneChange && (desired!=current || next.fullSize==current)) {
+          const Size result = next.fullSize;
+          swapViewport(next);
+          retiredViewport.emplace(std::move(next));
+          retireAfter = previous;
+          Log::i("XR scene ",zbuffer.w(),"x",zbuffer.h()," CMAA2 ",hasAa ? "on" : "off");
+          return result;
+          }
         }
       }
-    if(desired==current || retiredViewport || Application::tickCount()<viewportRetryAfter)
+    if(aaActive && !settings.aaEnabled) {
+      std::swap(cmaa2,retiredViewport.emplace().aa);
+      retireAfter = previous;
+      Log::i("XR scene ",zbuffer.w(),"x",zbuffer.h()," CMAA2 off");
+      return current;
+      }
+    if((!sceneChange && (!live || aaActive==settings.aaEnabled)) || Application::tickCount()<viewportRetryAfter)
       return current;
     requestedViewport = desired;
-    pendingViewport = std::async(std::launch::async,makeViewport,internalResolution(desired),desired,settings.aaEnabled,zBufferFormat);
+    requestedSceneSize = desiredScene;
+    pendingViewport = std::async(std::launch::async,makeViewport,desiredScene,desired,settings.aaEnabled,zBufferFormat,!sceneChange);
     return current;
     }
   catch(const std::bad_alloc&) {}
@@ -532,7 +554,8 @@ Size Renderer::prepareXrViewport(Size current, Size desired, Fence* previous) {
        e.code()!=std::errc::resource_unavailable_try_again)
       throw;
     }
-  Log::e("XR viewport allocation failed at ",requestedViewport.w,"x",requestedViewport.h);
+  Log::e("XR viewport allocation failed at ",requestedViewport.w,"x",requestedViewport.h,
+         " scene ",requestedSceneSize.w,"x",requestedSceneSize.h);
   viewportRetryAfter = Application::tickCount()+3000;
   return current;
   }
@@ -574,28 +597,30 @@ void Renderer::resetViewport(Size res, Size fullRes) {
 void Renderer::resetShadowmap() {
   auto& device = Resources::device();
 
-  for(int i=0; i<Resources::ShadowLayers; ++i)
-    Resources::recycle(std::move(shadowMap[i]));
-
   const bool forceSm1 = (settings.giMethod==GiMethod::Probes || settings.giMethod==GiMethod::IrrC ||
                          settings.pathTraceEnabled || sky.quality==PathTrace);
+  const Size size(int(settings.shadowResolution),int(settings.shadowResolution));
   for(int i=0; i<Resources::ShadowLayers; ++i) {
-    if(!(i==1 && forceSm1)) {
-      if(settings.vsmEnabled && !(settings.rtsmEnabled && i==1))
-        continue; //TODO: support vsm in gi code
-      if(settings.rtsmEnabled && !(sky.quality!=None && i==1))
-        continue; //TODO: support vsm in gi code
-      }
-    shadowMap[i] = device.zbuffer(shadowFormat, settings.shadowResolution, settings.shadowResolution);
-    }
+    const bool ordinary = (!settings.vsmEnabled || (settings.rtsmEnabled && i==1)) &&
+                          (!settings.rtsmEnabled || (sky.quality!=None && i==1));
+    const bool needed = ordinary || (i==1 && forceSm1);
 #if defined(OPENGOTHIC_XR)
-  for(int i=0; i<Resources::ShadowLayers; ++i) {
-    Resources::recycle(std::move(shadowStatic[i]));
-    if(!shadowMap[i].isEmpty())
-      shadowStatic[i] = device.zbuffer(shadowFormat, settings.shadowResolution, settings.shadowResolution);
+    // A video option broadcasts the same settings signal as a shadow technique
+    // change. Redraw the cache, but retain a matching pair of depth images.
     shadowStaticValid[i] = false;
-    }
+    if(needed && shadowMap[i].size()==size && shadowMap[i].format()==shadowFormat &&
+       shadowStatic[i].size()==size && shadowStatic[i].format()==shadowFormat)
+      continue;
+    auto nextStatic = needed ? device.zbuffer(shadowFormat,size) : ZBuffer();
 #endif
+    auto next = needed ? device.zbuffer(shadowFormat,size) : ZBuffer();
+    Resources::recycle(std::move(shadowMap[i]));
+    shadowMap[i] = std::move(next);
+#if defined(OPENGOTHIC_XR)
+    Resources::recycle(std::move(shadowStatic[i]));
+    shadowStatic[i] = std::move(nextStatic);
+#endif
+    }
   }
 
 void Renderer::resetSkyFog() {
@@ -788,7 +813,14 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
   shaders.waitCompiler();
 
   const auto res = internalResolution(result.size());
-  if(res!=zbuffer.size() || settings.aaEnabled!=!cmaa2.workingEdges.isEmpty()) {
+  bool resize = res!=zbuffer.size() || settings.aaEnabled!=!cmaa2.workingEdges.isEmpty();
+#ifdef OPENGOTHIC_XR
+  // Same-size eyes and save thumbnails keep their buffers until the worker succeeds.
+  // A different full extent needs matching UI depth and AA resolve resources.
+  if(XrWindow::inst()!=nullptr)
+    resize = viewportSize!=result.size();
+#endif
+  if(resize) {
     resetViewport(res, result.size());
     }
 
@@ -947,7 +979,7 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
     drawFog(cmd, wview);
     }
 
-  if(settings.aaEnabled) {
+  if(!cmaa2.workingEdges.isEmpty() && settings.aaEnabled) {
     cmd.setDebugMarker("CMAA2 & Tonemapping");
     drawCMAA2(result, cmd, wview);
     } else {
@@ -1151,7 +1183,11 @@ void Renderer::drawSunMoon(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const 
   const float GSunIntensity  = wview.sky().sunIntensity();
   const float GMoonIntensity = wview.sky().moonIntensity();
 
+#ifdef OPENGOTHIC_XR
+  const float scale          = float(zbuffer.w())/float(viewportSize.w);
+#else
   const float scale          = internalResolutionScale();
+#endif
   const float sunSize        = settings.sunSize  * scale;
   const float moonSize       = settings.moonSize * scale;
   const float intencity      = isSun ? 0.07f : 0.4f;
