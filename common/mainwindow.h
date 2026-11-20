@@ -116,6 +116,7 @@ class MainWindow : public Tempest::Window {
     void     renderFrame(bool xr);
     void     updateFrame(std::optional<uint64_t> displayDt = std::nullopt);
     void     runStartupCommands();
+    bool runHeroCommand(std::string_view cmd);
 
     struct FrameTiming {
       uint64_t frames = 0, total = 0, wait = 0, update = 0, gpuWait = 0, record = 0, present = 0;

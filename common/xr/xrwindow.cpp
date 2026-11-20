@@ -113,7 +113,7 @@ static std::array<float,4> windowFovMargins(const XrView& view, const XrPosef& w
   }
 
 // Parts of the window frame a hand can grab
-enum class Grip : uint8_t { None, Handle, CornerLeft, CornerRight, Environment, Dim };
+enum class Grip : uint8_t { None, Handle, CornerLeft, CornerRight, Environment, Dim, Aspect };
 
 struct Hand {
   XrPath         path        = XR_NULL_PATH;
@@ -231,6 +231,8 @@ struct XrWindow::Impl {
   XrSwapchain              cornerSwapchain = XR_NULL_HANDLE;
   XrSwapchain              panorama = XR_NULL_HANDLE;
   XrSwapchain              environmentButton = XR_NULL_HANDLE;
+  XrSwapchain              aspectButton = XR_NULL_HANDLE; // aspect lock: open/closed padlock, idle or hovered
+  bool                     aspectReady = false, aspectLocked = false;
   XrSwapchain              dimSlider = XR_NULL_HANDLE;
   static constexpr int     RailW = 160, KnobW = 24, SliderRows = 16;
   static constexpr float   DimLeft = 0.09f, DimTravel = 0.20f;
@@ -318,6 +320,8 @@ struct XrWindow::Impl {
   int sliderRow() const;
   void fillSlider(VkCommandBuffer cmd, VkFence fence);
   V3   buttonCenter() const { return handleCenter() + V3{0,-0.10f,0}; }
+  V3   aspectCenter() const { return buttonCenter() + V3{-0.12f,0,0}; }
+  void fillAspect(VkCommandBuffer cmd, VkFence fence);
   Grip targetAt(float x, float y) const;
   V3   handleCenter() const;
   bool releaseEyes();
@@ -373,6 +377,8 @@ XrWindow::Impl::~Impl() {
     xrDestroySwapchain(dimSlider);
   if(environmentButton!=XR_NULL_HANDLE)
     xrDestroySwapchain(environmentButton);
+  if(aspectButton!=XR_NULL_HANDLE)
+    xrDestroySwapchain(aspectButton);
   if(handleSwapchain!=XR_NULL_HANDLE)
     xrDestroySwapchain(handleSwapchain);
   if(cornerSwapchain!=XR_NULL_HANDLE)
@@ -780,6 +786,10 @@ void XrWindow::Impl::createSwapchains() {
   info.height      = CornerSize;
   info.arraySize   = 4;
   cornerSwapchain = makeSwapchain(session, info, "corner swapchain");
+  info.width       = ButtonW;
+  info.height      = ButtonH;
+  info.arraySize   = 4;
+  aspectButton = makeSwapchain(session, info, "aspect lock swapchain");
 
   if(hasPanorama) {
     info.width = SkyW;
@@ -1533,7 +1543,7 @@ void XrWindow::Impl::updateInput() {
           }
         continue;
         }
-      if(!canManipulate || grabbed==Grip::Environment) {
+      if(!canManipulate || grabbed==Grip::Environment || grabbed==Grip::Aspect) {
         lastGrabTime = frame.predictedDisplayTime;
         continue;
         }
@@ -1563,8 +1573,17 @@ void XrWindow::Impl::updateInput() {
         const V3    l     = toLocal(windowPose, point);
         const float dx = (l.x-grabWindow.x)*(grabWindow.x<0.f ? -2.f : 2.f);
         const float dy = (l.y-grabWindow.y)*(grabWindow.y<0.f ? -2.f : 2.f);
-        windowWidth    = std::clamp(grabExtent.x+dx, 0.6f, 6.f);
-        physicalHeight = std::clamp(grabExtent.y+dy, 0.3375f, 3.375f);
+        if(aspectLocked) {
+          // Locked: both edges follow the average stretch, so the shape stays
+          const float k = std::clamp(((grabExtent.x+dx)/grabExtent.x + (grabExtent.y+dy)/grabExtent.y)*0.5f,
+                                     std::max(0.6f/grabExtent.x, 0.3375f/grabExtent.y),
+                                     std::min(6.f/grabExtent.x, 3.375f/grabExtent.y));
+          windowWidth    = grabExtent.x*k;
+          physicalHeight = grabExtent.y*k;
+          } else {
+          windowWidth    = std::clamp(grabExtent.x+dx, 0.6f, 6.f);
+          physicalHeight = std::clamp(grabExtent.y+dy, 0.3375f, 3.375f);
+          }
         }
       }
     else if(canManipulate && grabbedBy<0 && h.hover!=Grip::None && (gripDown || startTrigger)) {
@@ -1577,6 +1596,10 @@ void XrWindow::Impl::updateInput() {
       grabWindow = toLocal(windowPose, h.hit);
       if(grabbed==Grip::Dim) {
         moveDim(h.hit);
+        } else if(grabbed==Grip::Aspect) {
+        aspectLocked = !aspectLocked;
+        Gothic::settingsSetI("INTERNAL", "xrAspectLock", aspectLocked ? 1 : 0);
+        Gothic::flushSettings();
         } else if(grabbed==Grip::Environment) {
         if(setEnvironment(!immersive)) {
           restoreSky = false;
@@ -1660,6 +1683,9 @@ Grip XrWindow::Impl::targetAt(float x, float y) const {
   const V3 hc = handleCenter();
   if(handleReady && std::abs(x-hc.x)<0.16f && std::abs(y-hc.y)<0.045f)
     return Grip::Handle;
+  const V3 lock = aspectCenter();
+  if(aspectReady && std::abs(x-lock.x)<0.05f && std::abs(y-lock.y)<0.04f)
+    return Grip::Aspect;
   const V3 button = buttonCenter();
   if(buttonReady && roomAvailable() && std::abs(x-button.x)<0.065f && std::abs(y-button.y)<0.04f)
     return Grip::Environment;
@@ -1729,12 +1755,15 @@ bool XrWindow::eyeView(uint8_t eye, float verticalFovDeg, Camera::EyeView& out) 
   auto& s = *impl;
   if(!s.eyesValid || eye>1)
     return false;
-  // Scale-picture stretches the image in the window plane. Transform lateral eye motion by
+  // Scale picture magnifies the image in the window plane. Transform lateral eye motion by
   // the inverse magnification as well, so stereo still converges at the physical window.
   // Eye distance and depth stay in metres in both modes, including for SpaceWarp.
   const float units = 100.f;
-  const float unitsX = s.scalePicture ? units*(2.4f/s.windowWidth) : units;
-  const float unitsY = s.scalePicture ? units*(1.35f/s.windowHeight()) : units;
+  // Scale picture: one scale for both axes, chosen so the 2.4 x 1.35 m reference view always
+  // fits; a wider window shows more to the sides, a taller one more above and below.
+  const float fit    = std::max(2.4f/s.windowWidth, 1.35f/s.windowHeight());
+  const float unitsX = s.scalePicture ? units*fit : units;
+  const float unitsY = unitsX;
   const float halfW = s.windowWidth*0.5f*unitsX;
   const float halfH = s.windowHeight()*0.5f*unitsY;
   const float plane = Impl::portalDistance(verticalFovDeg)*units;
@@ -1870,6 +1899,8 @@ void XrWindow::drawSurfaceLight(Renderer& renderer, Encoder<CommandBuffer>& cmd,
     }
   if(s.depthReady)
     s.environmentDepth.update(s.localSpace,s.frame.predictedDisplayTime);
+  if(s.environmentDepth.takeFailure())
+    Gothic::inst().onPrint("Surface light: no table or floor found below the window. Move the window above one.");
   if(!s.environmentDepth.surface())
     return;
   const auto& plane = *s.environmentDepth.surface();
@@ -2213,7 +2244,7 @@ void XrWindow::Impl::fillStaticImages() {
   resources.fence = fence;
 
   // All artwork uploads are synchronous and share these resources for this frame only.
-  for(auto fill : {&Impl::fillHandle, &Impl::fillCorners, &Impl::fillEnvironment, &Impl::fillSlider}) {
+  for(auto fill : {&Impl::fillHandle, &Impl::fillCorners, &Impl::fillEnvironment, &Impl::fillSlider, &Impl::fillAspect}) {
     try {
       (this->*fill)(cmd,fence);
       }
@@ -2246,7 +2277,7 @@ void XrWindow::Impl::fillEnvironment(VkCommandBuffer cmd, VkFence fence) {
           const float light = std::max(ink,edge*0.62f);
           px[(size_t(layer)*ButtonH+y)*ButtonW+x] =
               pixel(0.12f+0.84f*light,0.15f+0.82f*light,0.20f+0.8f*light,
-                    hover ? 0.97f : 0.58f+0.27f*light, 34.f-rim);
+                    hover ? 0.97f : 0.12f+0.16f*light, 34.f-rim); // faint until hovered
           }
       }
     buttonReady = uploadStatic(vk, cmd, fence, environmentButton, ButtonW, ButtonH, 4, px);
@@ -2255,6 +2286,36 @@ void XrWindow::Impl::fillEnvironment(VkCommandBuffer cmd, VkFence fence) {
   // never strand a wearer in VR when passthrough is available.
   if(buttonReady && Gothic::settingsGetI("INTERNAL","xrEnvironment")==1)
     restoreSky = !setEnvironment(true);
+  }
+
+void XrWindow::Impl::fillAspect(VkCommandBuffer cmd, VkFence fence) {
+  aspectLocked = Gothic::settingsGetI("INTERNAL","xrAspectLock")!=0;
+  if(aspectButton==XR_NULL_HANDLE)
+    return;
+  // A padlock in the style of the environment button: open (resize freely) or closed (keep shape)
+  std::vector<uint32_t> px(size_t(ButtonW)*ButtonH*4);
+  for(unsigned layer=0; layer<4; ++layer) {
+    const bool locked = layer>=2, hover = (layer&1)!=0;
+    for(uint32_t y=0; y<ButtonH; ++y)
+      for(uint32_t x=0; x<ButtonW; ++x) {
+        const float u = float(x)+0.5f-float(ButtonW)*0.5f;
+        const float v = float(y)+0.5f-float(ButtonH)*0.5f;
+        const float rim = std::hypot(std::max(std::abs(u)-22.f,0.f), v);
+        // Body: a rounded block; shackle: an arch above it, lifted and shifted when open
+        const float body = std::max(std::abs(u)-11.f, std::abs(v-5.f)-8.f);
+        const float sx = locked ? 0.f : 5.f, sy = locked ? 0.f : -5.f;
+        const float au = u-sx, av = v-sy+3.f;
+        const float arch = av<0.f ? std::abs(std::hypot(au,av)-8.f)-2.f
+                                  : std::abs(std::abs(au)-8.f)-2.f + (av>4.f ? 99.f : 0.f);
+        const float ink = std::clamp(0.5f-std::min(body,arch),0.f,1.f);
+        const float edge = std::clamp(1.5f-std::abs(rim-32.f),0.f,1.f);
+        const float light = std::max(ink,edge*0.62f);
+        px[(size_t(layer)*ButtonH+y)*ButtonW+x] =
+            pixel(0.12f+0.84f*light,0.15f+0.82f*light,0.20f+0.8f*light,
+                  hover ? 0.97f : 0.12f+0.16f*light, 34.f-rim); // faint until hovered
+        }
+    }
+  aspectReady = uploadStatic(vk, cmd, fence, aspectButton, ButtonW, ButtonH, 4, px);
   }
 
 void XrWindow::Impl::fillSlider(VkCommandBuffer cmd, VkFence fence) {
@@ -2279,7 +2340,7 @@ void XrWindow::Impl::fillSlider(VkCommandBuffer cmd, VkFence fence) {
       const float ink = knob ? std::clamp(radius-2.f-d,0.f,1.f) :
                                std::clamp(1.35f-std::abs(d-radius+1.f),0.f,1.f)*0.45f;
       px[size_t(y)*width+size_t(x)] = pixel(0.12f+0.83f*ink,0.15f+0.82f*ink,0.2f+0.8f*ink,
-                                    fade*(knob ? 0.96f : 0.82f),radius-d+0.5f);
+                                    fade*(knob ? 0.96f : 0.55f),radius-d+0.5f);
       }
     }
   sliderReady = uploadStatic(vk,cmd,fence,dimSlider,width,height,1,px);
@@ -2294,7 +2355,8 @@ void XrWindow::Impl::fillHandle(VkCommandBuffer cmd, VkFence fence) {
     std::vector<uint32_t> px(size_t(w)*h*3);
     const float r   = float(h)*0.5f - 2.f;
     const float len = float(w)*0.5f - float(h)*0.5f;
-    const struct { float r,g,b,o; } st[3] = {{0.9f,0.9f,0.9f,0.45f}, {1.f,1.f,1.f,0.9f}, {0.8f,0.9f,1.f,1.f}};
+    // Idle: faint, so it does not draw the eye; hovered and held: clearly visible
+    const struct { float r,g,b,o; } st[3] = {{0.9f,0.9f,0.9f,0.16f}, {1.f,1.f,1.f,0.9f}, {0.8f,0.9f,1.f,1.f}};
     for(uint32_t l=0; l<3; ++l)
       for(uint32_t y=0; y<h; ++y)
         for(uint32_t x=0; x<w; ++x) {
@@ -2454,7 +2516,7 @@ bool XrWindow::submit(bool rendered) {
     }
 
   // Background, eyes, button, slider rail and thumb, handle and corner brackets.
-  std::array<const XrCompositionLayerBaseHeader*,10> layers;
+  std::array<const XrCompositionLayerBaseHeader*,12> layers;
   uint32_t layerCount = 0;
   auto addLayer = [&](const auto& layer) {
     layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer);
@@ -2576,6 +2638,20 @@ bool XrWindow::submit(bool rendered) {
     button.pose.position = toXr(toWorld(s.windowPose, s.buttonCenter()));
     button.size = {0.104f,0.065f};
     addLayer(button);
+    }
+  XrCompositionLayerQuad lockButton = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+  if(s.aspectReady && hasImage) {
+    const bool hover = s.grabbed==Grip::Aspect || s.hands[0].hover==Grip::Aspect || s.hands[1].hover==Grip::Aspect;
+    lockButton.layerFlags = chromeFlags;
+    lockButton.space = s.localSpace;
+    lockButton.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    lockButton.subImage.swapchain = s.aspectButton;
+    lockButton.subImage.imageRect.extent = {int32_t(Impl::ButtonW), int32_t(Impl::ButtonH)};
+    lockButton.subImage.imageArrayIndex = (s.aspectLocked ? 2u : 0u) + (hover ? 1u : 0u);
+    lockButton.pose = s.windowPose;
+    lockButton.pose.position = toXr(toWorld(s.windowPose, s.aspectCenter()));
+    lockButton.size = {0.104f,0.065f};
+    addLayer(lockButton);
     }
   XrCompositionLayerQuad slider[2] = {{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
   const int row = s.sliderRow();

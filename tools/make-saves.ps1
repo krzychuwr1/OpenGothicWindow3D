@@ -5,7 +5,7 @@
 .DESCRIPTION
   For each place the game starts a new game without the menu, teleports the hero, sets the time
   and saves into a fixed slot, then quits. The saves appear in Load game with the place as name.
-  Slots 1-9 are left alone; the places use slots 10 and up and overwrite earlier ones there.
+  Slots 1-4 are left alone; slots 5-9 hold later-chapter heroes with gear, 10-19 places.
   Runs at low clocks, one place at a time; the headset must be awake (the script keeps it on).
 
 .EXAMPLE
@@ -19,8 +19,23 @@ param(
 $ErrorActionPreference = 'Stop'
 $questSerial = & (Join-Path $PSScriptRoot 'install-quest.ps1') -GetQuestSerial
 
+# Hero setups for the later-chapter saves (startup commands: give, equip, guild, talent, attr)
+$paladin = 'set var KAPITEL 3;guild 1;attr str 120;attr dex 60;attr hp 450;talent 2 2;talent 4 1;' +
+           'equip ITAR_PAL_M;equip ITMW_2H_PAL_SWORD;equip ITRW_CROSSBOW_H_02;give ITRW_BOLT 200;give ITPO_HEALTH_03 10'
+$mage    = 'set var KAPITEL 4;guild 4;talent 7 6;attr mana 320;attr hp 320;equip ITAR_KDF_H;' +
+           'equip ITRU_FIREBOLT;equip ITRU_INSTANTFIREBALL;equip ITRU_ICEBOLT;equip ITRU_LIGHTNINGFLASH;' +
+           'equip ITRU_FIRESTORM;equip ITRU_ICEWAVE;equip ITRU_FIRERAIN;equip ITRU_SUMDEMON;equip ITRU_LIGHTHEAL;' +
+           'give ITPO_MANA_03 20;give ITPO_HEALTH_03 10'
+$hunter  = 'set var KAPITEL 5;guild 6;attr str 160;attr dex 160;attr hp 650;talent 1 2;talent 3 2;' +
+           'equip ITAR_DJG_H;equip ITMW_1H_SPECIAL_03;equip ITRW_BOW_H_04;give ITRW_ARROW 300;give ITPO_HEALTH_03 10'
+
 # slot, name, waypoint, time, extra console commands
 $places = @(
+  @(5,  'Chapter 3: paladin, two-hander, crossbow', 'NW_CITY_UPTOWNPARADE_03', '12 0',  $paladin),
+  @(6,  'Chapter 4: fire mage, runes up to circle 6', 'NW_MONASTERY_PLACE_01', '10 0', $mage),
+  @(7,  'Chapter 5: dragon hunter, sword and bow',  'NW_PASS_01',              '15 0',  $hunter),
+  @(8,  'Fight: fire mage vs skeletons (night)',   'NW_TAVERNE',              '22 0',  "$mage;insert SKELETON;insert SKELETON;insert SKELETONMAGE"),
+  @(9,  'Fight: paladin vs orcs',                  'NW_PASS_01',              '13 0',  "$paladin;insert ORCWARRIOR_ROAM;insert ORCWARRIOR_ROAM;insert WOLF"),
   @(10, 'Khorinis: main street (noon)',      'NW_CITY_MAINSTREET_02',      '12 0',  ''),
   @(11, 'Khorinis: merchant quarter (noon)', 'NW_CITY_MERCHANT_PATH_02',   '12 0',  ''),
   @(12, 'Khorinis: upper quarter (noon)',    'NW_CITY_UPTOWNPARADE_03',    '12 0',  ''),

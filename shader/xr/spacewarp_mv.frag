@@ -39,5 +39,7 @@ void main() {
     prev = push.prevViewProject*vec4(world, 1.0);
     }
   outMotion = prev.w>1e-6 ? vec4(ndc-prev.xy/prev.w, z==1.0 ? 0.0 : z-prev.z/prev.w, 0.0) : vec4(0);
+  // Meta's runtime reads vectors with +y up (OpenGL NDC) also on Vulkan, where NDC +y is down
+  outMotion.y = -outMotion.y;
   gl_FragDepth = z;
   }

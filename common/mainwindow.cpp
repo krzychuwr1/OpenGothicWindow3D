@@ -1496,6 +1496,81 @@ void MainWindow::FrameTiming::report() {
 #endif
   }
 
+// Development: set up the hero for test saves (see tools/make-saves.ps1). Commands:
+//   give ITEM [COUNT]   add items to the inventory
+//   equip ITEM          add one if missing, then wear, wield or ready it (armour, weapons, runes)
+//   guild NUMBER        true and current guild (1 paladin, 4 fire mage, 6 dragon hunter, ...)
+//   talent NUMBER LEVEL talent skill (1 one-handed, 2 two-handed, 3 bow, 4 crossbow, 7 magic circle)
+//   attr NAME VALUE     str, dex, hp or mana: sets the maximum and fills it
+bool MainWindow::runHeroCommand(std::string_view cmd) {
+  auto* world = Gothic::inst().world();
+  auto* hero  = Gothic::inst().player();
+  if(world==nullptr || hero==nullptr)
+    return false;
+  std::vector<std::string> arg;
+  for(size_t i=0; i<cmd.size();) {
+    size_t e = cmd.find(' ',i);
+    if(e==std::string_view::npos)
+      e = cmd.size();
+    if(e>i)
+      arg.emplace_back(cmd.substr(i,e-i));
+    i = e+1;
+    }
+  if(arg.empty())
+    return false;
+  auto num = [&](size_t i, int def) { return i<arg.size() ? std::atoi(arg[i].c_str()) : def; };
+  auto item = [&](size_t i) -> size_t {
+    if(i>=arg.size())
+      return size_t(-1);
+    const size_t id = world->script().findSymbolIndex(arg[i]);
+    if(id==size_t(-1))
+      Log::e("startup command: unknown item ",arg[i]);
+    return id;
+    };
+  if(arg[0]=="give" || arg[0]=="equip") {
+    const size_t id = item(1);
+    if(id==size_t(-1))
+      return false;
+    const bool equip = arg[0]=="equip";
+    if(!equip || hero->inventory().itemCount(id)==0)
+      hero->addItem(id, size_t(std::max(1,num(2,1))));
+    if(equip)
+      hero->useItem(id);
+    return true;
+    }
+  if(arg[0]=="guild" && arg.size()>=2) {
+    hero->setTrueGuild(num(1,0));
+    hero->handle().guild = num(1,0);
+    return true;
+    }
+  if(arg[0]=="talent" && arg.size()>=3) {
+    hero->setTalentSkill(Talent(num(1,0)), num(2,0));
+    return true;
+    }
+  if(arg[0]=="attr" && arg.size()>=3) {
+    const int v = num(2,0);
+    auto set = [&](Attribute a, int value) {
+      hero->changeAttribute(a, value-hero->attribute(a), false);
+      };
+    if(arg[1]=="str")
+      set(ATR_STRENGTH, v);
+    else if(arg[1]=="dex")
+      set(ATR_DEXTERITY, v);
+    else if(arg[1]=="hp") {
+      set(ATR_HITPOINTSMAX, v);
+      set(ATR_HITPOINTS, v);
+      }
+    else if(arg[1]=="mana") {
+      set(ATR_MANAMAX, v);
+      set(ATR_MANA, v);
+      }
+    else
+      return false;
+    return true;
+    }
+  return false;
+  }
+
 void MainWindow::runStartupCommands() {
 #ifdef OPENGOTHIC_XR
   if(startupDone && CommandLine::inst().debugShow("surfaceclock")) {
@@ -1552,6 +1627,8 @@ void MainWindow::runStartupCommands() {
         pendingSaveAt   = Application::tickCount() + 5000;
         }
       }
+    else if(runHeroCommand(cmd))
+      Log::i("startup command \"",cmd,"\": ok");
     else if(!cmd.empty())
       Log::i("startup command \"",cmd,"\": ",marvin.exec(cmd) ? "ok" : "failed");
     at = end+1;

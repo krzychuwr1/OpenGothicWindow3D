@@ -50,4 +50,6 @@ void main() {
 #endif
   const vec3 cur  = motionCur.xyz /motionCur.w;
   outMotion = motionPrev.w>1e-6 ? vec4(cur - motionPrev.xyz/motionPrev.w, 0.0) : vec4(0);
+  // Meta's runtime reads vectors with +y up (OpenGL NDC) also on Vulkan, where NDC +y is down
+  outMotion.y = -outMotion.y;
   }

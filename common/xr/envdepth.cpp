@@ -586,14 +586,16 @@ void EnvironmentDepth::update(XrSpace local,XrTime displayTime) {
       if(fitted)
         Tempest::Log::i("XR surface depth found ",fitted->size.width," x ",fitted->size.height," m, height ",
                         fitted->pose.position.y," m LOCAL, drop ",fitted->drop," m");
-      else if(s.maps<4 && displayTime-s.startedAt<2500000000LL) {
+      else if(s.maps<8 && displayTime-s.startedAt<8000000000LL) {
         // The first map after provider startup can have holes. Give tracking
         // a short bounded acquisition burst, then sleep until the next placement.
         s.wanted=true;
         s.nextMap=displayTime+150000000;
         }
-      else
+      else {
         Tempest::Log::i("XR surface depth found no supported plane under window");
+        failed=true;
+        }
       }
     s.acceptResult=false;
     if(!s.wanted) {
@@ -613,8 +615,10 @@ void EnvironmentDepth::update(XrSpace local,XrTime displayTime) {
     // running and acquire the first map in a subsequent render frame.
     return;
     }
-  if(displayTime-s.startedAt>2500000000LL) {
+  // Starting the depth sensor alone can take two seconds; leave room for several maps
+  if(displayTime-s.startedAt>8000000000LL) {
     Tempest::Log::i("XR surface depth probe timed out, maps=",s.maps);
+    failed=true;
     cancel();
     return;
     }

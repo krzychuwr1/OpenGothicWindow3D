@@ -27,10 +27,13 @@ class EnvironmentDepth final {
     void cancel(); // invalidate on movement, focus loss, setting or reference-space changes
     void reset();  // before session or device teardown
     const std::optional<Surface>& surface() const { return fitted; }
+    // True once after a probe ended without finding a surface (reported to the player)
+    bool takeFailure() { const bool f = failed; failed = false; return f; }
 
   private:
     struct Impl;
     std::unique_ptr<Impl> impl;
     std::optional<Surface> fitted;
+    bool                   failed = false;
   };
 #endif

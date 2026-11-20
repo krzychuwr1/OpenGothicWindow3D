@@ -2377,7 +2377,10 @@ bool Renderer::drawSurfaceLight(Encoder<CommandBuffer>& cmd, Attachment& target,
     Vec2 offset, scale;
     float strength;
     uint32_t srgb;
-    } push{uvOffset,uvScale,(0.32f+0.22f*dim)/(1.f+drop*drop),srgbSwapchain ? 1u : 0u};
+    } push{uvOffset,uvScale,
+           // Game scenes average 5-20% brightness: enough gain to read as light from a screen
+           // in a dim room, stronger when the passthrough is dimmed
+           (1.7f+1.2f*dim)/(1.f+drop*drop),srgbSwapchain ? 1u : 0u};
   cmd.setDebugMarker("XR surface light spill");
   cmd.setFramebuffer({{target,Tempest::Discard,Tempest::Preserve}});
   cmd.setBinding(0,surfacePalette,sampler);

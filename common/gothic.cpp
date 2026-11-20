@@ -243,6 +243,9 @@ Gothic::Gothic(GameModDescriptor desc) {
   defaults->set("ENGINE",       "zEnvMappingEnabled", highEnd); // reflections
   defaults->set("ENGINE",       "zCloudShadowScale", gpu.type==Tempest::DeviceType::Discrete); // ssao
   defaults->set("INTERNAL",     "vidResIndex", defaultResIndex);
+#ifdef OPENGOTHIC_XR
+  defaults->set("INTERNAL",     "xrWindowEdges", 2); // rounded, soft edge
+#endif
 
   defaults->set("VIDEO", "zVidBrightness", 0.5f);
   defaults->set("VIDEO", "zVidContrast",   0.5f);
