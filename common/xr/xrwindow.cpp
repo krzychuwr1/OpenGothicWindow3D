@@ -139,7 +139,6 @@ struct XrWindow::Impl {
   uint32_t                 width  = 1600;
   uint32_t                 height = 900;
   XrSwapchain              swapchain[2] = {};
-  std::vector<VkImage>     images[2];
   Tempest::Device*         device = nullptr;
   // The game renders straight into the swapchain images through these
   std::vector<Attachment>  targets[2];
@@ -158,7 +157,8 @@ struct XrWindow::Impl {
   XrFovf                   eyeFov [2] = {};
   float                    eyeNear[2] = {};
   void createSpaceWarpSwapchains();
-  void releaseSpaceWarp();
+  void destroySpaceWarpSwapchains();
+  bool releaseSpaceWarp();
   VkCommandPool            pool = VK_NULL_HANDLE;
   static constexpr uint32_t Ring = 3;
   VkCommandBuffer          cmd  [Ring] = {};
@@ -225,7 +225,7 @@ struct XrWindow::Impl {
   V3   buttonCenter() const { return handleCenter() + V3{0,-0.10f,0}; }
   Grip targetAt(float x, float y) const;
   V3   handleCenter() const;
-  void releaseEyes();
+  bool releaseEyes();
   void locateEyes();
   XrPath path(const char* p) const { XrPath r = XR_NULL_PATH; xrStringToPath(instance, p, &r); return r; }
   float  windowHeight() const { return windowWidth*float(height)/float(width); }
@@ -255,11 +255,9 @@ XrWindow* XrWindow::inst() {
 
 XrWindow::Impl::~Impl() {
   if(vk.device!=VK_NULL_HANDLE) {
-    vkDeviceWaitIdle(vk.device);
+    device->waitIdle();
     for(int eye=0; eye<2; ++eye) {
       targets[eye].clear();
-      mvTargets[eye].clear();
-      depthTargets[eye].clear();
       }
     for(auto f:fence)
       if(f!=VK_NULL_HANDLE)
@@ -282,12 +280,7 @@ XrWindow::Impl::~Impl() {
   for(auto sw:swapchain)
     if(sw!=XR_NULL_HANDLE)
       xrDestroySwapchain(sw);
-  for(int eye=0; eye<2; ++eye) {
-    if(mvSwapchain[eye]!=XR_NULL_HANDLE)
-      xrDestroySwapchain(mvSwapchain[eye]);
-    if(depthSwapchain[eye]!=XR_NULL_HANDLE)
-      xrDestroySwapchain(depthSwapchain[eye]);
-    }
+  destroySpaceWarpSwapchains();
   if(session!=XR_NULL_HANDLE)
     xrDestroySession(session);
   if(instance!=XR_NULL_HANDLE)
@@ -387,7 +380,8 @@ bool XrWindow::Impl::createInstance() {
 
   // Required before the device is created
   XrGraphicsRequirementsVulkan2KHR req = {XR_TYPE_GRAPHICS_REQUIREMENTS_VULKAN2_KHR};
-  xrGetVulkanRequirements(instance, system, &req);
+  if(!ok(xrGetVulkanRequirements(instance, system, &req), "Vulkan graphics requirements"))
+    return false;
 
   auto& hooks   = vulkanCreateHooks();
   hooks.context = this;
@@ -464,9 +458,11 @@ void XrWindow::Impl::createSession() {
   XrReferenceSpaceCreateInfo space = {XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
   space.poseInReferenceSpace = {{0,0,0,1},{0,0,0}};
   space.referenceSpaceType   = XR_REFERENCE_SPACE_TYPE_LOCAL;
-  ok(xrCreateReferenceSpace(session, &space, &localSpace), "local space");
+  if(!ok(xrCreateReferenceSpace(session, &space, &localSpace), "local space"))
+    throw std::runtime_error("OpenXR local space");
   space.referenceSpaceType   = XR_REFERENCE_SPACE_TYPE_VIEW;
-  ok(xrCreateReferenceSpace(session, &space, &viewSpace), "view space");
+  if(!ok(xrCreateReferenceSpace(session, &space, &viewSpace), "view space"))
+    throw std::runtime_error("OpenXR view space");
 
   VkCommandPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   poolInfo.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -490,6 +486,17 @@ void XrWindow::Impl::createSession() {
   createSpaceWarpSwapchains();
   createPassthrough();
   createActions();
+  }
+
+static std::vector<XrSwapchainImageVulkan2KHR> swapchainImages(XrSwapchain chain) {
+  uint32_t count = 0;
+  if(!ok(xrEnumerateSwapchainImages(chain, 0, &count, nullptr), "count swapchain images") || count==0)
+    return {};
+  std::vector<XrSwapchainImageVulkan2KHR> images(count, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR});
+  if(!ok(xrEnumerateSwapchainImages(chain, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data())), "enumerate swapchain images"))
+    return {};
+  images.resize(count);
+  return images;
   }
 
 void XrWindow::Impl::createSwapchains() {
@@ -518,11 +525,10 @@ void XrWindow::Impl::createSwapchains() {
   for(int eye=0; eye<2; ++eye) {
     if(!ok(xrCreateSwapchain(session, &info, &swapchain[eye]), "window swapchain"))
       throw std::runtime_error("OpenXR swapchain");
-    xrEnumerateSwapchainImages(swapchain[eye], 0, &count, nullptr);
-    std::vector<XrSwapchainImageVulkan2KHR> img(count, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR});
-    xrEnumerateSwapchainImages(swapchain[eye], count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(img.data()));
+    auto img = swapchainImages(swapchain[eye]);
+    if(img.empty())
+      throw std::runtime_error("OpenXR window images");
     for(auto& i:img) {
-      images[eye].push_back(i.image);
       targets[eye].push_back(vulkanBorrowColorAttachment(*device, i.image, width, height));
       }
     }
@@ -581,39 +587,55 @@ void XrWindow::Impl::createSpaceWarpSwapchains() {
     info.arraySize   = 1;
     info.mipCount    = 1;
     if(!ok(xrCreateSwapchain(session, &info, &mvSwapchain[eye]), "motion vector swapchain")) {
-      hasSpaceWarp = false;
+      destroySpaceWarpSwapchains();
       return;
       }
     info.usageFlags  = XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
     info.format      = VK_FORMAT_D32_SFLOAT;
     if(!ok(xrCreateSwapchain(session, &info, &depthSwapchain[eye]), "depth swapchain")) {
-      hasSpaceWarp = false;
+      destroySpaceWarpSwapchains();
       return;
       }
-    auto images = [&](XrSwapchain sc) {
-      xrEnumerateSwapchainImages(sc, 0, &count, nullptr);
-      std::vector<XrSwapchainImageVulkan2KHR> img(count, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR});
-      xrEnumerateSwapchainImages(sc, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(img.data()));
-      return img;
-      };
-    for(auto& i:images(mvSwapchain[eye]))
+    for(auto& i:swapchainImages(mvSwapchain[eye]))
       mvTargets[eye].push_back(vulkanBorrowColorAttachment(*device, i.image, mvWidth, mvHeight, TextureFormat::RGBA16F));
-    for(auto& i:images(depthSwapchain[eye]))
+    for(auto& i:swapchainImages(depthSwapchain[eye]))
       depthTargets[eye].push_back(vulkanBorrowDepthAttachment(*device, i.image, mvWidth, mvHeight, TextureFormat::Depth32F));
+    if(mvTargets[eye].empty() || depthTargets[eye].empty()) {
+      destroySpaceWarpSwapchains();
+      return;
+      }
     }
   Log::i("OpenXR: SpaceWarp available, motion vectors ", mvWidth, "x", mvHeight);
   }
 
-void XrWindow::Impl::releaseSpaceWarp() {
+void XrWindow::Impl::destroySpaceWarpSwapchains() {
+  hasSpaceWarp = false;
   for(int eye=0; eye<2; ++eye) {
-    XrSwapchainImageReleaseInfo rel = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-    if(mvAcquired[eye]>=0)
-      xrReleaseSwapchainImage(mvSwapchain[eye], &rel);
-    if(depthAcquired[eye]>=0)
-      xrReleaseSwapchainImage(depthSwapchain[eye], &rel);
-    mvAcquired[eye]    = -1;
-    depthAcquired[eye] = -1;
+    mvTargets[eye].clear();
+    depthTargets[eye].clear();
+    for(auto chain : {&mvSwapchain[eye], &depthSwapchain[eye]}) {
+      if(*chain!=XR_NULL_HANDLE)
+        xrDestroySwapchain(*chain);
+      *chain = XR_NULL_HANDLE;
+      }
     }
+  }
+
+static bool releaseImage(XrSwapchain chain, int32_t& index) {
+  if(index<0)
+    return true;
+  index = -1;
+  XrSwapchainImageReleaseInfo rel = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+  return ok(xrReleaseSwapchainImage(chain, &rel), "release swapchain image");
+  }
+
+bool XrWindow::Impl::releaseSpaceWarp() {
+  bool released = true;
+  for(int eye=0; eye<2; ++eye) {
+    released &= releaseImage(mvSwapchain[eye], mvAcquired[eye]);
+    released &= releaseImage(depthSwapchain[eye], depthAcquired[eye]);
+    }
+  return released;
   }
 
 void XrWindow::Impl::createPassthrough() {
@@ -1102,11 +1124,8 @@ static uint32_t pixel(float r, float g, float b, float o, float a) {
 
 static bool uploadStatic(const VulkanNativeContext& vk, VkCommandBuffer cb, VkFence fence, XrSwapchain sc,
                          uint32_t w, uint32_t h, uint32_t layers, const std::vector<uint32_t>& rgba) {
-  uint32_t count = 0;
-  if(!ok(xrEnumerateSwapchainImages(sc, 0, &count, nullptr), "enumerate static images") || count==0)
-    return false;
-  std::vector<XrSwapchainImageVulkan2KHR> img(count, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR});
-  if(!ok(xrEnumerateSwapchainImages(sc, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(img.data())), "static images"))
+  const auto img = swapchainImages(sc);
+  if(img.empty())
     return false;
   // Host-visible staging buffer
   const VkDeviceSize size = VkDeviceSize(rgba.size()*sizeof(uint32_t));
@@ -1431,17 +1450,13 @@ ZBuffer* XrWindow::depthTarget(uint8_t eye) {
   return &s.depthTargets[eye][size_t(s.depthAcquired[eye])];
   }
 
-void XrWindow::Impl::releaseEyes() {
+bool XrWindow::Impl::releaseEyes() {
   const uint64_t t0 = xrUs();
-  for(int eye=0; eye<2; ++eye) {
-    if(acquired[eye]<0)
-      continue;
-    // The game's commands for this image are already submitted to the queue
-    XrSwapchainImageReleaseInfo rel = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-    xrReleaseSwapchainImage(swapchain[eye], &rel);
-    acquired[eye] = -1;
-    }
+  bool released = true;
+  for(int eye=0; eye<2; ++eye)
+    released &= releaseImage(swapchain[eye], acquired[eye]);
   tRelease += xrUs()-t0;
+  return released;
   }
 
 bool XrWindow::submit(bool rendered) {
@@ -1455,11 +1470,15 @@ bool XrWindow::submit(bool rendered) {
     s.fillChrome();
     s.fillEnvironment();
     }
-  const bool hasImage = rendered && s.acquired[0]>=0 && s.acquired[1]>=0;
-  const bool warp     = hasImage && s.spaceWarpWanted &&
+  bool hasImage = rendered && s.acquired[0]>=0 && s.acquired[1]>=0;
+  bool warp = hasImage && s.spaceWarpWanted &&
                         s.mvAcquired[0]>=0 && s.mvAcquired[1]>=0 && s.depthAcquired[0]>=0 && s.depthAcquired[1]>=0;
-  s.releaseEyes();
-  s.releaseSpaceWarp();
+  const bool eyesReleased = s.releaseEyes();
+  const bool warpReleased = s.releaseSpaceWarp();
+  if(!eyesReleased || !warpReleased) {
+    hasImage = warp = false;
+    SystemApi::exit();
+    }
 
   std::vector<const XrCompositionLayerBaseHeader*> layers;
 
