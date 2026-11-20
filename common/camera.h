@@ -126,13 +126,13 @@ class Camera final {
       float         zNear = 0;
       };
     void               setEyeView(const EyeView* view);
+
   private:
     mutable Tempest::Vec3 shadowLight = {0,1,0};
 
     struct {
       bool               active = false;
       Tempest::Vec3      pos;
-      Tempest::Vec3      offset;
       Tempest::Matrix4x4 proj;
       float              zNear = 0;
       } eye;

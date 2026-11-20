@@ -170,7 +170,6 @@ void Camera::setEyeView(const EyeView* v) {
                        0.f,       0.f,         k,           -n*k,
                        0.f,       0.f,         1.f,          0.f);
   eye.pos    = origin + shake + Vec3(wx,wy,wz);
-  eye.offset = v->offset;
   eye.zNear  = n;
   eye.active = true;
   }

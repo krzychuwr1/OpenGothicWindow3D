@@ -184,12 +184,11 @@ void WorldView::drawShadow(Tempest::Encoder<CommandBuffer>& cmd, uint8_t fId, ui
   }
 
 void WorldView::drawShadowStatic(Tempest::Encoder<CommandBuffer>& cmd, uint8_t layer) {
-  // The far cascade also caches movable props: far away and coarse, they rarely change visibly
-  visuals.drawShadow(cmd,layer, layer==0 ? DrawCommands::Casters::Static : DrawCommands::Casters::StaticAndMovable);
+  visuals.drawShadow(cmd,layer,DrawCommands::Casters::Static);
   }
 
 void WorldView::drawShadowDynamic(Tempest::Encoder<CommandBuffer>& cmd, uint8_t fId, uint8_t layer) {
-  visuals.drawShadow(cmd,layer, layer==0 ? DrawCommands::Casters::Dynamic : DrawCommands::Casters::Animated);
+  visuals.drawShadow(cmd,layer,DrawCommands::Casters::Dynamic);
   pfxGroup.drawShadow(cmd,fId,layer);
   }
 

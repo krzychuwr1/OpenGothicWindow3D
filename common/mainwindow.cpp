@@ -1530,6 +1530,16 @@ void MainWindow::renderFrame(bool xr) {
 
     CommandBuffer& cmd = commands[cmdId];
     {
+    struct EndEye {
+      Camera* camera;
+      Renderer& renderer;
+      ~EndEye() {
+        if(camera)
+          camera->setEyeView(nullptr);
+        renderer.setSecondView(false);
+        renderer.setMotionVectors(false,nullptr);
+        }
+      } endEye{stereo ? camera : nullptr, renderer};
     const uint64_t ts = nowUs();
     auto enc = cmd.startEncoding(device);
     timing.encStart += nowUs()-ts;
@@ -1544,8 +1554,6 @@ void MainWindow::renderFrame(bool xr) {
     const uint64_t te = nowUs();
     timing.drawCall += te-ts;
     }
-    if(stereo)
-      camera->setEyeView(nullptr);
     const uint64_t tsub = nowUs();
     sync = device.submit(cmd);
     timing.submit += nowUs()-tsub;
