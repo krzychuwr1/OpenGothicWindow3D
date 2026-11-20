@@ -120,6 +120,9 @@ class Pose final {
 
     bool updateFrame(const Animation::Sequence &s, BodyState bs, uint64_t sBlend, uint64_t barrier, uint64_t sTime, uint64_t now);
 
+#if defined(OPENGOTHIC_XR)
+    bool canHoldFrame(const Animation::Sequence& seq, const Layer& layer, uint64_t now) const;
+#endif
     const Animation::Sequence* solveNext(const AnimationSolver& solver, const Layer& lay);
 
     void addLayer(const Animation::Sequence* seq, BodyState bs, uint8_t comb, uint64_t tickCount);

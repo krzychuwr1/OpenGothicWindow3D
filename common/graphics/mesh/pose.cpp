@@ -173,6 +173,10 @@ bool Pose::startAnim(const AnimationSolver& solver, const Animation::Sequence *s
       const bool finished  = i.seq->isFinished(tickCount,i.sAnim,combo.len()) && !hasNext && (i.seq->animCls!=Animation::Loop);
       const bool interrupt = force || i.seq->canInterrupt(tickCount,i.sAnim,combo.len());
       if(i.seq==sq && i.comb==comb && !finished) {
+#if defined(OPENGOTHIC_XR)
+        if(flag==NoTranslation && i.bs!=bs)
+          needToUpdate = true;
+#endif
         i.bs = bs;
         return true;
         }
@@ -326,6 +330,7 @@ bool Pose::update(uint64_t tickCount, bool force) {
 
   bool needMkSkeleton = false;
   if(lastUpdate!=tickCount || force) {
+    bool holdFrame = false;
     for(auto& i:lay) {
       const Animation::Sequence* seq = i.seq;
       if(0<i.comb && i.comb<=i.seq->comb.size()) {
@@ -339,9 +344,13 @@ bool Pose::update(uint64_t tickCount, bool force) {
         continue; //mobsi
 
       needMkSkeleton |= updateFrame(*seq,i.bs,i.sBlend,lastUpdate,i.sAnim,tickCount);
+#if defined(OPENGOTHIC_XR)
+      if(needMkSkeleton && numFrames==1 && flag==NoTranslation && lay.size()==1)
+        holdFrame = canHoldFrame(*seq,i,tickCount);
+#endif
       }
     lastUpdate   = tickCount;
-    needToUpdate = needMkSkeleton;
+    needToUpdate = needMkSkeleton && !holdFrame;
     }
 
   if(needMkSkeleton || force) {
@@ -350,6 +359,27 @@ bool Pose::update(uint64_t tickCount, bool force) {
     }
   return false;
   }
+
+#if defined(OPENGOTHIC_XR)
+bool Pose::canHoldFrame(const Animation::Sequence& seq, const Layer& layer, uint64_t now) const {
+  const auto elapsed = now-layer.sAnim;
+  if(now<layer.sAnim || elapsed<layer.sBlend || elapsed-layer.sBlend<std::max(seq.blendIn,seq.blendOut))
+    return false;
+  const auto& d = *seq.data;
+  if(d.samples.size()!=d.nodeIndex.size())
+    return false;
+  for(size_t i=0; i<d.samples.size(); ++i) {
+    const auto bone = d.nodeIndex[i];
+    if(bone>=numBones || hasSamples[bone]!=S_Valid)
+      return false;
+    // Only the linear branch of slerp(q,q,t) is independent of the fractional frame.
+    const auto& q = d.samples[i].rotation;
+    if(!(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w > 1.f-std::numeric_limits<float>::epsilon()))
+      return false;
+    }
+  return true;
+  }
+#endif
 
 bool Pose::updateFrame(const Animation::Sequence &s, BodyState bs, uint64_t sBlend,
                        uint64_t barrier, uint64_t sTime, uint64_t now) {
@@ -534,6 +564,10 @@ void Pose::onAddLayer(const Pose::Layer& l) {
   }
 
 void Pose::onRemoveLayer(const Pose::Layer &l) {
+#if defined(OPENGOTHIC_XR)
+  if(flag==NoTranslation)
+    needToUpdate = true;
+#endif
   if(l.seq==rotation)
     rotation=nullptr;
   if(hasLayerEvents(l))
@@ -825,6 +859,10 @@ size_t Pose::findNode(std::string_view b) const {
   }
 
 void Pose::setHeadRotation(float dx, float dz) {
+#if defined(OPENGOTHIC_XR)
+  if(flag==NoTranslation && (dx!=headRotX || dz!=headRotY))
+    needToUpdate = true;
+#endif
   headRotX = dx;
   headRotY = dz;
   }

@@ -659,3 +659,20 @@ City main street at noon, ordinary stereo, no captures, CPU 1 / GPU 0. Each resu
 | Control 2 | 60.9 | 8.003 | 5.374 | 0.080 |
 
 The mean recording difference was 0.036 ms/frame, smaller than the 0.055 ms spread between controls. Frame rate was identical and the GPU copy pass remained around 0.08 ms/eye. The trial was reverted. The final control restored the release APK, stopped the game and released sleep at 100% battery and 41.0 °C.
+
+### Retain settled one-frame poses on interactive objects
+
+A one-frame prop animation marked itself dirty after every successful update. Both city and tavern counters observed 884 model-prop updates per frame, including 237 settled one-frame props which resampled 651 animation tracks and rebuilt 1,074 skeleton bones. Rebuilding also marked their attachments and collision poses for publication. XR now holds a single fully blended one-frame object pose once its sampled bones are valid and the existing quaternion interpolation is independent of frame fraction. Forced updates still rebuild, and matrix, layer, body-state and head changes invalidate the pose. The game continues to advance event time and process animation effects.
+
+A host fixture using the production interpolation and skeleton code compared every sampled pose, previous sample, published bone matrix, simulated physics copy and last-update time. Tests included ordered and unordered hierarchies, combination sequences, blends, reverse transitions, object moves, head rotation, forced updates and non-unit quaternions. All 12,000 checks passed. Both release targets linked.
+
+City at noon, CPU 1 / GPU 0, ordinary stereo. Four complete CPU/GPU reports per run, 14 VrApi samples, no captures.
+
+| Run | Game tick ms | Animation ms | Total update ms | Stereo record ms | GPU ms/eye | FPS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Control 1 | 3.314 | 1.754 | 5.141 | 5.344 | 7.988 | 61.0 |
+| Trial 1 | 3.084 | 1.572 | 4.724 | 5.511 | 7.968 | 60.7 |
+| Trial 2 | 3.160 | 1.578 | 4.809 | 5.566 | 8.038 | 60.8 |
+| Control 2 | 3.272 | 1.775 | 5.119 | 5.367 | 7.985 | 61.2 |
+
+Both trials improved animation and game tick. Mean update fell by 0.364 ms/frame, including 0.189 ms in animation. Recording rose by 0.183 ms/frame, leaving a 0.181 ms reduction across update and recording. This GPU-bound city run showed no FPS gain. The final control ended at 98% and 42.0 °C, stopped and released to sleep. A wearer did not operate a chest or door during this comparison.
