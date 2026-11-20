@@ -5,6 +5,7 @@
 #include <Tempest/Log>
 #include <cstdint>
 #include <atomic>
+#include <utility>
 
 using namespace Tempest;
 
@@ -110,9 +111,9 @@ InstanceStorage::InstanceStorage() {
   }
 
 InstanceStorage::~InstanceStorage() {
-  join();
   {
     std::unique_lock<std::mutex> lck(sync);
+    uploadCnd.wait(lck, [this] { return uploadFId<0; });
     uploadFId = Resources::MaxFramesInFlight;
   }
   uploadCnd.notify_one();
@@ -141,9 +142,10 @@ bool InstanceStorage::commit(Encoder<CommandBuffer>& cmd, uint8_t fId) {
 
   const size_t dataSize = (dataCpu.size() + 0xFFF) & ~size_t(0xFFF);
   if(dataGpu.byteSize()!=dataSize) {
+    auto next = device.ssbo(BufferHeap::Device,Tempest::Uninitialized,dataSize);
+    next.update(dataCpu);
     Resources::recycle(std::move(dataGpu));
-    dataGpu = device.ssbo(BufferHeap::Device,Tempest::Uninitialized,dataSize);
-    dataGpu.update(dataCpu);
+    dataGpu = std::move(next);
     std::memset(durty.data(), 0, durty.size()*sizeof(uint32_t));
     return true;
     }
@@ -180,7 +182,6 @@ bool InstanceStorage::commit(Encoder<CommandBuffer>& cmd, uint8_t fId) {
       p.src       += p.size;
       }
     }
-  std::memset(durty.data(), 0, durty.size()*sizeof(durty[0]));
 
   if(patchBlock.size()==0)
     return false;
@@ -215,12 +216,18 @@ bool InstanceStorage::commit(Encoder<CommandBuffer>& cmd, uint8_t fId) {
   cmd.setBinding(1, path);
   cmd.setPipeline(Shaders::inst().patch);
   cmd.dispatch(patchBlock.size());
+  std::memset(durty.data(), 0, durty.size()*sizeof(durty[0]));
   return false;
   }
 
 void InstanceStorage::join() {
   std::unique_lock<std::mutex> lck(sync);
   uploadCnd.wait(lck, [this] { return uploadFId<0; });
+  if(uploadError) {
+    // The recorded patch must not be submitted. Rebuild it from live CPU data on retry.
+    std::fill(durty.begin(),durty.end(),UINT32_MAX);
+    std::rethrow_exception(std::exchange(uploadError,{}));
+    }
   }
 
 InstanceStorage::Id InstanceStorage::alloc(const size_t size) {
@@ -332,7 +339,12 @@ void InstanceStorage::uploadMain() {
     if(uploadFId==Resources::MaxFramesInFlight)
       break;
 
-    patchGpu[uploadFId].update(patchCpu);
+    try {
+      patchGpu[uploadFId].update(patchCpu);
+      }
+    catch(...) {
+      uploadError = std::current_exception();
+      }
     uploadFId = -1;
     uploadCnd.notify_all();
     }

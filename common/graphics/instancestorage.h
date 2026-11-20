@@ -5,6 +5,7 @@
 #include <Tempest/UniformBuffer>
 
 #include <condition_variable>
+#include <exception>
 #include <vector>
 #include <thread>
 
@@ -84,4 +85,5 @@ class InstanceStorage {
     std::mutex              sync;
     std::condition_variable uploadCnd;
     int32_t                 uploadFId = -1;
+    std::exception_ptr      uploadError;
   };
