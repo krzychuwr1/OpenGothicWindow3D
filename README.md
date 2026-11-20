@@ -1,3 +1,6 @@
+> **Meta Quest window build:** this fork adds a Meta Quest version that shows the game as a
+> stereo window in passthrough. See [android/quest/README.md](android/quest/README.md).
+
 ## OpenGothic
 Open source re-implementation of Gothic 2: Night of the Raven.
 
