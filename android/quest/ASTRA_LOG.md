@@ -357,3 +357,7 @@ The first submit generated the chrome and panorama after clearing `frameBegun`. 
 A host fault-injection test used the production submit path with two acquired eyes. Failing chrome generation or panorama generation previously left both images acquired and ended zero frames across two cases. Both fixed cases released the eyes and each called `xrEndFrame` once. Android Release linked. Actual device memory exhaustion was not induced.
 
 The uninstrumented foveation release also completed a low-clock city combat run with dusk and SpaceWarp at 36.0 app FPS. The compositor showed the dusk sky above the game; 19 decoded 1600×900 stereo pairs showed the fight in both eyes (`20261120-052422-304`). The package stopped at 85%, 40.0°C.
+
+### Reserve the upload command before GPU submission
+
+Tempest’s asynchronous upload path grew its command recycling vector after the GPU accepted the submit. Allocation failure could destroy the command pool while its copy was pending. Tempest `ca6351ed` reserves capacity under the same lock as the insertion before submitting. A host harness injected the next allocation failure into the actual UploadEngine template. Old code submitted once and prematurely destroyed one command pool. New code failed before submit, accepted the next upload and recorded no early destruction. Android Release linked. Memory pressure was simulated on the host.
