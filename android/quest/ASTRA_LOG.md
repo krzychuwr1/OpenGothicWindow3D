@@ -391,3 +391,18 @@ A host test used the production allocation and free functions. It allocated four
 The handle, resize brackets and surroundings button multiplied sRGB colour bytes by opacity before OpenXR decoded them. At the centre of the idle handle this yielded 0.136 linear red over black instead of 0.357. The generated textures now store straight RGB and all three quad types request source alpha with the unpremultiplied-alpha flag. The compositor applies coverage in linear light. [OpenXR swapchain colour space](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XrSwapchain.html)
 
 A host harness compiled the pixel function and layer flags from each revision. Across sRGB and UNORM formats, four colours, three opacities and four coverage values for all three controls, 81 of 288 old results exceeded a 0.006 linear tolerance; all corrected results passed. Android Release linked. The numeric test models compositor blending. Headset appearance of this change awaits a compositor capture.
+
+### Animation palette batching trial, reverted
+
+Tried copying a complete changed palette once, skipping identical content and publishing one dirty mask per 32 blocks. A host fixture checked 6,580 mask ranges and concurrent writers. The same instrumented Quest APK ran both implementations in A/B/B/A order in each scene, with CPU/GPU levels 1/0 and no captures. For each run the setter duration is the mean of its final eight 128-commit reports. Update is the last four frame reports. These are real gameplay writes, about 34,800 per report in the city and 32,800 in the tavern.
+
+| Scene | Metric | Original | Batched | Batched | Original |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Main street | ns per palette write | 841 | 781 | 784 | 841 |
+| Main street | Update, ms/frame | 5.185 | 5.136 | 5.267 | 5.135 |
+| Main street | App FPS | 60.6 | 60.3 | 60.2 | 60.2 |
+| Tavern | ns per palette write | 922 | 843 | 828 | 932 |
+| Tavern | Update, ms/frame | 5.385 | 5.466 | 5.513 | 5.433 |
+| Tavern | App FPS | 51.4 | 51.8 | 51.4 | 51.6 |
+
+The measured work saved about 16 µs per storage commit on the main street and 23 µs in the tavern, summed over workers. The CPU update and app FPS showed no repeatable improvement, so the release keeps the existing write strategy. Every run stopped the game. The series peaked at 45.0°C, rested between runs and ended at 87%, 43.0°C.
