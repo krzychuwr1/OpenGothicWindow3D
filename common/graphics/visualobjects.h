@@ -114,6 +114,9 @@ class VisualObjects final {
       uint32_t            iboOff    = 0;
       uint32_t            iboLen    = 0;
       uint32_t            animPtr   = 0;
+#if defined(OPENGOTHIC_XR)
+      uint32_t            firstMotionFrame = 0;
+#endif
       DrawBuckets::Id     bucketId;
       uint16_t            cmdId     = uint16_t(-1);
       uint32_t            clusterId = 0;
@@ -148,6 +151,7 @@ class VisualObjects final {
 
     const SceneGlobals&        scene;
 
+    uint32_t                   motionFrame = 0;
     InstanceStorage            instanceMem;
     DrawBuckets                bucketsMem;
     DrawClusters               clustersMem;

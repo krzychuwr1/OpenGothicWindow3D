@@ -443,8 +443,9 @@ void DrawCommands::drawHiZ(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
     }
   }
 
-void DrawCommands::drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const Tempest::StorageBuffer& prevInstances) {
-  struct Push { uint32_t firstMeshlet; uint32_t meshletCount; } push = {};
+void DrawCommands::drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const Tempest::StorageBuffer& prevInstances, uint32_t motionFrame) {
+  struct Push { uint32_t firstMeshlet; uint32_t meshletCount; uint32_t motionFrame; } push = {};
+  push.motionFrame = motionFrame;
   auto& view = views[SceneGlobals::V_Main];
   for(auto* i:ord) {
     auto& cx = *i;

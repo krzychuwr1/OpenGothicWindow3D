@@ -25,6 +25,9 @@ layout(push_constant, std430) uniform Push {
 layout(push_constant, std430) uniform Push {
   uint      firstMeshlet;
   int       meshletCount;
+#if defined(MOTION_VECTORS)
+  uint      motionFrame;
+#endif
   } push;
 #endif
 
@@ -208,6 +211,15 @@ void vertexShader(const uvec4 task) {
   const uint  meshletId  = task.y;
   const uint  bucketId   = task.z;
 
+#if defined(MOTION_VECTORS)
+  // A reused slot can contain another object's transform, bones or morph data.
+  // The camera-only pass already wrote a valid vector for this new instance.
+  if(instanceMem[instanceId*16+14]==push.motionFrame) {
+    gl_Position = vec4(uintBitsToFloat(0x7fc00000));
+    return;
+    }
+#endif
+
   const uvec2 mesh       = processMeshlet(meshletId, bucketId);
   const uint  vertCount  = mesh.x;
   const uint  primCount  = mesh.y;
@@ -227,7 +239,7 @@ void vertexShader(const uvec4 task) {
     // Movable objects that did not move are covered by the camera-only vectors
     const uint o = instanceId*16;
     bool moved = false;
-    for(uint i=0; i<12; ++i)
+    for(uint i=0; i<13; ++i)
       moved = moved || (instanceMem[o+i]!=instanceMemPrev[o+i]);
     if(!moved) {
       gl_Position = vec4(uintBitsToFloat(0x7fc00000));

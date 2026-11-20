@@ -158,3 +158,9 @@ Main street at noon, default passthrough, no captures, 14 VrApi samples per run,
 | Baseline 2 | 0.223 | 8.193 | 5.703 | 57.6 |
 
 Kept for the repeatable reduction in GPU work. Mean GPU time fell about 0.035 ms/eye (0.07 ms/stereo frame), closely matching the measured visibility reduction. No CPU-recording or delivered-fps gain was established. Battery remained at 77–78% and the highest post-run temperature was 42.0 °C.
+
+### SpaceWarp instance allocation history
+
+A recycled instance descriptor could match the size of the previous snapshot while referring to a different mesh or skeleton. The first motion frame now leaves the camera vector in place before the vertex shader reads previous instance or bone data. The frame number advances once when the first eye snapshots instance storage. Rigid motion detection also considers the fatness field so a change in mesh thickness alone generates a vector. The owner's raster depth bias remains active.
+
+The earlier failing GPU fixture had accidentally translated only the current camera by writing a weight into the view-projection matrix. After correcting the fixture, an RTX 4080 Laptop GPU ran six two-pixel readbacks using the merged APK's actual object/skin vertex and motion fragment SPIR-V. New rigid and skeletal allocations preserved the sentinel background despite unrelated prior data, including a reused bone palette offset. Continuous rigid translation, fatness and skeletal movement produced the expected X/Z components. A stationary rigid mesh preserved the background. This validates the shader cases on desktop Vulkan. Actual recycled identities have not been isolated in Quest captures.

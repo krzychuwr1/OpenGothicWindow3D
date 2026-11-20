@@ -30,7 +30,7 @@ struct VisualObjects::InstanceDesc {
   float    pos[4][3] = {};
   float    fatness   = 0;
   uint32_t animPtr   = 0;
-  uint32_t padd0     = {};
+  uint32_t firstMotionFrame = 0;
   uint32_t padd1     = {};
   };
 
@@ -161,6 +161,9 @@ void VisualObjects::updateInstance(size_t id, Matrix4x4* pos) {
   d.setPosition(pos==nullptr ? obj.pos : *pos);
   d.animPtr = obj.animPtr;
   d.fatness = obj.fatness*0.5f;
+#if defined(OPENGOTHIC_XR)
+  d.firstMotionFrame = obj.firstMotionFrame;
+#endif
   obj.objInstance.set(&d, 0, sizeof(d));
 
   auto cId  = obj.clusterId;
@@ -224,6 +227,9 @@ VisualObjects::Item VisualObjects::get(const StaticMesh& mesh, const Material& m
   if(obj.isEmpty())
     return Item(); // null command
 
+#if defined(OPENGOTHIC_XR)
+  obj.firstMotionFrame = motionFrame+1;
+#endif
   obj.objInstance = instanceMem.alloc(sizeof(InstanceDesc));
   clustersMem[obj.clusterId].instanceId = obj.objInstance.offsetId<InstanceDesc>();
 
@@ -268,6 +274,9 @@ VisualObjects::Item VisualObjects::get(const AnimMesh& mesh, const Material& mat
   if(obj.isEmpty())
     return Item(); // null command
   obj.animPtr     = anim.offsetId<Matrix4x4>();
+#if defined(OPENGOTHIC_XR)
+  obj.firstMotionFrame = motionFrame+1;
+#endif
   obj.objInstance = instanceMem.alloc(sizeof(InstanceDesc));
   clustersMem[obj.clusterId].instanceId = obj.objInstance.offsetId<InstanceDesc>();
 
@@ -601,10 +610,11 @@ void VisualObjects::drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
   // storage has no matching history until the next snapshot.
   if(instanceMem.prevSsbo().isEmpty() || instanceMem.prevSsbo().byteSize()!=instanceMem.ssbo().byteSize())
     return;
-  drawCmd.drawMotion(cmd, instanceMem.prevSsbo());
+  drawCmd.drawMotion(cmd, instanceMem.prevSsbo(), motionFrame);
   }
 
 void VisualObjects::snapshotPrevInstances(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
+  ++motionFrame;
   instanceMem.snapshotPrev(cmd);
   }
 
