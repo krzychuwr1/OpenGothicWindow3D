@@ -298,21 +298,28 @@ const Tempest::StorageBuffer& InstanceStorage::ssbo() const {
   }
 
 void InstanceStorage::free(const Range& r) {
-  for(auto& i:rgn) {
-    if(i.begin+i.size==r.begin) {
-      i.size  += r.size;
-      return;
-      }
-    if(r.begin+r.size==i.begin) {
-      i.begin -= r.size;
-      i.size  += r.size;
+  if(r.size==0)
+    return;
+  auto next = std::lower_bound(rgn.begin(),rgn.end(),r,[](const Range& l, const Range& r){
+    return l.begin<r.begin;
+    });
+  if(next!=rgn.begin()) {
+    auto prev = next-1;
+    if(prev->begin+prev->size==r.begin) {
+      prev->size += r.size;
+      if(next!=rgn.end() && r.begin+r.size==next->begin) {
+        prev->size += next->size;
+        rgn.erase(next);
+        }
       return;
       }
     }
-  auto at = std::lower_bound(rgn.begin(),rgn.end(),r,[](const Range& l, const Range& r){
-    return l.begin<r.begin;
-    });
-  rgn.insert(at,r);
+  if(next!=rgn.end() && r.begin+r.size==next->begin) {
+    next->begin = r.begin;
+    next->size += r.size;
+    return;
+    }
+  rgn.insert(next,r);
   }
 
 void InstanceStorage::uploadMain() {
