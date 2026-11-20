@@ -27,6 +27,7 @@
 #include "commandline.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <thread>
@@ -1434,6 +1435,13 @@ void MainWindow::FrameTiming::report() {
   }
 
 void MainWindow::runStartupCommands() {
+  // "savegame SLOT NAME" from -exec: saved a few seconds later, once the scene has been drawn
+  if(!pendingSaveSlot.empty() && Application::tickCount()>=pendingSaveAt &&
+     Gothic::inst().checkLoading()==Gothic::LoadState::Idle) {
+    Log::i("startup save: ", pendingSaveSlot, " \"", pendingSaveName, "\"");
+    Gothic::inst().save(pendingSaveSlot, pendingSaveName);
+    pendingSaveSlot.clear();
+    }
   if(startupDone)
     return;
   const auto cmds = CommandLine::inst().startupCommands();
@@ -1457,7 +1465,18 @@ void MainWindow::runStartupCommands() {
     auto cmd = cmds.substr(at,end-at);
     while(!cmd.empty() && cmd.front()==' ')
       cmd.remove_prefix(1);
-    if(!cmd.empty())
+    if(cmd.substr(0,9)=="savegame ") {
+      // Development: prepares save games at chosen places (see tools/make-saves.ps1)
+      auto rest = cmd.substr(9);
+      auto sp   = rest.find(' ');
+      int  id   = std::atoi(std::string(rest.substr(0,sp)).c_str());
+      if(id>0 && sp!=std::string_view::npos) {
+        pendingSaveSlot = "save_slot_" + std::to_string(id) + ".sav";
+        pendingSaveName = std::string(rest.substr(sp+1));
+        pendingSaveAt   = Application::tickCount() + 5000;
+        }
+      }
+    else if(!cmd.empty())
       Log::i("startup command \"",cmd,"\": ",marvin.exec(cmd) ? "ok" : "failed");
     at = end+1;
     }

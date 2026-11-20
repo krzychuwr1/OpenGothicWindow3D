@@ -163,6 +163,8 @@ class MainWindow : public Tempest::Window {
     Tempest::VectorImage::Mesh uiMesh [Resources::MaxFramesInFlight];
     Tempest::VectorImage::Mesh numMesh[Resources::MaxFramesInFlight];
     std::future<void>          captureWriter[2];
+    std::string                pendingSaveSlot, pendingSaveName;
+    uint64_t                   pendingSaveAt = 0;
     uint64_t                   captureNext = 0;
     uint32_t                   captureCount = 0;
     bool                       captureDue = false;
