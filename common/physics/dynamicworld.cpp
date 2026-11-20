@@ -730,20 +730,11 @@ DynamicWorld::RayWaterResult DynamicWorld::implWaterRay(const Tempest::Vec3& fro
   return ret;
   }
 
-DynamicWorld::RayCamResult DynamicWorld::cameraRay(const Tempest::Vec3& from, const Tempest::Vec3& to) const {
-  struct CallBack:btCollisionWorld::AllHitsRayResultCallback {
-    using AllHitsRayResultCallback::AllHitsRayResultCallback;
-
-    btScalar addSingleResult(btCollisionWorld::LocalRayResult& rayResult, bool normalInWorldSpace) override {
-      hits++;
-      return AllHitsRayResultCallback::addSingleResult(rayResult,normalInWorldSpace);
-      }
-
-    uint32_t hits = 0;
-    };
-
-  CallBack callback{CollisionWorld::toMeters(from), CollisionWorld::toMeters(to)};
-  callback.m_flags = btTriangleRaycastCallback::kF_KeepUnflippedNormal | btTriangleRaycastCallback::kF_FilterBackfaces;
+DynamicWorld::RayCamResult DynamicWorld::cameraRay(const Tempest::Vec3& from, const Tempest::Vec3& to, WaterFaces faces) const {
+  btCollisionWorld::AllHitsRayResultCallback callback{CollisionWorld::toMeters(from), CollisionWorld::toMeters(to)};
+  callback.m_flags = btTriangleRaycastCallback::kF_KeepUnflippedNormal;
+  if(faces==WaterFaces::Front)
+    callback.m_flags |= btTriangleRaycastCallback::kF_FilterBackfaces;
 
   if(waterBody!=nullptr) {
     btTransform rayFromTrans,rayToTrans;
@@ -759,7 +750,20 @@ DynamicWorld::RayCamResult DynamicWorld::cameraRay(const Tempest::Vec3& from, co
     }
 
   RayCamResult ret;
-  ret.waterCol = int(callback.m_collisionObjects.size());
+  auto& hits = callback.m_hitFractions;
+  ret.waterCol = hits.size();
+  if(faces==WaterFaces::Both && hits.size()>1) {
+    // An edge or a double-sided surface can report multiple triangles at the same crossing.
+    std::sort(&hits[0], &hits[0]+hits.size());
+    ret.waterCol = 1;
+    btScalar last = hits[0];
+    for(int i=1; i<hits.size(); ++i) {
+      if(hits[i]-last>1.e-5f) {
+        ++ret.waterCol;
+        last = hits[i];
+        }
+      }
+    }
   return ret;
   }
 

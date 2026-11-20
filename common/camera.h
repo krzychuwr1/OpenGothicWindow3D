@@ -139,6 +139,9 @@ class Camera final {
 
     struct {
       bool               active = false;
+#if defined(OPENGOTHIC_XR)
+      bool               inWater = false;
+#endif
       Tempest::Vec3      pos;
       Tempest::Matrix4x4 proj;
       float              zNear = 0;

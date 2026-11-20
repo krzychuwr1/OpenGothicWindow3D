@@ -181,6 +181,16 @@ void Camera::setEyeView(const EyeView* v) {
                        0.f,       0.f,         k,           -n*k,
                        0.f,       0.f,         1.f,          0.f);
   eye.pos    = origin + shake + Vec3(wx,wy,wz);
+#if defined(OPENGOTHIC_XR)
+  eye.inWater = inWater;
+  if(auto* world = Gothic::inst().world(); world!=nullptr && origin!=eye.pos) {
+    // Bullet excludes endpoints on a triangle. Bias exact waterline contact towards the
+    // base camera's medium, using the same vertical water height as the swimming code.
+    const Vec3 bias(0,inWater ? -0.05f : 0.05f,0);
+    const auto crossings = world->physic()->cameraRay(origin+bias,eye.pos+bias,DynamicWorld::WaterFaces::Both);
+    eye.inWater ^= (crossings.waterCol%2)!=0;
+    }
+#endif
   eye.zNear  = n;
   eye.active = true;
   }
@@ -297,6 +307,10 @@ bool Camera::isFree() const {
   }
 
 bool Camera::isInWater() const {
+#if defined(OPENGOTHIC_XR)
+  if(eye.active)
+    return eye.inWater;
+#endif
   return inWater;
   }
 

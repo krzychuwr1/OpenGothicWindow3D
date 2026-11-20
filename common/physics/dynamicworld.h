@@ -256,7 +256,8 @@ class DynamicWorld final {
     RayLandResult  landRay      (const Tempest::Vec3& from, float maxDy=0) const;
     RayLandResult  landSweep    (const Tempest::Vec3& from, float R, float maxDy) const;
     RayWaterResult waterRay     (const Tempest::Vec3& from, float stepHeight) const;
-    RayCamResult   cameraRay    (const Tempest::Vec3& from, const Tempest::Vec3& to) const;
+    enum class WaterFaces { Front, Both };
+    RayCamResult   cameraRay    (const Tempest::Vec3& from, const Tempest::Vec3& to, WaterFaces faces = WaterFaces::Front) const;
 
     RayLandResult  ray          (const Tempest::Vec3& from, const Tempest::Vec3& to) const;
     RayLandResult  sweep        (const Tempest::Vec3& from, const Tempest::Vec3& to, float R) const;
