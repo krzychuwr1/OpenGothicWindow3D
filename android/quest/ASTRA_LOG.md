@@ -237,3 +237,9 @@ Tested both input paths in an instrumented APK. It supplied a synthetic near pos
 The near pinch changed passthrough to dusk once and saved `xrEnvironment=1`. Meta capture `20261120-040437-863` shows the floating window, handle and window-shaped return button above both ridgelines with ordinary stereo quads. The next launch restored dusk, the right aim ray switched back once, and the INI contained 0. Meta capture `20261120-040624-950` shows the crescent below the handle with SpaceWarp enabled. Both post-run checks were 81% and 40.0 °C with the app stopped. These were synthetic poses on the real runtime; physical targeting and comfort need a wearer.
 
 The dusk screenshot also shows a faint, narrow dark line running through part of the panorama. The generator uses periodic mountain functions; its source has not been established from this screenshot.
+
+### SpaceWarp history at game camera cuts
+
+In-world teleports call `Camera::reset`, and first-person, cutscene and dialogue shot changes can reposition the camera abruptly without changing the world or portal. They previously reused the previous shot's view projection. The camera now marks these discontinuities. Both eyes consume the same decision for one warp submission. A speaker change marks a cut only once the dialogue camera actually applies it; an unchanged shot or an ordinary orbit update keeps its history.
+
+The host camera test covered reset, requested versus active first-person mode, entry/exit from cutscenes, and pending, applied and repeated dialogue speakers. In a temporary Quest build, a reset was injected into an established SpaceWarp session on the city street. The app logged valid history on frame 49, invalid history and `FRAME_SKIP` on both submitted views on frame 50, and valid history again on frame 51. The injection is absent from release source. The headset finished at 81% and 41.0 °C. Physical cutscene and dialogue playback were not observed.

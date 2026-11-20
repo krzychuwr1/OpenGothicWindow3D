@@ -95,7 +95,7 @@ class Camera final {
 
     void               setAngles(const Tempest::PointF& pos);
     void               setPosition(const Tempest::Vec3& pos);
-    void               setDialogDistance(float d);
+    void               setDialogShot(float distance, bool playerSpeaking);
 
     void               onRotateMouse(const Tempest::PointF& dpos);
 
@@ -126,8 +126,15 @@ class Camera final {
       float         zNear = 0;
       };
     void               setEyeView(const EyeView* view);
+#if defined(OPENGOTHIC_XR)
+    bool               takeCameraCut();
+#endif
 
   private:
+#if defined(OPENGOTHIC_XR)
+    bool               cameraCut = true;
+    bool               dialogSpeaker = false, appliedSpeaker = false;
+#endif
     mutable Tempest::Vec3 shadowLight = {0,1,0};
 
     struct {

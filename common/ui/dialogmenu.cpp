@@ -192,7 +192,7 @@ void DialogMenu::dialogCamera(Camera& camera) {
         a = pl->rotation()+45;
         }
 
-      camera.setDialogDistance(l);
+      camera.setDialogShot(l, curentIsPl);
       camera.setSpin(PointF(0,a));
       }
     }

@@ -85,6 +85,9 @@ void Camera::reset() {
   }
 
 void Camera::reset(const Npc* pl) {
+#if defined(OPENGOTHIC_XR)
+  cameraCut = true;
+#endif
   const auto& def = cameraDef();
 
   userRange    = (def.best_range - def.min_range)/(def.max_range - def.min_range);
@@ -149,6 +152,14 @@ float Camera::zNear() const {
   return near;
   }
 
+#if defined(OPENGOTHIC_XR)
+bool Camera::takeCameraCut() {
+  const bool cut = cameraCut;
+  cameraCut = false;
+  return cut;
+  }
+#endif
+
 void Camera::setEyeView(const EyeView* v) {
   if(v==nullptr) {
     eye.active = false;
@@ -207,6 +218,10 @@ void Camera::setMode(const Camera::Mode m) {
   if(camMod==m)
     return;
 
+#if defined(OPENGOTHIC_XR)
+  auto isShot = [](Mode mode) { return mode==FirstPerson || mode==Dialog || mode==Cutscene; };
+  cameraCut |= isShot(camMod) || isShot(m);
+#endif
   auto isRegular = [](const Camera::Mode m){
     return m==Normal || m==Inventory || m==Melee || m==Ranged || m==Magic;
     };
@@ -339,8 +354,11 @@ void Camera::setPosition(const Tempest::Vec3& pos) {
   origin = pos;
   }
 
-void Camera::setDialogDistance(float d) {
-  dlgRange = d;
+void Camera::setDialogShot(float distance, bool playerSpeaking) {
+  dlgRange = distance;
+#if defined(OPENGOTHIC_XR)
+  dialogSpeaker = playerSpeaking;
+#endif
   }
 
 void Camera::onRotateMouse(const PointF& dpos) {
@@ -871,6 +889,10 @@ void Camera::tickThirdPerson(float dtF) {
   auto  range        = (camMod==Dialog) ? dlgRange : state.range*100.f;
 
   if(camMod==Dialog) {
+#if defined(OPENGOTHIC_XR)
+    cameraCut |= appliedSpeaker!=dialogSpeaker;
+    appliedSpeaker = dialogSpeaker;
+#endif
     // TODO: DialogCams.zen
     inter.target    = state.target;
     inter.rotOffset = Vec3(0);

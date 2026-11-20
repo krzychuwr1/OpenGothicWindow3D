@@ -1502,6 +1502,10 @@ void MainWindow::renderFrame(bool xr) {
   // Application SpaceWarp (Video settings) while a world is shown through the window
   const bool warp = xr && XrWindow::inst()->isSpaceWarpSupported() && Gothic::settingsGetI("INTERNAL","xrSpaceWarp")!=0 &&
                     Gothic::inst().camera()!=nullptr && Gothic::inst().worldView()!=nullptr && !video.isActive();
+#if defined(OPENGOTHIC_XR)
+  if(warp && Gothic::inst().camera()->takeCameraCut())
+    eyeHistoryValid = false;
+#endif
   const bool useHistory = xr && XrWindow::inst()->prepareSpaceWarp(warp, eyeHistoryValid);
   for(int view=0; view<views; ++view) {
     auto& sync = fence[cmdId];
