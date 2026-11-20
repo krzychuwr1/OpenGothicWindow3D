@@ -238,12 +238,13 @@ struct GameMusic::GothicKitMusicProvider : GameMusic::MusicProvider {
     }
 
   void renderSound(int16_t *out, size_t n) override {
-    if(!isEnabled()) {
+    if(performance==nullptr || !isEnabled()) {
       std::memset(out, 0, n * sizeof(out[0]) * 2);
       return;
       }
     updateTheme();
-    DmPerformance_renderPcm(performance, out, n * 2, DmRenderOptions(DmRender_SHORT | DmRender_STEREO));
+    if(DmPerformance_renderPcm(performance, out, n * 2, DmRenderOptions(DmRender_SHORT | DmRender_STEREO))!=DmResult_SUCCESS)
+      std::memset(out, 0, n * sizeof(out[0]) * 2);
     }
 
   void updateTheme() {

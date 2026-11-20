@@ -97,28 +97,36 @@ Resources::Resources(Tempest::Device &device)
   // Set up the DirectMusic loader
   DmResult rv = DmLoader_create(&dmLoader, DmLoader_DOWNLOAD);
   if(rv != DmResult_SUCCESS) {
-    Log::e("Failed to created DmLoader object. Out of memory?");
+    Log::e("Could not create the DirectMusic loader");
+    return;
     }
 
-  DmLoader_addResolver(dmLoader, [](void* ctx, char const* name, size_t* len) -> void* {
-      auto* slf = reinterpret_cast<Resources*>(ctx);
+  rv = DmLoader_addResolver(dmLoader, [](void* ctx, char const* name, size_t* len) -> void* {
+    try {
+      auto* slf = static_cast<Resources*>(ctx);
       auto* node = slf->gothicAssets.find(name);
-
-      if (node == nullptr) {
+      if(node==nullptr || node->type()!=zenkit::VfsNodeType::FILE)
         return nullptr;
-      }
-
       auto reader = node->open_read();
-
       reader->seek(0, zenkit::Whence::END);
-      *len = reader->tell();
-
+      const size_t size = reader->tell();
       reader->seek(0, zenkit::Whence::BEG);
-      auto* bytes = static_cast<uint8_t *>(malloc(*len));
-      reader->read(bytes, *len);
-
+      void* bytes = std::malloc(size);
+      if(bytes==nullptr)
+        return nullptr;
+      if(reader->read(bytes,size)!=size) {
+        std::free(bytes);
+        return nullptr;
+        }
+      *len = size;
       return bytes;
-      }, this);
+      }
+    catch(const std::exception&) {
+      return nullptr;
+      }
+    }, this);
+  if(rv!=DmResult_SUCCESS)
+    Log::e("Could not register the DirectMusic file resolver");
   }
 
 void Resources::mountVdfs(const std::vector<std::u16string>& vdfs) {
