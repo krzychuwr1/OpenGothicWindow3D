@@ -7,6 +7,8 @@
 #include <Tempest/Platform>
 #include <Tempest/Fence>
 
+#include <algorithm>
+#include <atomic>
 #include <cstddef>
 
 #include "bink/video.h"
@@ -62,7 +64,7 @@ struct VideoWidget::SoundContext {
     }
 
   uint64_t tickCount() const {
-    auto smp = processedSamples;
+    auto smp = processedSamples.load(std::memory_order_relaxed);
     return uint64_t(smp*1000)/uint64_t(std::max(sampleRate * numChannels, 1));
     }
 
@@ -78,24 +80,24 @@ struct VideoWidget::SoundContext {
   std::mutex           syncSamples;
   std::vector<float>   samples;
 
-  uint64_t             processedSamples = 0;
+  std::atomic_uint64_t processedSamples{0};
   uint16_t             sampleRate = 0;
   uint16_t             numChannels = 0;
   };
 
 void VideoWidget::Sound::renderSound(int16_t *out, size_t n) {
-  n = n*channels; // stereo
+  const size_t requested = n*channels;
 
   std::lock_guard<std::mutex> guard(ctx.syncSamples);
   auto& s = ctx.samples;
-  if(s.size()<n)
-    return;
-  for(size_t i=0; i<n; ++i) {
+  const size_t count = std::min(n, s.size()/channels)*channels;
+  std::fill(out+count,out+requested,int16_t(0));
+  for(size_t i=0; i<count; ++i) {
     float v = s[i];
     out[i] = (v < -1.00004566f ? int16_t(-32768) : (v > 1.00001514f ? int16_t(32767) : int16_t(v * 32767.5f)));
     }
-  ctx.samples.erase(ctx.samples.begin(),ctx.samples.begin()+int(n));
-  ctx.processedSamples += n;
+  s.erase(s.begin(),s.begin()+ptrdiff_t(count));
+  ctx.processedSamples.fetch_add(count,std::memory_order_relaxed);
   }
 
 struct VideoWidget::Context {

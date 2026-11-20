@@ -489,3 +489,11 @@ A host test used the production animation start and update functions with a reco
 The sky uniforms took their cloud offsets from the previous global tick. The first eye advanced that tick after sampling, so the next eye saw a different sky phase. Both eyes now sample the sky immediately after setting the frame time and before uploading their uniforms.
 
 A host check ran the production cloud calculation in the old and new uniform update orders at six stereo ticks, including a repeated tick, both layer wraps and a tick beyond 32 bits. The old order produced ten stale layer/time pairs. The corrected order produced zero. Android Release linked. The test measured uniform values directly. The small temporal offset has not been judged by a wearer.
+
+### Fill complete cutscene audio buffers and advance the clock by decoded samples
+
+Tempest registered mono clips with OpenAL as mono but divided every callback byte count by a stereo frame size. A mono callback consequently consumed half the audio it reported. The Bink sound producer also returned an untouched buffer whenever fewer samples than requested were available. Tempest `00aa0595` uses the producer's channel count. The video callback consumes the available complete frames, fills the rest with silence and advances a thread-safe playback clock only for samples it consumed.
+
+A host fixture exercised the production callback and clock for mono and stereo with full, empty, short and replenished buffers. Sentinel samples guarded both ends. The old code failed 14 output, clock or queue checks. The corrected code passed all checks. Android Release linked. Headset audio quality has not been evaluated by a listener.
+
+The audio and cutscene audit also identified pending work. A movie can silence the current GothicKit theme after exit, and an unrelated settings notification can restart music during playback. A pending theme can lose its reload flag after a duplicate request. A queued video can retain the previous context's frame pointer, and a visible, unfocused session can continue advancing the decoder. Replacing the time of a nearby event in the dmusic queue may also disturb its ordering. These findings are from source inspection.
