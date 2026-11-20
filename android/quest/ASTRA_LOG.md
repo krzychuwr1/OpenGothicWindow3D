@@ -752,3 +752,11 @@ Beginning or ending a session was attempted only on receipt of a state-change ev
 A host runtime covered zero through four consecutive failures to begin or end, terminal loss, state changes between attempts, foreign-session events and both performance settings. Old code failed 62 of 844 checks. The fixed code passed all 844. The uninstrumented Android Release linked.
 
 The artwork-failure combat run also rejected the first begin with a simulated XR runtime error. The next poll successfully called the real `xrBeginSession` without another READY event. The runtime then reported SYNCHRONIZED, VISIBLE and FOCUSED and rendered both captured eyes. STOPPING error retries were exercised on the host. No physical headset removal or OS-driven stop failure was observed.
+
+### Keep an off-center window grab under the hand
+
+On the first held frame the window moved its handle center to the hand or aim ray, even when the player had selected the end of the handle. Direct touch also snapped the window forward if the pinch was inside the touch depth tolerance. Capture now remembers the actual contact point in both hand and window coordinates. The window still turns toward the viewer and follows controller depth adjustment while keeping that contact point fixed to the grip.
+
+The host test exercised 270 near/ray combinations across three window widths, off-center positions and contact depths, followed by head and hand motion, rotation, stick movement and release. The previous implementation failed 1,548 of 2,160 checks, with a maximum stationary jump of 20.94 cm. The fix passed all 2,160. The uninstrumented Android Release linked.
+
+On Quest a diagnostic supplied an off-center left pinch 4 cm in front of the handle, then a right controller ray on its other end. The real input path captured and released the correct hand both times. During stationary holds and 8 cm lateral moves the maximum logged anchor error was under 0.001 mm. A compositor capture showed the displaced game window beneath the dusk sky. Both gestures used synthetic poses, so a wearer's targeting and comfort remain unverified. The uninstrumented APK was restored and its installed SHA-256 matched `a8faeb0c8689dbf4ecb85ee1a9c9df761f1f393e17a3f2e83fa4db1274de04d9`. The game was stopped, sleep released and owner INI hash unchanged at 95% and 39.0 °C.

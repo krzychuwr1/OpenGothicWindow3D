@@ -205,6 +205,7 @@ struct XrWindow::Impl {
   bool                     grabNear    = false;
   XrTime                   lastGrabTime = 0;
   V3                       grabLocal;          // grabbed point in the space of the holding pose
+  V3                       grabWindow;         // same point in the window at the start of the grab
   float                    grabScale   = 1;    // window width per corner reach at the start of a resize
   V3                       headPos;
 
@@ -1171,10 +1172,9 @@ void XrWindow::Impl::updateInput() {
 
       if(grabbed==Grip::Handle) {
         // The handle stays in the hand; the window turns to face the viewer, without roll
-        const V3 offset = handleCenter();
-        V3 center = point - rotate(windowPose.orientation, offset);
+        V3 center = point - rotate(windowPose.orientation, grabWindow);
         windowPose.orientation = facing(headPos - center);
-        center = point - rotate(windowPose.orientation, offset);
+        center = point - rotate(windowPose.orientation, grabWindow);
         windowPose.position = toXr(center);
         } else {
         // A corner follows the hand across the window plane; the centre stays put
@@ -1189,6 +1189,7 @@ void XrWindow::Impl::updateInput() {
       grabNear  = h.hoverNear;
       lastGrabTime = frame.predictedDisplayTime;
       grabLocal = toLocal(grabNear ? h.nearPose : h.aim, h.hit);
+      grabWindow = toLocal(windowPose, h.hit);
       if(grabbed==Grip::Environment) {
         if(setEnvironment(!immersive)) {
           restoreSky = false;
@@ -1196,8 +1197,7 @@ void XrWindow::Impl::updateInput() {
           Gothic::flushSettings();
           }
         } else if(grabbed!=Grip::Handle) {
-        const V3    l     = toLocal(windowPose, h.hit);
-        const float reach = std::max(std::max(std::abs(l.x), std::abs(l.y)*float(width)/float(height)), 0.05f);
+        const float reach = std::max(std::max(std::abs(grabWindow.x), std::abs(grabWindow.y)*float(width)/float(height)), 0.05f);
         grabScale = windowWidth/reach;
         }
       }
