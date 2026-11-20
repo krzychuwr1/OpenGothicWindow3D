@@ -149,7 +149,6 @@ class MainWindow : public Tempest::Window {
     bool                  eyeHistoryValid = false;
     GamepadInput          pad;
 #if defined(__ANDROID__)
-    PadState              previousNativePad;
     bool                  previousPadMenu = false;
 #endif
     Tempest::PointF       padLook;

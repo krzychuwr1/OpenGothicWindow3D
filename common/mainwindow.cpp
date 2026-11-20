@@ -39,6 +39,7 @@
 #include <Tempest/VulkanApi>
 #endif
 
+#include <algorithm>
 #include <chrono>
 
 #if defined(__ANDROID__)
@@ -1327,19 +1328,24 @@ void MainWindow::tickPad(uint64_t dt) {
   PadState state;
   const bool menu = padMenuContext();
 #if defined(__ANDROID__)
-  const auto g = AndroidApi::gamepad();
-  state.connected = g.connected;
-  state.lx = g.lx; state.ly = g.ly; state.rx = g.rx; state.ry = g.ry; state.lt = g.lt; state.rt = g.rt;
-  for(int i=0; i<PadState::Count; ++i)
-    state.buttons[i] = g.buttons[i];
-  const PadState native = state;
+  auto nativePad = [](const AndroidApi::GamepadState& g) {
+    PadState p;
+    p.connected = g.connected;
+    p.lx = g.lx; p.ly = g.ly; p.rx = g.rx; p.ry = g.ry; p.lt = g.lt; p.rt = g.rt;
+    static_assert(int(PadState::Count)==int(AndroidApi::GamepadState::Count));
+    std::copy_n(g.buttons,PadState::Count,p.buttons);
+    return p;
+    };
+  const auto native = AndroidApi::pollGamepad();
+  state = nativePad(native.state);
+  bool interrupted = native.interrupted;
+  PadState xrReleases;
   if(auto xr = XrWindow::inst()) {
-    state = PadState::merge(native,xr->pad());
-    PadState releaseSources;
-    if(xr->takePadInterruption(releaseSources))
-      pad.cancelMissing(PadState::merge(previousNativePad,releaseSources),previousPadMenu,state,menu);
+    state = PadState::merge(state,xr->pad());
+    interrupted |= xr->takePadInterruption(xrReleases);
     }
-  previousNativePad = native;
+  if(interrupted)
+    pad.cancelMissing(PadState::merge(nativePad(native.releaseSources),xrReleases),previousPadMenu,state,menu);
   previousPadMenu = menu;
 #endif
   if(!state.connected) {
@@ -1444,7 +1450,6 @@ void MainWindow::render(){
         if(padTime!=0) {
           pad.cancel();
 #if defined(__ANDROID__)
-          previousNativePad = {};
           inventory.cancelTaking();
 #endif
           clearInput();
