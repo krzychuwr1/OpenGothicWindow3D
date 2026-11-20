@@ -175,12 +175,6 @@ struct XrWindow::Impl {
   bool createSpaceWarpSwapchains();
   void destroySpaceWarpSwapchains();
   bool releaseSpaceWarp();
-  VkCommandPool            pool = VK_NULL_HANDLE;
-  static constexpr uint32_t Ring = 3;
-  VkCommandBuffer          cmd  [Ring] = {};
-  VkFence                  fence[Ring] = {};
-  uint32_t                 ringAt = 0;
-
   // Window frame parts: grab handle (idle/hover/held) and resize corners (left/right, hover/held)
   XrSwapchain              handleSwapchain = XR_NULL_HANDLE;
   XrSwapchain              cornerSwapchain = XR_NULL_HANDLE;
@@ -245,9 +239,10 @@ struct XrWindow::Impl {
   void updateInput();
   void cancelInput();
   void placeWindow();
-  void fillHandle();
-  void fillCorners();
-  void fillEnvironment();
+  void fillStaticImages();
+  void fillHandle(VkCommandBuffer cmd, VkFence fence);
+  void fillCorners(VkCommandBuffer cmd, VkFence fence);
+  void fillEnvironment(VkCommandBuffer cmd, VkFence fence);
   bool setEnvironment(bool useSky);
   V3   buttonCenter() const { return handleCenter() + V3{0,-0.10f,0}; }
   Grip targetAt(float x, float y) const;
@@ -289,11 +284,6 @@ XrWindow::Impl::~Impl() {
     for(int eye=0; eye<2; ++eye) {
       targets[eye].clear();
       }
-    for(auto f:fence)
-      if(f!=VK_NULL_HANDLE)
-        vkDestroyFence(vk.device, f, nullptr);
-    if(pool!=VK_NULL_HANDLE)
-      vkDestroyCommandPool(vk.device, pool, nullptr);
     }
   destroyPassthrough();
   if(panorama!=XR_NULL_HANDLE)
@@ -543,24 +533,6 @@ void XrWindow::Impl::createSession() {
   space.referenceSpaceType   = XR_REFERENCE_SPACE_TYPE_VIEW;
   if(!ok(xrCreateReferenceSpace(session, &space, &viewSpace), "view space"))
     throw std::runtime_error("OpenXR view space");
-
-  VkCommandPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-  poolInfo.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-  poolInfo.queueFamilyIndex = vk.queueFamily;
-  if(vkCreateCommandPool(vk.device, &poolInfo, nullptr, &pool)!=VK_SUCCESS)
-    throw std::runtime_error("OpenXR upload command pool");
-  VkCommandBufferAllocateInfo alloc = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-  alloc.commandPool        = pool;
-  alloc.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  alloc.commandBufferCount = Ring;
-  if(vkAllocateCommandBuffers(vk.device, &alloc, cmd)!=VK_SUCCESS)
-    throw std::runtime_error("OpenXR upload command buffers");
-  for(auto& f:fence) {
-    VkFenceCreateInfo fi = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    fi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    if(vkCreateFence(vk.device, &fi, nullptr, &f)!=VK_SUCCESS)
-      throw std::runtime_error("OpenXR upload fence");
-    }
 
   createSwapchains();
   if(hasSpaceWarp) {
@@ -1598,10 +1570,63 @@ bool XrWindow::Impl::setEnvironment(bool useSky) {
   return true;
   }
 
-void XrWindow::Impl::fillEnvironment() {
+void XrWindow::Impl::fillStaticImages() {
+  if(handleSwapchain==XR_NULL_HANDLE && cornerSwapchain==XR_NULL_HANDLE && panorama==XR_NULL_HANDLE)
+    return;
+
+  auto available = [](VkResult result) {
+    if(result==VK_SUCCESS)
+      return true;
+    Log::e("OpenXR: optional artwork upload setup failed, Vulkan result ", int(result));
+    if(result!=VK_ERROR_OUT_OF_HOST_MEMORY && result!=VK_ERROR_OUT_OF_DEVICE_MEMORY)
+      SystemApi::exit();
+    return false;
+    };
+
+  VkCommandPoolCreateInfo pi = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+  pi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  pi.queueFamilyIndex = vk.queueFamily;
+  VkCommandPool pool = VK_NULL_HANDLE;
+  if(!available(vkCreateCommandPool(vk.device, &pi, nullptr, &pool)))
+    return;
+  struct UploadResources {
+    VkDevice device;
+    VkCommandPool pool;
+    VkFence fence = VK_NULL_HANDLE;
+    ~UploadResources() {
+      vkDestroyFence(device, fence, nullptr);
+      vkDestroyCommandPool(device, pool, nullptr);
+      }
+    } resources{vk.device, pool};
+
+  VkCommandBufferAllocateInfo alloc = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+  alloc.commandPool = pool;
+  alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  alloc.commandBufferCount = 1;
+  VkCommandBuffer cmd = VK_NULL_HANDLE;
+  if(!available(vkAllocateCommandBuffers(vk.device, &alloc, &cmd)))
+    return;
+  VkFenceCreateInfo fi = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+  VkFence fence = VK_NULL_HANDLE;
+  if(!available(vkCreateFence(vk.device, &fi, nullptr, &fence)))
+    return;
+  resources.fence = fence;
+
+  // All artwork uploads are synchronous and share these resources for this frame only.
+  for(auto fill : {&Impl::fillHandle, &Impl::fillCorners, &Impl::fillEnvironment}) {
+    try {
+      (this->*fill)(cmd,fence);
+      }
+    catch(const std::bad_alloc&) {
+      Log::e("OpenXR: insufficient memory for optional window graphics");
+      }
+    }
+  }
+
+void XrWindow::Impl::fillEnvironment(VkCommandBuffer cmd, VkFence fence) {
   if(panorama==XR_NULL_HANDLE)
     return;
-  panoramaReady = uploadStatic(vk, cmd[0], fence[0], panorama, SkyW, SkyH, 1, duskPanorama(SkyW,SkyH));
+  panoramaReady = uploadStatic(vk, cmd, fence, panorama, SkyW, SkyH, 1, duskPanorama(SkyW,SkyH));
   if(!panoramaReady)
     return;
   if(environmentButton!=XR_NULL_HANDLE && hasPassthrough) {
@@ -1624,7 +1649,7 @@ void XrWindow::Impl::fillEnvironment() {
                     hover ? 0.97f : 0.58f+0.27f*light, 34.f-rim);
           }
       }
-    buttonReady = uploadStatic(vk, cmd[0], fence[0], environmentButton, ButtonW, ButtonH, 4, px);
+    buttonReady = uploadStatic(vk, cmd, fence, environmentButton, ButtonW, ButtonH, 4, px);
     }
   // Settings exist by the first rendered frame. An incomplete button should
   // never strand a wearer in VR when passthrough is available.
@@ -1632,7 +1657,7 @@ void XrWindow::Impl::fillEnvironment() {
     restoreSky = !setEnvironment(true);
   }
 
-void XrWindow::Impl::fillHandle() {
+void XrWindow::Impl::fillHandle(VkCommandBuffer cmd, VkFence fence) {
   // Handle: a capsule; idle, hover and held states
   if(handleSwapchain!=XR_NULL_HANDLE) {
     const uint32_t w = HandleW, h = HandleH;
@@ -1649,11 +1674,11 @@ void XrWindow::Impl::fillHandle() {
           const float d  = std::sqrt(dx*dx + fy*fy);
           px[(size_t(l)*h + y)*w + x] = pixel(st[l].r, st[l].g, st[l].b, st[l].o, r - d + 0.5f);
           }
-    handleReady = uploadStatic(vk, cmd[0], fence[0], handleSwapchain, w, h, 3, px);
+    handleReady = uploadStatic(vk, cmd, fence, handleSwapchain, w, h, 3, px);
     }
   }
 
-void XrWindow::Impl::fillCorners() {
+void XrWindow::Impl::fillCorners(VkCommandBuffer cmd, VkFence fence) {
   // Corners: an L bracket around the bottom-right corner (layers 0,1) and its mirror (2,3)
   if(cornerSwapchain!=XR_NULL_HANDLE) {
     const uint32_t n = CornerSize;
@@ -1676,7 +1701,7 @@ void XrWindow::Impl::fillCorners() {
           const auto& s = st[l%2];
           px[(size_t(l)*n + y)*n + x] = pixel(s.r, s.g, s.b, s.o, t - std::min(d1,d2) + 0.5f);
           }
-    cornersReady = uploadStatic(vk, cmd[0], fence[0], cornerSwapchain, n, n, 4, px);
+    cornersReady = uploadStatic(vk, cmd, fence, cornerSwapchain, n, n, 4, px);
     }
   }
 
@@ -1778,14 +1803,7 @@ bool XrWindow::submit(bool rendered) {
   std::lock_guard<std::mutex> guard(*s.vk.queueLock);
   if(rendered && !s.staticImagesAttempted) {
     s.staticImagesAttempted = true;
-    for(auto fill : {&Impl::fillHandle, &Impl::fillCorners, &Impl::fillEnvironment}) {
-      try {
-        (s.*fill)();
-        }
-      catch(const std::bad_alloc&) {
-        Log::e("OpenXR: insufficient memory for optional window graphics");
-        }
-      }
+    s.fillStaticImages();
     }
   bool hasImage = rendered && s.acquired[0]>=0 && s.acquired[1]>=0;
   bool warp = hasImage && s.spaceWarpWanted &&

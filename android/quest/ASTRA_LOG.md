@@ -736,3 +736,11 @@ Tone mapping and the final CMAA2 pass leave the XR color attachment active. A tr
 | Control 2 | 7.980 | 5.584 | 4.584 | 60.7 |
 
 Ordinary stereo city at CPU 1 / GPU 0, 14–15 VrApi samples, four complete CPU/GPU reports per run. Recording improved by 0.118 ms/frame on average, but both trials took longer per eye on the GPU than either control. GPU busy was 98% throughout. Mean frame rate went from 60.85 to 60.65 fps. The final control ended stopped and released to sleep at 95% and 41.0 °C. No visual-equivalence claim was needed to discard the trial.
+
+### Allocate Vulkan upload commands only while filling the window artwork
+
+Required XR startup created a ring of three command buffers and three fences before creating the game eyes. The static uploads only ever used the first pair. A failed allocation, even for an unused fence, could prevent stereo and passthrough from starting. The first rendered frame now uses one command buffer and fence for its synchronous artwork uploads, then releases both and the pool. Host or device allocation exhaustion leaves the independent game, passthrough, and SpaceWarp layers available. Other Vulkan setup failures request an application exit.
+
+A host Vulkan fixture injected failures at each creation step, wrote unusable handles on failure, and threw from each independent artwork fill. It checked eye availability, creation and release counts, device loss, and sessions without artwork. The original failed 265 of 433 checks. The new code passed all 433. The uninstrumented Android Release linked.
+
+On Quest, a diagnostic substituted a GPU allocation failure for the artwork fence after allocating the command buffer. Six SpaceWarp combat frames reported room passthrough available and all four artwork readiness flags clear. I inspected native 1600 × 900 stereo pairs 005 and 015, which showed the city, characters, focus text and health bar. The run reported 35.9 fps at CPU 1 / GPU 0 and ended stopped and released to sleep at 95% and 40.0 °C. The allocation error was injected.
