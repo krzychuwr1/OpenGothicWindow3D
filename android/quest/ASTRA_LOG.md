@@ -723,3 +723,16 @@ A failed or empty theme cleared the shared pending theme, including a replacemen
 A two-thread host fixture ran the production provider code with controlled loader and stream responses. It covered same-file and different-file replacements, disable/re-enable before and during a load, an empty theme, duplicate requests, and failed stop and PCM callbacks. The original failed 116 of 772 sample and queue checks. Both fixed providers passed all 772 checks. Windows and uninstrumented Android Release linked.
 
 A diagnostic Quest build queued a second `xt_daystd.sgt` request from another thread while substituting a missing segment for the first load. The app log showed the missing segment, the immediate same-file retry, actual XT_DayStd playback and a later successful transition to KH_DayStd. The SpaceWarp city spells run reported 36.6 fps at CPU 1 / GPU 0 and ended stopped and released to sleep at 96% and 37.0 °C. A listener did not assess the audio.
+
+### Rejected keeping the final eye render pass open for the HUD
+
+Tone mapping and the final CMAA2 pass leave the XR color attachment active. A trial removed the following preserve/rebind before the per-eye labels and HUD. It retained the inventory depth pass and the video/no-world clear. The player-facing change was reverted after timing.
+
+| Run | GPU ms/eye | Stereo record ms | Update ms | FPS |
+| --- | ---: | ---: | ---: | ---: |
+| Control 1 | 7.990 | 5.509 | 4.596 | 61.0 |
+| Trial 1 | 8.020 | 5.454 | 4.577 | 60.7 |
+| Trial 2 | 8.020 | 5.402 | 4.677 | 60.6 |
+| Control 2 | 7.980 | 5.584 | 4.584 | 60.7 |
+
+Ordinary stereo city at CPU 1 / GPU 0, 14–15 VrApi samples, four complete CPU/GPU reports per run. Recording improved by 0.118 ms/frame on average, but both trials took longer per eye on the GPU than either control. GPU busy was 98% throughout. Mean frame rate went from 60.85 to 60.65 fps. The final control ended stopped and released to sleep at 95% and 41.0 °C. No visual-equivalence claim was needed to discard the trial.
