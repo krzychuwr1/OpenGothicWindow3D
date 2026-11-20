@@ -596,7 +596,7 @@ void Renderer::prepareSky(Tempest::Encoder<Tempest::CommandBuffer>& cmd, WorldVi
   }
 
 void Renderer::draw(Attachment& result, Encoder<CommandBuffer>& cmd, uint8_t fId,
-                    VectorImage::Mesh& uiLayer, VectorImage::Mesh& numOverlay,
+                    VectorImage::Mesh& uiLayer, VectorImage::Mesh& numOverlay, VectorImage::Mesh* eyeLayer,
                     InventoryMenu& inventory, VideoWidget& video) {
   auto wview  = Gothic::inst().worldView();
   auto camera = Gothic::inst().camera();
@@ -606,6 +606,10 @@ void Renderer::draw(Attachment& result, Encoder<CommandBuffer>& cmd, uint8_t fId
     cmd.setFramebuffer({{result, Tempest::Preserve, Tempest::Preserve}});
     } else {
     cmd.setFramebuffer({{result, Vec4(), Tempest::Preserve}});
+    }
+  if(eyeLayer!=nullptr) {
+    cmd.setDebugMarker("UI-eye");
+    eyeLayer->draw(cmd);
     }
   cmd.setDebugMarker("UI");
   uiLayer.draw(cmd);
