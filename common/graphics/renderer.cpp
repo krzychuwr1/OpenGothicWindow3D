@@ -725,7 +725,9 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
 
   wview.visibilityPass(cmd, 1);
   cpuPhases.mark("visibility+hiz");
-  drawGBuffer(cmd, fId, wview);
+  // Measurement only (-skip eye1gbuffer): the most a shared multiview G-buffer could save
+  if(!(secondView && CommandLine::inst().debugSkip("eye1gbuffer")))
+    drawGBuffer(cmd, fId, wview);
   cpuPhases.mark("gbuffer");
 
   if(!secondView)
