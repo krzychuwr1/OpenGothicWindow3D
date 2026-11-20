@@ -676,3 +676,11 @@ City at noon, CPU 1 / GPU 0, ordinary stereo. Four complete CPU/GPU reports per 
 | Control 2 | 3.272 | 1.775 | 5.119 | 5.367 | 7.985 | 61.2 |
 
 Both trials improved animation and game tick. Mean update fell by 0.364 ms/frame, including 0.189 ms in animation. Recording rose by 0.183 ms/frame, leaving a 0.181 ms reduction across update and recording. This GPU-bound city run showed no FPS gain. The final control ended at 98% and 42.0 °C, stopped and released to sleep. A wearer did not operate a chest or door during this comparison.
+
+### Preserve usable XR controls when an optional action fails
+
+A failed optional action creation left its handle in both binding lists. An invalid suggested action could reject the Touch and hand profiles together. Failed pose spaces were still passed to the loader each frame, and a failed action-set attachment still triggered synchronization attempts. The game now publishes only successfully created handles, submits the surviving bindings separately for each profile, locates only valid spaces and keeps native input available if XR action attachment fails. A rejected attachment also releases its unattached action set.
+
+A host runtime injected errors into action creation, path conversion, attachment and one hand's pose space, including failed calls that modified their output. The previous code failed 27 of 75 checks. The new code passed all 75. Android and Windows Release linked.
+
+On Quest a diagnostic build rejected only the near-touch action at startup. The real runtime accepted 15 Touch bindings and four hand bindings, created both aim spaces and completed all five sampled action syncs. The SpaceWarp city run reported 36.7 fps at CPU 1 / GPU 0. A separate ordinary stereo run rejected action-set attachment in the process. The log recorded zero sync calls and three compositor captures showed native gamepad X opening and closing inventory. It ended at 97% and 42.0 °C, stopped and released to sleep. The failure injection did not simulate a physical user's aim or pinch.

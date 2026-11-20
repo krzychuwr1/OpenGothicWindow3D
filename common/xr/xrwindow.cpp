@@ -30,6 +30,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -253,7 +254,10 @@ struct XrWindow::Impl {
   V3   handleCenter() const;
   bool releaseEyes();
   void locateEyes();
-  XrPath path(const char* p) const { XrPath r = XR_NULL_PATH; xrStringToPath(instance, p, &r); return r; }
+  XrPath path(const char* name) const {
+    XrPath value = XR_NULL_PATH;
+    return ok(xrStringToPath(instance,name,&value),name) ? value : XR_NULL_PATH;
+    }
   float  windowHeight() const { return windowWidth*float(height)/float(width); }
   };
 
@@ -783,11 +787,17 @@ void XrWindow::Impl::createActions() {
   XrActionSetCreateInfo setInfo = {XR_TYPE_ACTION_SET_CREATE_INFO};
   std::strcpy(setInfo.actionSetName,          "game");
   std::strcpy(setInfo.localizedActionSetName, "Game");
-  ok(xrCreateActionSet(instance, &setInfo, &actionSet), "action set");
+  XrActionSet set = XR_NULL_HANDLE;
+  if(!ok(xrCreateActionSet(instance,&setInfo,&set), "action set"))
+    return;
 
   hands[0].path = path("/user/hand/left");
   hands[1].path = path("/user/hand/right");
-  const XrPath both[2] = {hands[0].path, hands[1].path};
+  XrPath handPaths[2];
+  uint32_t handCount = 0;
+  for(const auto& h:hands)
+    if(h.path!=XR_NULL_PATH)
+      handPaths[handCount++] = h.path;
 
   auto make = [&](XrAction& out, const char* name, const char* label, XrActionType type, bool perHand) {
     XrActionCreateInfo info = {XR_TYPE_ACTION_CREATE_INFO};
@@ -795,10 +805,14 @@ void XrWindow::Impl::createActions() {
     std::strcpy(info.actionName,          name);
     std::strcpy(info.localizedActionName, label);
     if(perHand) {
-      info.countSubactionPaths = 2;
-      info.subactionPaths      = both;
+      if(handCount==0)
+        return;
+      info.countSubactionPaths = handCount;
+      info.subactionPaths      = handPaths;
       }
-    ok(xrCreateAction(actionSet, &info, &out), name);
+    XrAction action = XR_NULL_HANDLE;
+    if(ok(xrCreateAction(set,&info,&action),name))
+      out = action;
     };
   make(aAim,        "aim",          "Aim",              XR_ACTION_TYPE_POSE_INPUT,     true);
   make(aNear,       "touch",        "Touch point",      XR_ACTION_TYPE_POSE_INPUT,     true);
@@ -813,11 +827,23 @@ void XrWindow::Impl::createActions() {
   make(aMenu,       "menu",         "Menu",             XR_ACTION_TYPE_BOOLEAN_INPUT,  false);
 
   auto suggest = [&](const char* profile, std::initializer_list<std::pair<XrAction,const char*>> list) {
+    const auto profilePath = path(profile);
+    if(profilePath==XR_NULL_PATH)
+      return;
     std::vector<XrActionSuggestedBinding> b;
-    for(auto& i:list)
-      b.push_back({i.first, path(i.second)});
+    for(auto [action,component]:list) {
+      if(action==XR_NULL_HANDLE)
+        continue;
+      const auto hand = std::string_view(component).starts_with("/user/hand/left/") ? 0u : 1u;
+      if(hands[hand].path==XR_NULL_PATH)
+        continue;
+      if(const auto binding = path(component); binding!=XR_NULL_PATH)
+        b.push_back({action,binding});
+      }
+    if(b.empty())
+      return;
     XrInteractionProfileSuggestedBinding s = {XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
-    s.interactionProfile     = path(profile);
+    s.interactionProfile     = profilePath;
     s.countSuggestedBindings = uint32_t(b.size());
     s.suggestedBindings      = b.data();
     ok(xrSuggestInteractionProfileBindings(instance, &s), profile);
@@ -852,20 +878,29 @@ void XrWindow::Impl::createActions() {
       });
     }
 
-  for(auto& h:hands) {
-    XrActionSpaceCreateInfo info = {XR_TYPE_ACTION_SPACE_CREATE_INFO};
-    info.action            = aAim;
-    info.subactionPath     = h.path;
-    info.poseInActionSpace = {{0,0,0,1},{0,0,0}};
-    ok(xrCreateActionSpace(session, &info, &h.aimSpace), "aim space");
-    info.action            = aNear;
-    ok(xrCreateActionSpace(session, &info, &h.nearSpace), "touch space");
-    }
-
   XrSessionActionSetsAttachInfo attach = {XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
   attach.countActionSets = 1;
-  attach.actionSets      = &actionSet;
-  ok(xrAttachSessionActionSets(session, &attach), "attach action sets");
+  attach.actionSets      = &set;
+  if(!ok(xrAttachSessionActionSets(session,&attach), "attach action sets")) {
+    xrDestroyActionSet(set);
+    return;
+    }
+  actionSet = set;
+
+  auto space = [&](XrAction action, XrPath hand, const char* name) -> XrSpace {
+    if(action==XR_NULL_HANDLE || hand==XR_NULL_PATH)
+      return XR_NULL_HANDLE;
+    XrActionSpaceCreateInfo info = {XR_TYPE_ACTION_SPACE_CREATE_INFO};
+    info.action            = action;
+    info.subactionPath     = hand;
+    info.poseInActionSpace = {{0,0,0,1},{0,0,0}};
+    XrSpace result = XR_NULL_HANDLE;
+    return ok(xrCreateActionSpace(session,&info,&result),name) ? result : XR_NULL_HANDLE;
+    };
+  for(auto& h:hands) {
+    h.aimSpace  = space(aAim,h.path,"aim space");
+    h.nearSpace = space(aNear,h.path,"touch space");
+    }
   }
 
 void XrWindow::Impl::stopSession() {
@@ -988,7 +1023,7 @@ void XrWindow::Impl::cancelInput() {
 void XrWindow::Impl::updateInput() {
   releasePad = padState;
   padState = {};
-  if(state!=XR_SESSION_STATE_FOCUSED || !AndroidApi::activityFocused())
+  if(actionSet==XR_NULL_HANDLE || state!=XR_SESSION_STATE_FOCUSED || !AndroidApi::activityFocused())
     return;
 
   XrActiveActionSet active = {actionSet, XR_NULL_PATH};
@@ -1001,6 +1036,8 @@ void XrWindow::Impl::updateInput() {
     }
 
   auto getF = [&](XrAction a, XrPath sub) -> std::optional<float> {
+    if(a==XR_NULL_HANDLE || sub==XR_NULL_PATH)
+      return std::nullopt;
     XrActionStateGetInfo gi = {XR_TYPE_ACTION_STATE_GET_INFO};
     gi.action = a; gi.subactionPath = sub;
     XrActionStateFloat st = {XR_TYPE_ACTION_STATE_FLOAT};
@@ -1009,6 +1046,8 @@ void XrWindow::Impl::updateInput() {
     return st.currentState;
     };
   auto getB = [&](XrAction a, XrPath sub) -> std::optional<bool> {
+    if(a==XR_NULL_HANDLE || (a==aStickClick && sub==XR_NULL_PATH))
+      return std::nullopt;
     XrActionStateGetInfo gi = {XR_TYPE_ACTION_STATE_GET_INFO};
     gi.action = a; gi.subactionPath = sub;
     XrActionStateBoolean st = {XR_TYPE_ACTION_STATE_BOOLEAN};
@@ -1017,6 +1056,8 @@ void XrWindow::Impl::updateInput() {
     return st.currentState!=XR_FALSE;
     };
   auto getV = [&](XrAction a, XrPath sub) -> std::optional<XrVector2f> {
+    if(a==XR_NULL_HANDLE || sub==XR_NULL_PATH)
+      return std::nullopt;
     XrActionStateGetInfo gi = {XR_TYPE_ACTION_STATE_GET_INFO};
     gi.action = a; gi.subactionPath = sub;
     XrActionStateVector2f st = {XR_TYPE_ACTION_STATE_VECTOR2F};
@@ -1035,6 +1076,8 @@ void XrWindow::Impl::updateInput() {
   for(size_t i=0; i<hands.size(); ++i) {
     auto& h = hands[i];
     auto locate = [&](XrSpace sp, XrPosef& out) {
+      if(sp==XR_NULL_HANDLE)
+        return false;
       XrSpaceLocation loc = {XR_TYPE_SPACE_LOCATION};
       const bool valid = XR_SUCCEEDED(xrLocateSpace(sp, localSpace, frame.predictedDisplayTime, &loc)) &&
                          (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
