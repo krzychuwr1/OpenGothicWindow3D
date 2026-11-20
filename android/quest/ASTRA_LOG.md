@@ -143,3 +143,18 @@ Decoded and inspected all 17 stereo pairs (1600 × 900 per eye, local capture pr
 Two further runs forced the dusk environment on the merged APK. The application logged `OpenXR: environment dusk panorama` in both. Meta's 1440 × 1440 screenshots show the star field above the window with SpaceWarp enabled (combat, capture prefix `20261120-031622-356`) and disabled (ordinary stereo quads, `20261120-031817-072`). The upper part of the backdrop is visible from the unattended headset pose. The screenshot framing excludes the physical toggle and the lower horizon. The two runs ended at 78% battery, 40.0 °C, with the app stopped.
 
 For the SpaceWarp run, all 14 stereo pairs with `-show motion` decoded successfully. Both eyes show bright directional colours on moving characters against a darkened street. After combat the static scene goes dark again. The 3% object depth bias was active throughout. These images establish that the merged debug path displays motion. Wearer comfort, physical switch interaction, saved choice across restarts and compositor-only cost remain open.
+
+### Avoiding unused second-eye shadow visibility lists
+
+The standard second-eye render reuses both raster shadow maps, but still cleared and culled their meshlet lists. It now skips those two views during indirect setup and culling. Each eye still runs its own main/HiZ culling. VSM initialization and the separate path-tracing render path retain the full view set.
+
+Main street at noon, default passthrough, no captures, 14 VrApi samples per run, CPU 1 / GPU 0. GPU and record times below average the final four complete profiler reports from each app log. The same baseline APK was reinstalled for the final control.
+
+| Run | Visibility ms/eye | GPU ms/eye | Record ms/frame | VrApi fps |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline 1 | 0.220 | 8.198 | 5.598 | 58.4 |
+| Candidate 1 | 0.198 | 8.155 | 5.700 | 55.7 |
+| Candidate 2 | 0.180 | 8.165 | 5.612 | 57.9 |
+| Baseline 2 | 0.223 | 8.193 | 5.703 | 57.6 |
+
+Kept for the repeatable reduction in GPU work. Mean GPU time fell about 0.035 ms/eye (0.07 ms/stereo frame), closely matching the measured visibility reduction. No CPU-recording or delivered-fps gain was established. Battery remained at 77–78% and the highest post-run temperature was 42.0 °C.

@@ -261,14 +261,16 @@ void DrawCommands::commit(Encoder<CommandBuffer>& enc) {
     }
   }
 
-void DrawCommands::visibilityPass(Encoder<CommandBuffer>& cmd, int pass) {
+void DrawCommands::visibilityPass(Encoder<CommandBuffer>& cmd, int pass, bool rasterShadows) {
   static bool freeze = false;
   if(freeze)
     return;
 
   cmd.setFramebuffer({});
+  const uint8_t firstView = rasterShadows ? 0 : SceneGlobals::V_ShadowLast+1;
   if(pass==0) {
-    for(auto& v:views) {
+    for(uint8_t i=firstView; i<SceneGlobals::V_Count; ++i) {
+      auto& v = views[i];
       if(this->cmd.empty())
         continue;
       if(!isViewEnabled(v.viewport))
@@ -281,7 +283,7 @@ void DrawCommands::visibilityPass(Encoder<CommandBuffer>& cmd, int pass) {
       }
     }
 
-  for(uint8_t v=0; v<SceneGlobals::V_Count; ++v) {
+  for(uint8_t v=firstView; v<SceneGlobals::V_Count; ++v) {
     const auto viewport = SceneGlobals::VisCamera(v);
     if(viewport==SceneGlobals::V_HiZ && pass!=0)
       continue;

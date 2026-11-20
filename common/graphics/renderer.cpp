@@ -734,7 +734,7 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
   // Multiview estimate (-skip eye1cull): the second eye reuses the first eye's culling
   const bool shareCull = secondView && CommandLine::inst().debugSkip("eye1cull");
   if(!shareCull)
-    wview.visibilityPass(cmd, 0);
+    wview.visibilityPass(cmd, 0, !secondView);
   // Sky, fog and irradiance tables change too little between the eyes to compute twice
   if(!secondView)
     prepareSky(cmd, wview);
@@ -742,7 +742,7 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
   if(!shareCull) {
     drawHiZ (cmd, wview);
     buildHiZ(cmd);
-    wview.visibilityPass(cmd, 1);
+    wview.visibilityPass(cmd, 1, !secondView);
     }
   cpuPhases.mark("visibility+hiz");
   if(shareCull) {

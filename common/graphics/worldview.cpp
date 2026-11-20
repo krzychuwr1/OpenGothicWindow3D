@@ -165,9 +165,9 @@ void WorldView::snapshotPrevInstances(Tempest::Encoder<Tempest::CommandBuffer>& 
   visuals.snapshotPrevInstances(cmd);
   }
 
-void WorldView::visibilityPass(Tempest::Encoder<Tempest::CommandBuffer>& cmd, int pass) {
+void WorldView::visibilityPass(Tempest::Encoder<Tempest::CommandBuffer>& cmd, int pass, bool rasterShadows) {
   cmd.setDebugMarker("Visibility");
-  visuals.visibilityPass(cmd, pass);
+  visuals.visibilityPass(cmd, pass, rasterShadows);
   }
 
 void WorldView::visibilityVsm(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
