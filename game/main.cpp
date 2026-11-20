@@ -184,13 +184,14 @@ int main(int argc,const char** argv) {
 #endif
   // OpenXR decides which Vulkan instance and device the game uses, so it starts first
   XrWindow::preInit();
+  std::unique_ptr<XrWindow> xrStartup(XrWindow::inst());
   auto                 api     = mkApi(cmd);
   const auto           gpuName = selectDevice(*api);
   CrashLog::setGpu(gpuName);
 
   Tempest::Device      device{*api,gpuName};
   // Release the XR image views and session while their Vulkan device is alive.
-  const std::unique_ptr<XrWindow> xrOwner(XrWindow::inst());
+  const auto xrOwner = std::move(xrStartup);
   CrashLog::setGpu(device.properties().name);
   if(auto xr = XrWindow::inst())
     xr->attach(device);

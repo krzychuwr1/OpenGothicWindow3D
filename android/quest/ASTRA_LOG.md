@@ -418,3 +418,9 @@ A host queue exercised eight event and creation sequences using the production e
 The first instance upload copies only live CPU bytes into a GPU allocation rounded up to 4 KiB. When a new morph descriptor fit in that padding, its initial all-zero write matched fresh CPU memory. It could therefore leave uninitialized intensity and sample offsets on the GPU. The allocator now marks appended blocks for upload when they fit in the existing GPU allocation. The dirty-bit helper uses a C++20 atomic reference to the existing integer so concurrent setters no longer access it as a different object type.
 
 A host fixture ran the production allocation, byte setter, commit and patch packing code against a device buffer prefilled with 0xA5. All six initial zero descriptors contained stale bytes on the old path. The fix initialized all six and preserved the untouched guard after each range. Android Release linked. Actual allocator contents depend on the driver; no specific visible morph glitch was attributed to this defect on Quest.
+
+### Retain ownership of OpenXR through Vulkan startup
+
+Failure during XR instance creation leaked the temporary window wrapper. After successful XR preinitialization, an exception in Vulkan API creation, GPU selection or device construction could also leave the singleton and its creation hooks pointing at the old instance. An initial owner now covers that interval. Once the Vulkan device exists it transfers ownership to the normal scope so XR image views and the session are still destroyed first.
+
+A host fault-injection fixture compiled the production ownership sequence and ran six startups in one process. Old code failed four cleanup checks. Fixed code released the instance and hooks at every failure point, successfully started again, and destroyed attached XR resources before the mock Vulkan device. Android Release linked. Startup failure was simulated on the host.

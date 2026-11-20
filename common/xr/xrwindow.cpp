@@ -493,14 +493,13 @@ bool XrWindow::Impl::createInstance() {
 bool XrWindow::preInit() {
   if(instance!=nullptr)
     return true;
-  auto w = new XrWindow();
+  std::unique_ptr<XrWindow> w(new XrWindow());
   if(!w->impl->createInstance()) {
     vulkanCreateHooks() = VulkanCreateHooks();
-    delete w;
     Log::i("OpenXR: not available, using the Android window");
     return false;
     }
-  instance = w;
+  instance = w.release();
   return true;
   }
 
