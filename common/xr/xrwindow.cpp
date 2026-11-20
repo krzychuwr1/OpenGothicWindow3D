@@ -13,6 +13,7 @@
 #include "graphics/renderer.h"
 
 #include <Tempest/VulkanInterop>
+#include <Tempest/StorageBuffer>
 #include <Tempest/AndroidApi>
 #include <Tempest/Log>
 #include <Tempest/SystemApi>
@@ -121,7 +122,7 @@ static std::array<float,4> windowFovMargins(const XrView& view, const XrPosef& w
   }
 
 // Parts of the window frame a hand can grab
-enum class Grip : uint8_t { None, Handle, CornerLeft, CornerRight, Environment, Dim, Aspect, Curve };
+enum class Grip : uint8_t { None, Handle, CornerLeft, CornerRight, Environment, Dim, Aspect, Curve, Hands };
 
 struct Hand {
   XrPath         path        = XR_NULL_PATH;
@@ -249,6 +250,29 @@ struct XrWindow::Impl {
   XrSwapchain              curveButton = XR_NULL_HANDLE; // curved window: flat or curved, idle or hovered
   bool                     curveReady = false, curved = false;
   int                      curveLevel = 0;               // 0 flat, 1 slight, 2 strong
+  bool                     sceneShown = false;
+  // Ghost hands and pointer rays
+  bool                     hasHandTracking = false;
+  PFN_xrCreateHandTrackerEXT  xrCreateHandTracker = nullptr;
+  PFN_xrDestroyHandTrackerEXT xrDestroyHandTracker = nullptr;
+  PFN_xrLocateHandJointsEXT   xrLocateHandJoints = nullptr;
+  XrHandTrackerEXT         handTracker[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+  std::array<XrHandJointLocationEXT,XR_HAND_JOINT_COUNT_EXT> joints[2] = {};
+  XrSwapchain              handsSwapchain[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+  std::vector<Tempest::Attachment> handsTargets[2];
+  int32_t                  handsAcquired[2] = {-1,-1};
+  bool                     handsDrawn[2] = {};
+  static constexpr uint32_t HandsSize = 1024;
+  XrView                   eyeViews[2] = {{XR_TYPE_VIEW},{XR_TYPE_VIEW}};
+  struct Capsule { float a[4], b[4], tint[4]; };
+  std::vector<Capsule>     handCapsules;
+  std::array<Tempest::StorageBuffer,8> handsBuffer;
+  Tempest::RenderPipeline  handsPipeline;
+  XrSwapchain              handsButton = XR_NULL_HANDLE;  // off / auto / always, idle or hovered
+  bool                     handsButtonReady = false;
+  int                      handsMode = 0;
+  float                    handsAlpha[2] = {};
+  void fillHands(VkCommandBuffer cmd, VkFence fence);
   std::atomic<int64_t>     lastGameInput{0};             // steady clock, nanoseconds
   float                    curveRadius = 0.f;            // metres: the arc's radius, centred near the viewer
   uint8_t                  recordingEye = 0;
@@ -347,8 +371,9 @@ struct XrWindow::Impl {
   V3   buttonCenter() const { return handleCenter() + V3{0,-0.10f*chromeScale(),0}; }
   V3   aspectCenter() const { return buttonCenter() + V3{-0.12f*chromeScale(),0,0}; }
   V3   curveCenter() const { return buttonCenter() + V3{-0.24f*chromeScale(),0,0}; }
+  V3   handsCenter() const { return buttonCenter() + V3{-0.36f*chromeScale(),0,0}; }
   void fillCurve(VkCommandBuffer cmd, VkFence fence);
-  bool isCurved() const { return curved && curveRadius>0.f; }
+  bool isCurved() const { return curved && curveRadius>0.f && sceneShown; }
   // The arc is centred on the viewer at the moment the window is placed or curved
   // Slight: the arc centred on the viewer. Strong: a tighter arc (the viewer stays inside it).
   void updateCurveRadius() {
@@ -416,8 +441,20 @@ XrWindow::Impl::~Impl() {
     device->waitIdle();
     for(int eye=0; eye<2; ++eye) {
       targets[eye].clear();
+      handsTargets[eye].clear();
       }
+    for(auto& b:handsBuffer)
+      b = Tempest::StorageBuffer();
+    handsPipeline = Tempest::RenderPipeline();
     }
+  for(auto& t:handTracker)
+    if(t!=XR_NULL_HANDLE && xrDestroyHandTracker)
+      xrDestroyHandTracker(t);
+  for(auto& sc:handsSwapchain)
+    if(sc!=XR_NULL_HANDLE)
+      xrDestroySwapchain(sc);
+  if(handsButton!=XR_NULL_HANDLE)
+    xrDestroySwapchain(handsButton);
   environmentDepth.reset();
   surfaceLight.reset();
   destroyPassthrough();
@@ -524,6 +561,9 @@ bool XrWindow::Impl::createInstance() {
     ext.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
   if(hasHandInteraction)
     ext.push_back(XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
+  hasHandTracking = has(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+  if(hasHandTracking)
+    ext.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
 
   XrInstanceCreateInfoAndroidKHR android = {XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
   android.applicationVM       = activity->vm;
@@ -567,6 +607,11 @@ bool XrWindow::Impl::createInstance() {
     return false;
   if(hasPerfSettings)
     hasPerfSettings = fn("xrPerfSettingsSetPerformanceLevelEXT", xrSetPerfLevel);
+  if(hasHandTracking) {
+    fn("xrCreateHandTrackerEXT",xrCreateHandTracker);
+    fn("xrDestroyHandTrackerEXT",xrDestroyHandTracker);
+    fn("xrLocateHandJointsEXT",xrLocateHandJoints);
+    }
   if(hasRefreshRate) {
     fn("xrGetDisplayRefreshRateFB",xrGetRate);
     fn("xrEnumerateDisplayRefreshRatesFB",xrEnumRates);
@@ -731,6 +776,15 @@ void XrWindow::Impl::createSession() {
     }
   createPassthrough();
   createActions();
+  if(xrCreateHandTracker && xrLocateHandJoints) {
+    for(int i=0; i<2; ++i) {
+      XrHandTrackerCreateInfoEXT ci = {XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT};
+      ci.hand         = i==0 ? XR_HAND_LEFT_EXT : XR_HAND_RIGHT_EXT;
+      ci.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
+      if(!ok(xrCreateHandTracker(session,&ci,&handTracker[i]),"hand tracker"))
+        handTracker[i] = XR_NULL_HANDLE;
+      }
+    }
   }
 
 static std::vector<XrSwapchainImageVulkan2KHR> swapchainImages(XrSwapchain chain) {
@@ -831,6 +885,21 @@ void XrWindow::Impl::createSwapchains() {
   width = std::min(width,capacityW);
   height = std::min(height,capacityH);
 
+  {
+    XrSwapchainCreateInfo hi = info;
+    hi.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT |
+                    XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT;
+    hi.width  = HandsSize;
+    hi.height = HandsSize;
+    for(int eye=0; eye<2; ++eye) {
+      handsSwapchain[eye] = makeSwapchain(session,hi,"hands swapchain");
+      if(handsSwapchain[eye]==XR_NULL_HANDLE)
+        break;
+      for(auto& im:swapchainImages(handsSwapchain[eye]))
+        handsTargets[eye].push_back(vulkanBorrowColorAttachment(*device,im.image,HandsSize,HandsSize));
+      }
+  }
+
   info.createFlags = XR_SWAPCHAIN_CREATE_STATIC_IMAGE_BIT;
   info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
   info.width       = HandleW;
@@ -847,6 +916,7 @@ void XrWindow::Impl::createSwapchains() {
   aspectButton = makeSwapchain(session, info, "aspect lock swapchain");
   info.arraySize   = 6; // flat, slight, strong: idle or hovered
   curveButton  = makeSwapchain(session, info, "curve button swapchain");
+  handsButton  = makeSwapchain(session, info, "hands button swapchain"); // off, auto, always
   info.arraySize   = 4;
 
   if(hasPanorama) {
@@ -1646,7 +1716,8 @@ void XrWindow::Impl::updateInput() {
           }
         continue;
         }
-      if(!canManipulate || grabbed==Grip::Environment || grabbed==Grip::Aspect || grabbed==Grip::Curve) {
+      if(!canManipulate || grabbed==Grip::Environment || grabbed==Grip::Aspect || grabbed==Grip::Curve ||
+         grabbed==Grip::Hands) {
         lastGrabTime = frame.predictedDisplayTime;
         continue;
         }
@@ -1700,6 +1771,10 @@ void XrWindow::Impl::updateInput() {
       grabWindow = toLocal(windowPose, h.hit);
       if(grabbed==Grip::Dim) {
         moveDim(h.hit);
+        } else if(grabbed==Grip::Hands) {
+        handsMode = (handsMode+1)%3;
+        Gothic::settingsSetI("INTERNAL", "xrHands", handsMode);
+        Gothic::flushSettings();
         } else if(grabbed==Grip::Curve) {
         curveLevel = (curveLevel+1)%3;
         curved = curveLevel>0;
@@ -1723,6 +1798,76 @@ void XrWindow::Impl::updateInput() {
         }
       }
     }
+
+  // Ghost hands and rays: always, or (auto) after three quiet seconds of keyboard, mouse and
+  // pad with a hand raised above table height
+  handCapsules.clear();
+  {
+    const bool quiet = steadyNow-lastGameInput.load() > 3000000000;
+    const float step = std::clamp(float(frame.predictedDisplayPeriod)*1e-9f*5.f, 0.02f, 0.3f);
+    const float halfW = windowWidth*0.5f, halfH = windowHeight()*0.5f;
+    auto capsule = [&](const XrVector3f& a, const XrVector3f& b, float radius, float opacity, V3 tint) {
+      handCapsules.push_back({{a.x,a.y,a.z,radius},{b.x,b.y,b.z,opacity},{tint.x,tint.y,tint.z,0.f}});
+      };
+    for(size_t i=0; i<hands.size() && i<2; ++i) {
+      auto& h = hands[i];
+      bool tracked = false;
+      if(handTracker[i]!=XR_NULL_HANDLE && handsMode!=0) {
+        XrHandJointsLocateInfoEXT li = {XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT};
+        li.baseSpace = localSpace;
+        li.time      = frame.predictedDisplayTime;
+        XrHandJointLocationsEXT locs = {XR_TYPE_HAND_JOINT_LOCATIONS_EXT};
+        locs.jointCount     = XR_HAND_JOINT_COUNT_EXT;
+        locs.jointLocations = joints[i].data();
+        tracked = XR_SUCCEEDED(xrLocateHandJoints(handTracker[i],&li,&locs)) && locs.isActive &&
+                  (joints[i][XR_HAND_JOINT_PALM_EXT].locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT);
+        }
+      const float y = tracked ? joints[i][XR_HAND_JOINT_PALM_EXT].pose.position.y
+                              : (h.aimValid ? h.aim.position.y : -1e9f);
+      const bool raised = headValid && y>headPos.y-0.45f;
+      const bool show = handsMode==2 || (handsMode==1 && quiet && raised);
+      handsAlpha[i] = std::clamp(handsAlpha[i]+(show ? step : -step), 0.f, 1.f);
+      if(handsAlpha[i]<=0.f || (!tracked && !h.aimValid))
+        continue;
+      const float fade = handsAlpha[i];
+      const V3 ghost{0.78f,0.88f,1.f};
+      if(tracked) {
+        auto bone = [&](int ja, int jb) {
+          const auto& a = joints[i][size_t(ja)];
+          const auto& b = joints[i][size_t(jb)];
+          if(!(a.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) || !(b.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
+            return;
+          const float r = std::clamp(std::min(a.radius,b.radius), 0.004f, 0.02f);
+          capsule(a.pose.position, b.pose.position, r, 0.5f*fade, ghost);
+          };
+        bone(XR_HAND_JOINT_WRIST_EXT, XR_HAND_JOINT_THUMB_METACARPAL_EXT);
+        for(int j=XR_HAND_JOINT_THUMB_METACARPAL_EXT; j<XR_HAND_JOINT_THUMB_TIP_EXT; ++j)
+          bone(j, j+1);
+        for(int f : {int(XR_HAND_JOINT_INDEX_METACARPAL_EXT), int(XR_HAND_JOINT_MIDDLE_METACARPAL_EXT),
+                     int(XR_HAND_JOINT_RING_METACARPAL_EXT), int(XR_HAND_JOINT_LITTLE_METACARPAL_EXT)}) {
+          bone(XR_HAND_JOINT_WRIST_EXT, f);
+          for(int j=f; j<f+4; ++j)
+            bone(j, j+1);
+          }
+        // Across the knuckles, so the palm reads as a surface
+        bone(XR_HAND_JOINT_INDEX_PROXIMAL_EXT, XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT);
+        bone(XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT, XR_HAND_JOINT_RING_PROXIMAL_EXT);
+        bone(XR_HAND_JOINT_RING_PROXIMAL_EXT, XR_HAND_JOINT_LITTLE_PROXIMAL_EXT);
+        }
+      // The ray, only towards the window and its controls
+      if(h.aimValid) {
+        if(auto hit = rayHit(h.aim)) {
+          const V3 l = unroll(toLocal(windowPose,*hit));
+          if(std::abs(l.x)<halfW+0.4f && l.y>-halfH-0.5f && l.y<halfH+0.2f) {
+            const bool target = h.hover!=Grip::None;
+            const V3 tint = target ? V3{1.f,0.88f,0.55f} : ghost;
+            capsule(h.aim.position, toXr(*hit), 0.0012f, (target ? 0.7f : 0.45f)*fade, tint);
+            capsule(toXr(*hit), toXr(*hit), target ? 0.008f : 0.006f, 0.9f*fade, tint);
+            }
+          }
+        }
+      }
+  }
 
   // Losing an action or taking the window interrupts gameplay. Only an active,
   // neutral sample rearms that control. Other sources can still release normally.
@@ -1796,6 +1941,9 @@ Grip XrWindow::Impl::targetAt(float x, float y) const {
   const V3 hc = handleCenter();
   if(handleReady && std::abs(x-hc.x)<0.16f*k && std::abs(y-hc.y)<0.045f*k)
     return Grip::Handle;
+  const V3 palm = handsCenter();
+  if(handsButtonReady && std::abs(x-palm.x)<0.05f*k && std::abs(y-palm.y)<0.04f*k)
+    return Grip::Hands;
   const V3 bend = curveCenter();
   if(curveReady && std::abs(x-bend.x)<0.05f*k && std::abs(y-bend.y)<0.04f*k)
     return Grip::Curve;
@@ -1840,6 +1988,8 @@ void XrWindow::Impl::locateEyes() {
     }
   if(!eyesValid)
     return;
+  eyeViews[0] = views[0];
+  eyeViews[1] = views[1];
   const XrQuaternionf inv = conjugate(windowPose.orientation);
   for(int i=0; i<2; ++i)
     eyeInWindow[i] = rotate(inv, toV3(views[i].pose.position) - toV3(windowPose.position));
@@ -1939,6 +2089,80 @@ bool XrWindow::eyeView(uint8_t eye, float verticalFovDeg, Camera::EyeView& out) 
   out.bottom = (-r[3]*unitsY - ey)*k;
   out.top    = (-r[2]*unitsY - ey)*k;
   return true;
+  }
+
+void XrWindow::drawHands(Encoder<CommandBuffer>& cmd, uint8_t eye, uint8_t slot) {
+  auto& s = *impl;
+  if(eye>1 || s.handCapsules.empty() || s.handsTargets[eye].empty() || !s.eyesValid)
+    return;
+  if(s.handsAcquired[eye]<0) {
+    std::lock_guard<std::mutex> guard(*s.vk.queueLock);
+    uint32_t index = 0;
+    XrSwapchainImageAcquireInfo acq = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    if(!ok(xrAcquireSwapchainImage(s.handsSwapchain[eye], &acq, &index), "acquire hands image"))
+      return;
+    XrSwapchainImageWaitInfo wait = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wait.timeout = XR_INFINITE_DURATION;
+    s.handsAcquired[eye] = int32_t(index);
+    if(xrWaitSwapchainImage(s.handsSwapchain[eye], &wait)!=XR_SUCCESS)
+      return;
+    }
+  if(s.handsPipeline.isEmpty()) {
+    auto shader = [&](const char* name) {
+      const auto code = GothicShader::get(name);
+      return s.device->shader(code.data,code.len);
+      };
+    RenderState st;
+    st.setCullFaceMode(RenderState::CullMode::NoCull);
+    st.setZTestMode(RenderState::ZTestMode::Always);
+    st.setZWriteEnabled(false);
+    st.setBlendSource(RenderState::BlendMode::One);
+    st.setBlendDest(RenderState::BlendMode::OneMinusSrcAlpha);
+    s.handsPipeline = s.device->pipeline(Triangles,st,shader("hand_ghost.vert.sprv"),shader("hand_ghost.frag.sprv"));
+    }
+  auto& buf = s.handsBuffer[slot%s.handsBuffer.size()];
+  const size_t bytes = s.handCapsules.size()*sizeof(Impl::Capsule);
+  if(buf.byteSize()<bytes)
+    buf = s.device->ssbo(Tempest::BufferHeap::Upload, s.handCapsules.data(), bytes);
+  else
+    buf.update(s.handCapsules.data(), 0, bytes);
+
+  // This eye's view of the LOCAL space (Vulkan clip, y down; depth is not used)
+  const auto& v = s.eyeViews[eye];
+  const float tL = std::tan(v.fov.angleLeft), tR = std::tan(v.fov.angleRight);
+  const float tU = std::tan(v.fov.angleUp),   tD = std::tan(v.fov.angleDown);
+  const float P[4][4] = {{2.f/(tR-tL), 0.f, (tR+tL)/(tR-tL), 0.f},
+                         {0.f, -2.f/(tU-tD), -(tU+tD)/(tU-tD), 0.f},
+                         {0.f, 0.f, -0.5f, 0.f},
+                         {0.f, 0.f, -1.f, 0.f}};
+  const XrQuaternionf q = conjugate(v.pose.orientation);
+  const V3 ex = rotate(q,V3{1,0,0}), ey = rotate(q,V3{0,1,0}), ez = rotate(q,V3{0,0,1});
+  const V3 t  = rotate(q,toV3(v.pose.position));
+  const float V[4][4] = {{ex.x, ey.x, ez.x, -t.x},
+                         {ex.y, ey.y, ez.y, -t.y},
+                         {ex.z, ey.z, ez.z, -t.z},
+                         {0.f, 0.f, 0.f, 1.f}};
+  struct Push { float m[16]; float size[4]; } push = {};
+  for(int r=0; r<4; ++r)
+    for(int c=0; c<4; ++c) {
+      float sum = 0;
+      for(int k=0; k<4; ++k)
+        sum += P[r][k]*V[k][c];
+      push.m[c*4+r] = sum;
+      }
+  const float n = float(Impl::HandsSize);
+  push.size[0] = n;
+  push.size[1] = n;
+  push.size[2] = n/(tU-tD);
+
+  auto& target = s.handsTargets[eye][size_t(s.handsAcquired[eye])];
+  cmd.setDebugMarker("XR ghost hands");
+  cmd.setFramebuffer({{target, Vec4(0,0,0,0), Tempest::Preserve}});
+  cmd.setBinding(0, buf);
+  cmd.setPushData(&push, sizeof(push));
+  cmd.setPipeline(s.handsPipeline);
+  cmd.draw(nullptr, 0, 6, 0, s.handCapsules.size());
+  s.handsDrawn[eye] = true;
   }
 
 Tempest::Rect XrWindow::uiViewport(uint8_t eye) const {
@@ -2479,7 +2703,7 @@ void XrWindow::Impl::fillStaticImages() {
   resources.fence = fence;
 
   // All artwork uploads are synchronous and share these resources for this frame only.
-  for(auto fill : {&Impl::fillHandle, &Impl::fillCorners, &Impl::fillEnvironment, &Impl::fillSlider, &Impl::fillAspect, &Impl::fillCurve}) {
+  for(auto fill : {&Impl::fillHandle, &Impl::fillCorners, &Impl::fillEnvironment, &Impl::fillSlider, &Impl::fillAspect, &Impl::fillCurve, &Impl::fillHands}) {
     try {
       (this->*fill)(cmd,fence);
       }
@@ -2521,6 +2745,46 @@ void XrWindow::Impl::fillEnvironment(VkCommandBuffer cmd, VkFence fence) {
   // never strand a wearer in VR when passthrough is available.
   if(buttonReady && Gothic::settingsGetI("INTERNAL","xrEnvironment")==1)
     restoreSky = !setEnvironment(true);
+  }
+
+void XrWindow::Impl::fillHands(VkCommandBuffer cmd, VkFence fence) {
+  handsMode = std::clamp(Gothic::settingsGetI("INTERNAL","xrHands"),0,2);
+  if(handsButton==XR_NULL_HANDLE)
+    return;
+  // An open hand: crossed out (off), with a small "A" dot (auto), plain (always)
+  std::vector<uint32_t> px(size_t(ButtonW)*ButtonH*6);
+  for(unsigned layer=0; layer<6; ++layer) {
+    const unsigned mode = layer/2;
+    const bool hover = (layer&1)!=0;
+    for(uint32_t y=0; y<ButtonH; ++y)
+      for(uint32_t x=0; x<ButtonW; ++x) {
+        const float u = float(x)+0.5f-float(ButtonW)*0.5f;
+        const float v = float(y)+0.5f-float(ButtonH)*0.5f;
+        const float rim = std::hypot(std::max(std::abs(u)-22.f,0.f), v);
+        auto seg = [&](float ax, float ay, float bx, float by) {
+          const float dx = bx-ax, dy = by-ay;
+          const float t = std::clamp(((u-ax)*dx+(v-ay)*dy)/(dx*dx+dy*dy), 0.f, 1.f);
+          return std::hypot(u-ax-dx*t, v-ay-dy*t);
+          };
+        float d = std::max(std::abs(u)-6.f, std::abs(v-6.f)-5.f);          // palm
+        d = std::min(d, seg(-6.f,0.f,-7.f,-11.f)-1.6f);                     // fingers
+        d = std::min(d, seg(-2.f,0.f,-2.f,-14.f)-1.6f);
+        d = std::min(d, seg( 2.f,0.f, 2.f,-13.f)-1.6f);
+        d = std::min(d, seg( 6.f,0.f, 7.f,-10.f)-1.6f);
+        d = std::min(d, seg(-6.f,8.f,-13.f,2.f)-1.8f);                      // thumb
+        if(mode==0)
+          d = std::min(d, seg(-14.f,13.f,14.f,-13.f)-1.4f);                 // crossed out
+        if(mode==1)
+          d = std::min(d, std::hypot(u-15.f,v+10.f)-3.f);                   // auto: a dot
+        const float ink = std::clamp(0.5f-d,0.f,1.f);
+        const float edge = std::clamp(1.5f-std::abs(rim-32.f),0.f,1.f);
+        const float light = std::max(ink,edge*0.62f);
+        px[(size_t(layer)*ButtonH+y)*ButtonW+x] =
+            pixel(0.12f+0.84f*light,0.15f+0.82f*light,0.20f+0.8f*light,
+                  hover ? 0.97f : 0.12f+0.16f*light, 34.f-rim);
+        }
+    }
+  handsButtonReady = uploadStatic(vk, cmd, fence, handsButton, ButtonW, ButtonH, 6, px);
   }
 
 void XrWindow::Impl::fillCurve(VkCommandBuffer cmd, VkFence fence) {
@@ -2791,7 +3055,7 @@ bool XrWindow::submit(bool rendered) {
     }
 
   // Background, eyes, button, slider rail and thumb, handle and corner brackets.
-  std::array<const XrCompositionLayerBaseHeader*,14> layers;
+  std::array<const XrCompositionLayerBaseHeader*,16> layers;
   uint32_t layerCount = 0;
   auto addLayer = [&](const auto& layer) {
     layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer);
@@ -2934,6 +3198,20 @@ bool XrWindow::submit(bool rendered) {
     lockButton.size = {0.104f*s.chromeScale(),0.065f*s.chromeScale()};
     addLayer(lockButton);
     }
+  XrCompositionLayerQuad palmButton = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+  if(s.handsButtonReady && hasImage) {
+    const bool hover = s.grabbed==Grip::Hands || s.hands[0].hover==Grip::Hands || s.hands[1].hover==Grip::Hands;
+    palmButton.layerFlags = chromeFlags;
+    palmButton.space = s.localSpace;
+    palmButton.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    palmButton.subImage.swapchain = s.handsButton;
+    palmButton.subImage.imageRect.extent = {int32_t(Impl::ButtonW), int32_t(Impl::ButtonH)};
+    palmButton.subImage.imageArrayIndex = uint32_t(s.handsMode)*2u + (hover ? 1u : 0u);
+    palmButton.pose = s.windowPose;
+    palmButton.pose.position = toXr(toWorld(s.windowPose, s.handsCenter()));
+    palmButton.size = {0.104f*s.chromeScale(),0.065f*s.chromeScale()};
+    addLayer(palmButton);
+    }
   XrCompositionLayerQuad bendButton = {XR_TYPE_COMPOSITION_LAYER_QUAD};
   if(s.curveReady && hasImage) {
     const bool hover = s.grabbed==Grip::Curve || s.hands[0].hover==Grip::Curve || s.hands[1].hover==Grip::Curve;
@@ -3013,6 +3291,29 @@ bool XrWindow::submit(bool rendered) {
       q.size                     = {sz, sz};
       addLayer(q);
       }
+    }
+
+  XrCompositionLayerProjection     handsLayer = {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+  XrCompositionLayerProjectionView handsView[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
+  const bool handsShown = hasImage && s.handsDrawn[0] && s.handsDrawn[1];
+  for(int eye=0; eye<2; ++eye) {
+    s.handsDrawn[eye] = false;
+    if(!releaseImage(s.handsSwapchain[eye], s.handsAcquired[eye]))
+      SystemApi::exit();
+    }
+  if(handsShown && layerCount<layers.size()) {
+    for(int eye=0; eye<2; ++eye) {
+      auto& v = handsView[eye];
+      v.pose = s.eyeViews[eye].pose;
+      v.fov  = s.eyeViews[eye].fov;
+      v.subImage.swapchain = s.handsSwapchain[eye];
+      v.subImage.imageRect = {{0,0},{int32_t(Impl::HandsSize),int32_t(Impl::HandsSize)}};
+      }
+    handsLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT; // premultiplied
+    handsLayer.space      = s.localSpace;
+    handsLayer.viewCount  = 2;
+    handsLayer.views      = handsView;
+    addLayer(handsLayer);
     }
 
   XrFrameEndInfo end = {XR_TYPE_FRAME_END_INFO};
@@ -3129,6 +3430,13 @@ bool XrWindow::takePadInterruption(PadState& releaseSources) {
   return std::exchange(impl->padInterrupted,false);
   }
 
+void XrWindow::setSceneShown(bool shown) {
+  auto& s = *impl;
+  if(s.sceneShown!=shown && s.curved)
+    s.skipExtrapolation = true;
+  s.sceneShown = shown;
+  }
+
 void XrWindow::noteGameInput() {
   impl->lastGameInput = std::chrono::duration_cast<std::chrono::nanoseconds>(
                           std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -3183,6 +3491,7 @@ PadState  XrWindow::pad() const { return {}; }
 bool XrWindow::takePadInterruption(PadState&) { return false; }
 bool      XrWindow::isFocused() const { return false; }
 void      XrWindow::noteGameInput() {}
+void      XrWindow::setSceneShown(bool) {}
 bool      XrWindow::isVisible() const { return false; }
 
 #endif

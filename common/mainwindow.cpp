@@ -1702,6 +1702,11 @@ void MainWindow::render(){
         };
       if(predictionMode==0)
         updateAtPrediction();
+      {
+        auto* world = Gothic::inst().world();
+        xr->setSceneShown(world!=nullptr && world->view()!=nullptr && !video.isActive() && !rootMenu.isActive() &&
+                          Gothic::inst().checkLoading()==Gothic::LoadState::Idle);
+      }
       const uint64_t t0 = nowUs();
       const bool renderable = xr->beginFrame();
       const uint64_t t1 = nowUs();
@@ -1980,6 +1985,8 @@ void MainWindow::renderFrame(bool xr) {
           XrWindow::inst()->drawWindowEdges(enc);
         }
       }
+    if(xr)
+      XrWindow::inst()->drawHands(enc, uint8_t(view), uint8_t(cmdId));
 #endif
     const uint64_t te = nowUs();
     timing.drawCall += te-ts;

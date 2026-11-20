@@ -246,6 +246,7 @@ Gothic::Gothic(GameModDescriptor desc) {
 #ifdef OPENGOTHIC_XR
   defaults->set("INTERNAL",     "xrWindowEdges", 2); // rounded, soft edge
   defaults->set("INTERNAL",     "xrRefreshRate", 1); // 72 Hz
+  defaults->set("INTERNAL",     "xrHands",       0); // ghost hands off
 #endif
 
   defaults->set("VIDEO", "zVidBrightness", 0.5f);

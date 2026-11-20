@@ -82,6 +82,14 @@ class XrWindow final {
     // Keyboard, mouse or pad input for the game: the window controls ignore pointing and
     // pinching until it has been quiet for a moment, so playing never grabs them by accident
     void              noteGameInput();
+    // The game shows its 3D scene (not the main menu, a loading screen or a video): only then
+    // can the window be curved; flat pictures are shown on a flat window
+    void              setSceneShown(bool shown);
+#ifdef OPENGOTHIC_XR
+    // Ghost hands and pointer rays, drawn into their own layer over everything (off, auto
+    // or always, from the hand button below the window). slot: the eye's frame slot.
+    void              drawHands(Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t eye, uint8_t slot);
+#endif
     // The session shows frames (headset worn and the app in front, possibly under a system menu)
     bool              isVisible() const;
 
