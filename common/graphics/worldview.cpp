@@ -53,7 +53,6 @@ void WorldView::preFrameUpdate(const Camera& camera, uint64_t tickCount, uint8_t
   sGlobal.setViewVsm(camera.viewShadowVsm(ldir), camera.viewShadowVsmLwc(ldir));
   sGlobal.originLwc = camera.originLwc();
   sGlobal.setUnderWater(camera.isInWater());
-  sGlobal.setSky(gSky);
   sGlobal.setWorld(*this);
 
   pfxGroup.setViewerPos(camera.originLwc());
@@ -62,6 +61,7 @@ void WorldView::preFrameUpdate(const Camera& camera, uint64_t tickCount, uint8_t
   if(!secondView)
     gLights.tick(tickCount);
   sGlobal.setTime(tickCount);
+  sGlobal.setSky(gSky);
   sGlobal.commitUbo(fId);
 
   pfxGroup.preFrameUpdate(fId);

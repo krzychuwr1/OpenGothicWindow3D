@@ -483,3 +483,9 @@ A diagnostic APK injected controller samples into the focused Quest city scene. 
 The morph scheduler removed an object after sampling a one-frame pose even when the pose had a future end time. The last nonzero deformation then stayed in its GPU descriptor. A finite pose now stays scheduled through the end tick and clears on the first later tick. Its two sample offsets are identical, so its interpolation field stays zero while the pose is held. An unlimited one-frame pose still leaves the scheduler after its first update.
 
 A host test used the production animation start and update functions with a recording instance buffer. It checked the deadline boundary, an unlimited pose, an extension and a shorter multi-frame companion. The previous implementation failed four checks and the fix passed all of them. The descriptor stayed byte-identical until the finite pose expired. Android Release linked. No specific facial expression was isolated on the headset.
+
+### Sample cloud motion at the same tick in both eyes
+
+The sky uniforms took their cloud offsets from the previous global tick. The first eye advanced that tick after sampling, so the next eye saw a different sky phase. Both eyes now sample the sky immediately after setting the frame time and before uploading their uniforms.
+
+A host check ran the production cloud calculation in the old and new uniform update orders at six stereo ticks, including a repeated tick, both layer wraps and a tick beyond 32 bits. The old order produced ten stale layer/time pairs. The corrected order produced zero. Android Release linked. The test measured uniform values directly. The small temporal offset has not been judged by a wearer.
