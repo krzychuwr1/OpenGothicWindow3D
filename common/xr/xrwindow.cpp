@@ -481,6 +481,8 @@ void XrWindow::Impl::createSwapchains() {
   // Mutable format: the game writes its gamma-encoded RGBA8 through a UNORM view of the sRGB image
   info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT |
                      XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT;
+  if(CommandLine::inst().xrCaptureInterval()>0)
+    info.usageFlags |= XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT; // -capture reads the eye images back
   info.format      = format;
   info.sampleCount = 1;
   info.width       = width;
@@ -533,6 +535,8 @@ void XrWindow::Impl::createSpaceWarpSwapchains() {
   for(int eye=0; eye<2; ++eye) {
     XrSwapchainCreateInfo info = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
     info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    if(CommandLine::inst().debugShow("motion"))
+      info.usageFlags |= XR_SWAPCHAIN_USAGE_SAMPLED_BIT; // -show motion samples it
     info.format      = VK_FORMAT_R16G16B16A16_SFLOAT;
     info.sampleCount = 1;
     info.width       = mvWidth;

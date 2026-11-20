@@ -28,6 +28,8 @@ param(
   [ValidateSet('none','combat','spells')]
   [string]$Scenario = 'none',
   [int]$Captures    = 0,
+  # Seconds between the game's own per-eye PNG captures (0: none), saved to captures/
+  [int]$EyeCaptures = 0,
   # Test runs ask for low clocks: less heat and battery drain (compare runs at the same level)
   [ValidateSet('low','high')]
   [string]$Perf     = 'low'
@@ -39,7 +41,8 @@ switch ($Scenario) {
   'spells' { $exec += ';cheat god;insert SKELETONMAGE;insert SKELETONMAGE;insert FIREWARAN' }
 }
 $argsFile = [IO.Path]::GetTempFileName()
-"-nomenu -novideo -gpuprofile -perf $Perf $Extra -exec `"$exec`"" | Set-Content $argsFile -NoNewline -Encoding ascii
+$capArg = if ($EyeCaptures -gt 0) { "-capture $EyeCaptures" } else { '' }
+"-nomenu -novideo -gpuprofile -perf $Perf $capArg $Extra -exec `"$exec`"" | Set-Content $argsFile -NoNewline -Encoding ascii
 adb push $argsFile /sdcard/OpenGothic/args.txt | Out-Null
 Remove-Item $argsFile
 
@@ -68,6 +71,10 @@ if ($Captures -gt 0) {
   }
   $shots = @(adb shell ls /sdcard/Oculus/Screenshots) | Where-Object { $_ -and ($before -notcontains $_) }
 }
+$eyeFiles = @()
+if ($EyeCaptures -gt 0) {
+  $eyeFiles = @(adb shell run-as $Package ls files) | Where-Object { $_ -like 'eye-*.png' }
+}
 adb shell rm -f /sdcard/OpenGothic/args.txt
 # Stop the game and let the headset sleep again between runs
 adb shell am force-stop $Package
@@ -87,6 +94,17 @@ if ($fps.Count -eq 0) { throw 'No VrApi samples: is the app in front and the hea
   ($cg | Measure-Object -Average).Average, $fps.Count
 if ($vr[-1] -match '(CPU4/GPU=[^,]+,[^,]+)') { "clocks: $($Matches[1])" }
 $cpu | ForEach-Object { ($_ -split 'app\s+:\s+')[-1] }
+if ($eyeFiles.Count -gt 0) {
+  $dir = Join-Path (Split-Path $PSScriptRoot) 'captures'
+  New-Item -ItemType Directory -Force $dir | Out-Null
+  $stamp = Get-Date -Format 'MMdd-HHmmss'
+  foreach ($f in $eyeFiles) {
+    $dst = Join-Path $dir "$stamp-$Waypoint-$Scenario-$f"
+    cmd /c "adb exec-out run-as $Package cat files/$f > `"$dst`""
+    "eye capture: $dst"
+  }
+  adb shell run-as $Package sh -c "'rm -f files/eye-*.png'"
+}
 if ($shots.Count -gt 0) {
   $dir = Join-Path (Split-Path $PSScriptRoot) 'captures'
   New-Item -ItemType Directory -Force $dir | Out-Null

@@ -55,6 +55,10 @@ class CommandLine {
     bool                isGpuProfile()     const { return gpuProfile; }
     // Profiling aid: -skip sun,ambient,lights,sky leaves those passes out
     bool                debugSkip(std::string_view pass) const { return skipPasses.find(pass)!=std::string::npos; }
+    // -show motion: debug views drawn into the XR window instead of the picture
+    bool                debugShow(std::string_view view) const { return showViews.find(view)!=std::string::npos; }
+    // -capture SECONDS: XR saves both eyes' images as PNG files in the app's files folder
+    int                 xrCaptureInterval() const { return captureSec; }
     // XR CPU/GPU performance level request: "low" (testing, battery and heat), default high
     std::string_view    xrPerfLevel() const { return perfLevel; }
     // -setting SECTION KEY VALUE, applied over Gothic.ini at startup (testing)
@@ -75,6 +79,8 @@ class CommandLine {
     bool                skipVideo    = false;
     bool                gpuProfile   = false;
     std::string         skipPasses;
+    std::string         showViews;
+    int                 captureSec = 0;
     std::string         perfLevel;
     std::vector<SettingOverride> settingOverrides;
     bool                devmode      = false;

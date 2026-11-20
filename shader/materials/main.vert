@@ -246,6 +246,9 @@ void vertexShader(const uvec4 task) {
     const Vertex vert      = pullVertex(bucketId, vboOffset);
     motionCur  = pos;
     motionPrev = scene.prevViewProject*vec4(processVertexPrev(vert, bucketId, instanceId, vboOffset), 1.0);
+    // The scene depth it is tested against is point-sampled at motion-vector resolution: pull the
+    // surface 3% towards the camera (1-d scales with 1/distance) so it does not fail against itself
+    gl_Position.z = pos.w - (pos.w - pos.z)*1.03;
   }
 #endif
 #if defined(MAT_VARYINGS)

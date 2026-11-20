@@ -2136,6 +2136,17 @@ void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
   wview.drawMotion(cmd);
   }
 
+void Renderer::drawSpaceWarpDebug(Encoder<CommandBuffer>& cmd, Attachment& motion, Attachment& result) {
+  struct Push { Vec2 invSize; } push;
+  push.invSize = Vec2(1.f/float(result.w()), 1.f/float(result.h()));
+  cmd.setDebugMarker("SpaceWarp debug view");
+  cmd.setFramebuffer({{result, Tempest::Preserve, Tempest::Preserve}});
+  cmd.setBinding(0, motion, Sampler::nearest());
+  cmd.setPushData(&push, sizeof(push));
+  cmd.setPipeline(shaders.spaceWarpDebug);
+  cmd.draw(nullptr, 0, 3);
+  }
+
 void Renderer::drawSky(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
   if(CommandLine::inst().debugSkip("sky"))
     return;

@@ -93,6 +93,13 @@ void Shaders::compileShaders() noexcept {
     auto mv   = GothicShader::get("spacewarp_mv.frag.sprv");
     spaceWarpMv = Resources::device().pipeline(Triangles, st, Resources::device().shader(vs.data,vs.len),
                                                Resources::device().shader(mv.data,mv.len));
+    RenderState sd;
+    sd.setZTestMode(RenderState::ZTestMode::Always);
+    sd.setBlendSource(RenderState::BlendMode::SrcAlpha);
+    sd.setBlendDest  (RenderState::BlendMode::OneMinusSrcAlpha);
+    auto dbg  = GothicShader::get("spacewarp_debug.frag.sprv");
+    spaceWarpDebug = Resources::device().pipeline(Triangles, sd, Resources::device().shader(vs.data,vs.len),
+                                                  Resources::device().shader(dbg.data,dbg.len));
   }
 
   patch     = computeShader("patch.comp.sprv");

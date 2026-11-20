@@ -25,6 +25,10 @@
 #include "utils/dbgpainter.h"
 
 #include "commandline.h"
+
+#include <cstdio>
+#include <string>
+#include <thread>
 #include "gothic.h"
 #include "xr/xrwindow.h"
 #include "marvin.h"
@@ -1549,6 +1553,8 @@ void MainWindow::renderFrame(bool xr) {
       if(motion!=nullptr && depth!=nullptr) {
         const auto prev = camera->eyeViewProjectFrom(prevBaseValid ? prevBaseView : camera->baseView());
         renderer.drawSpaceWarp(enc, *Gothic::inst().worldView(), *motion, *depth, prev);
+        if(CommandLine::inst().debugShow("motion"))
+          renderer.drawSpaceWarpDebug(enc, *motion, backbuf);
         }
       }
     const uint64_t te = nowUs();
@@ -1559,6 +1565,22 @@ void MainWindow::renderFrame(bool xr) {
     const uint64_t tsub = nowUs();
     sync = device.submit(cmd);
     timing.submit += nowUs()-tsub;
+    if(xr && view==0 && CommandLine::inst().xrCaptureInterval()>0) {
+      const uint64_t now = Application::tickCount();
+      captureDue = now>=captureNext;
+      if(captureDue)
+        captureNext = now + uint64_t(CommandLine::inst().xrCaptureInterval())*1000;
+      }
+    if(xr && captureDue) {
+      // Development: both eyes exactly as rendered (before the runtime warps them)
+      sync.wait();
+      char name[64] = {};
+      std::snprintf(name, sizeof(name), "eye-%03u-%c.png", captureCount, view==0 ? 'L' : 'R');
+      // Encoding a PNG takes about a second at low clocks: off the render thread
+      std::thread([pm = device.readPixels(backbuf), file = std::string(name)]() { pm.save(file.c_str()); }).detach();
+      if(view==1)
+        ++captureCount;
+      }
     timing.record += nowUs()-tr;
     if(!xr)
       device.present(*swapchain);

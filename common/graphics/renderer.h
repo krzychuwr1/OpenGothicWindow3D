@@ -41,6 +41,8 @@ class Renderer final {
     void setMotionVectors(bool enable, const Tempest::Matrix4x4& prevBaseView, bool prevValid) {
       motionVectors = enable; prevBase = prevBaseView; prevBaseValid = prevValid;
       }
+    // -show motion: the eye's motion vectors painted over its picture (debugging)
+    void drawSpaceWarpDebug(Tempest::Encoder<Tempest::CommandBuffer>& cmd, Tempest::Attachment& motion, Tempest::Attachment& result);
     void drawSpaceWarp(Tempest::Encoder<Tempest::CommandBuffer>& cmd, WorldView& wview,
                        Tempest::Attachment& motion, Tempest::ZBuffer& depth, const Tempest::Matrix4x4& prevViewProject);
 

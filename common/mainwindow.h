@@ -150,6 +150,9 @@ class MainWindow : public Tempest::Window {
     Tempest::VectorImage  uiLayer, numOverlay;
     Tempest::VectorImage::Mesh uiMesh [Resources::MaxFramesInFlight];
     Tempest::VectorImage::Mesh numMesh[Resources::MaxFramesInFlight];
+    uint64_t                   captureNext = 0;
+    uint32_t                   captureCount = 0;
+    bool                       captureDue = false;
     Tempest::VectorImage       eyeOverlay; // XR: interface drawn per eye at scene depth
     Tempest::VectorImage::Mesh eyeMesh[Resources::MaxFramesInFlight];
 
