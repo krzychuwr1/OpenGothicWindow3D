@@ -27,8 +27,8 @@ graphics-device choice, which has no use on the headset, is repurposed for it. I
 **Motion vectors**
 
 1. Camera pass: a full-screen pass at 400x225 per eye reconstructs each pixel's world position
-   from the scene depth and projects it with the previous frame's game camera seen through the
-   current eye (`Renderer::drawSpaceWarp`). About 0.1 ms per eye: one depth read and two matrix
+   from the scene depth and projects it with that eye's previous submitted view-projection
+   (`Renderer::drawSpaceWarp`). About 0.1 ms per eye: one depth read and two matrix
    products per pixel, no geometry. It also writes the depth image.
 2. Object pass: moving objects are drawn again into the same images, depth-tested against that
    depth, with a material shader variant (`MOTION_VECTORS` in `materials/main.vert`,

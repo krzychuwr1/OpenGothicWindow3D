@@ -536,7 +536,7 @@ void XrWindow::Impl::createSpaceWarpSwapchains() {
 
   for(int eye=0; eye<2; ++eye) {
     XrSwapchainCreateInfo info = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
-    info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
     info.format      = VK_FORMAT_R16G16B16A16_SFLOAT;
     info.sampleCount = 1;
     info.width       = mvWidth;
@@ -548,7 +548,7 @@ void XrWindow::Impl::createSpaceWarpSwapchains() {
       hasSpaceWarp = false;
       return;
       }
-    info.usageFlags  = XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    info.usageFlags  = XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
     info.format      = VK_FORMAT_D32_SFLOAT;
     if(!ok(xrCreateSwapchain(session, &info, &depthSwapchain[eye]), "depth swapchain")) {
       hasSpaceWarp = false;
@@ -1292,10 +1292,10 @@ void XrWindow::Impl::releaseEyes() {
   tRelease += xrUs()-t0;
   }
 
-void XrWindow::submit(bool rendered) {
+bool XrWindow::submit(bool rendered) {
   auto& s = *impl;
   if(!s.frameBegun)
-    return;
+    return false;
   s.frameBegun = false;
 
   std::lock_guard<std::mutex> guard(*s.vk.queueLock);
@@ -1417,8 +1417,9 @@ void XrWindow::submit(bool rendered) {
   end.layers               = layers.data();
   {
   const uint64_t t0 = xrUs();
-  ok(xrEndFrame(s.session, &end), "xrEndFrame");
+  const bool ended = ok(xrEndFrame(s.session, &end), "xrEndFrame");
   tEndFrame += xrUs()-t0;
+  return ended && warp;
   }
   }
 
@@ -1463,7 +1464,7 @@ void      XrWindow::pollEvents() {}
 void      XrWindow::attach(Tempest::Device&) {}
 Tempest::Size XrWindow::resolution() const { return {}; }
 bool      XrWindow::beginFrame() { return false; }
-void      XrWindow::submit(bool) {}
+bool      XrWindow::submit(bool) { return false; }
 bool      XrWindow::isSpaceWarpSupported() const { return false; }
 void      XrWindow::setSpaceWarp(bool) {}
 Tempest::Attachment* XrWindow::motionTarget(uint8_t) { return nullptr; }

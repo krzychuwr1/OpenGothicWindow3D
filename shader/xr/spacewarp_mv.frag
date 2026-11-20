@@ -4,13 +4,13 @@
 
 // Application SpaceWarp inputs for one eye of the XR window, at motion-vector resolution:
 // - colour: NDC motion of each scene point since the previous frame caused by the game
-//   (camera and world), current minus previous; head motion is left to the runtime
+//   and tracked eye, current minus previous
 // - depth: the scene depth, for the runtime's positional reprojection
 
 #include "scene.glsl"
 
 layout(push_constant, std430) uniform Push {
-  mat4 prevViewProject;  // previous game camera seen through the current eye, world space
+  mat4 prevViewProject;  // previous view-projection for this eye, world space
   vec4 originLwc;
   vec2 invSize;          // 1/size of the motion-vector target
   } push;
@@ -33,8 +33,6 @@ void main() {
   const vec3 world = pos.xyz + push.originLwc.xyz;
 
   vec4 prev = push.prevViewProject*vec4(world, 1.0);
-  const vec3 prevNdc = prev.xyz/max(prev.w, 1e-6);
-
-  outMotion    = vec4(vec3(ndc, z) - prevNdc, 0.0);
+  outMotion    = prev.w>1e-6 ? vec4(vec3(ndc, z) - prev.xyz/prev.w, 0.0) : vec4(0);
   gl_FragDepth = z;
   }

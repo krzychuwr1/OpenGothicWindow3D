@@ -597,6 +597,10 @@ void VisualObjects::drawShadow(Tempest::Encoder<Tempest::CommandBuffer>& cmd, in
   }
 
 void VisualObjects::drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
+  // Instance IDs in this draw address the current allocation. Newly grown
+  // storage has no matching history until the next snapshot.
+  if(instanceMem.prevSsbo().isEmpty() || instanceMem.prevSsbo().byteSize()!=instanceMem.ssbo().byteSize())
+    return;
   drawCmd.drawMotion(cmd, instanceMem.prevSsbo());
   }
 

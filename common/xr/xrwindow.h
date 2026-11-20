@@ -47,7 +47,7 @@ class XrWindow final {
     Tempest::Attachment* motionTarget(uint8_t eye);
     Tempest::ZBuffer*    depthTarget(uint8_t eye);
     // Ends the frame; without a rendered image only passthrough shows.
-    void              submit(bool rendered);
+    bool              submit(bool rendered); // true if a SpaceWarp pair was submitted
 
     // Camera of one eye looking through the window into the game world, for this frame's
     // predicted eye positions. False while the eyes are not tracked.

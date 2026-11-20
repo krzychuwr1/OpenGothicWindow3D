@@ -180,6 +180,13 @@ vec3 processVertexPrev(in Vertex v, uint bucketId, uint instanceId, uint vboOffs
       objMat[c][r] = uintBitsToFloat(instanceMemPrev[o+uint(c*3+r)]);
   const float fatness = uintBitsToFloat(instanceMemPrev[o+12]);
   const uint  animPtr = instanceMemPrev[o+13];
+#if (MESH_TYPE==T_SKINING || MESH_TYPE==T_MORPH)
+  if(animPtr!=instanceMem[o+13]) {
+    // A replacement mesh or skeleton cannot use the old allocation.
+    Varyings unused;
+    return processVertexCommon(unused, v, bucketId, instanceId, vboOffset);
+    }
+#endif
 
 #if (MESH_TYPE==T_MORPH)
   // morph targets follow absolute time; the current offsets are used for both frames

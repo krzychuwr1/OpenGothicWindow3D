@@ -1092,21 +1092,6 @@ Matrix4x4 Camera::viewProj() const {
   return ret;
   }
 
-Matrix4x4 Camera::baseView() const {
-  return mkView(origin+shake, angles);
-  }
-
-Matrix4x4 Camera::eyeViewProjectFrom(const Matrix4x4& base) const {
-  auto ret = projective();
-  if(eye.active) {
-    Matrix4x4 t = Matrix4x4::mkIdentity();
-    t.translate(-eye.offset);
-    ret.mul(t);
-    }
-  ret.mul(base);
-  return ret;
-  }
-
 Matrix4x4 Camera::view() const {
   if(eye.active)
     return mkView(eye.pos, angles);

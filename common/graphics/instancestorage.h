@@ -54,7 +54,7 @@ class InstanceStorage {
     auto ssbo () const -> const Tempest::StorageBuffer&;
     // Previous frame's instance and bone data (SpaceWarp motion vectors): copy before commit()
     void snapshotPrev(Tempest::Encoder<Tempest::CommandBuffer>& cmd);
-    auto prevSsbo() const -> const Tempest::StorageBuffer& { return prevGpu.isEmpty() ? dataGpu : prevGpu; }
+    auto prevSsbo() const -> const Tempest::StorageBuffer& { return prevGpu; }
     bool commit(Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t fId);
     void join();
 

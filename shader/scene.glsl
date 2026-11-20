@@ -15,7 +15,7 @@ struct SceneDesc {
   mat4  view;
   mat4  project;
   mat4  projectInv;
-  mat4  prevViewProject; // SpaceWarp: previous game camera seen through the current eye
+  mat4  prevViewProject; // SpaceWarp: previous view-projection for this eye
   vec3  sunDir;
   float waveAnim;
   vec3  ambient;

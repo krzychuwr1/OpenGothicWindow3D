@@ -611,6 +611,8 @@ void Renderer::draw(Attachment& result, Encoder<CommandBuffer>& cmd, uint8_t fId
   uiLayer.draw(cmd);
 
   if(inventory.isOpen()!=InventoryMenu::State::Closed) {
+    if(motionVectors && zbufferUi.isEmpty())
+      zbufferUi = Resources::device().zbuffer(zBufferFormat, result.size());
     auto& zb = (zbufferUi.isEmpty() ? zbuffer : zbufferUi);
     cmd.setFramebuffer({{result, Tempest::Preserve, Tempest::Preserve}},{zb, 1.f, Tempest::Preserve});
     cmd.setDebugMarker("Inventory");
@@ -702,7 +704,11 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
   cpuPhases.mark("setup");
   prepareUniforms(wview);
   cpuPhases.mark("uniforms");
-  wview.setPrevViewProject(camera.eyeViewProjectFrom(motionVectors && prevBaseValid ? prevBase : camera.baseView()));
+  if(motionVectors) {
+    if(!historyValid)
+      prevEye = camera.viewProj();
+    wview.setPrevViewProject(prevEye);
+    }
   wview.preFrameUpdate(camera, tickCount, fId, secondView);
   cpuPhases.mark("preFrameUpdate");
   if(motionVectors && !secondView)
@@ -749,7 +755,7 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
     prepareIrradiance(cmd, wview);
   prepareExposure(cmd, wview);
   prepareSSAO(cmd, wview);
-  if(!secondView)
+  if(!secondView || sky.quality==VolumetricHQ || sky.quality==Epipolar)
     prepareFog(cmd, wview);
   prepareGi  (cmd, wview);
   prepareSurfels(cmd, wview);
@@ -2108,14 +2114,14 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
   }
 
 void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
-                             Attachment& motion, ZBuffer& depth, const Matrix4x4& prevViewProject) {
+                             Attachment& motion, ZBuffer& depth) {
   struct Push {
     Matrix4x4 prevViewProject;
     Vec4      originLwc;
     Vec2      invSize;
     } push;
   auto& scene = wview.sceneGlobals();
-  push.prevViewProject = prevViewProject;
+  push.prevViewProject = prevEye;
   push.originLwc       = Vec4(scene.originLwc.x, scene.originLwc.y, scene.originLwc.z, 0);
   push.invSize         = Vec2(1.f/float(motion.w()), 1.f/float(motion.h()));
 
@@ -2129,7 +2135,8 @@ void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
 
   // Moving objects (characters, animated meshes, props) with their own previous pose
   cmd.setDebugMarker("SpaceWarp objects");
-  wview.drawMotion(cmd);
+  if(historyValid)
+    wview.drawMotion(cmd);
   }
 
 void Renderer::drawSky(Encoder<CommandBuffer>& cmd, const WorldView& wview) {

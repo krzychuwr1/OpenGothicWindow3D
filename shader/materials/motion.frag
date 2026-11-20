@@ -11,6 +11,5 @@ layout(location = 0) out vec4 outMotion;
 
 void main() {
   const vec3 cur  = motionCur.xyz /motionCur.w;
-  const vec3 prev = motionPrev.xyz/motionPrev.w;
-  outMotion = vec4(cur - prev, 0.0);
+  outMotion = motionPrev.w>1e-6 ? vec4(cur - motionPrev.xyz/motionPrev.w, 0.0) : vec4(0);
   }
