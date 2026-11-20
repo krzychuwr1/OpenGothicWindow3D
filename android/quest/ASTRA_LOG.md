@@ -774,3 +774,9 @@ On Quest a diagnostic rejected the grab-handle swapchain with a non-null output,
 A temporary Quest counter tested each active water and ghost cluster against the current eye frustum, with 1 cm added to its bounding sphere. After the waypoint and time commands, the city had 51–53 of 187 water clusters intersecting the frustum over 80 eye samples, the tavern 40–66 over 76, and the merchant path 47–51 over 108. Ghost counts were zero. All 264 eye samples required water under this conservative test. Occluded water can still intersect the frustum, including from inside the tavern.
 
 Dropped the diagnostic and the proposed per-eye CPU scan. It would skip zero passes at these viewpoints. These were feasibility runs at CPU 1 / GPU 0, with 60.8, 55.8 and 72.7 fps respectively. No before/after frame-time gain was measured. The game stopped and sleep was released after each run, at 95–96% battery and 39.0–41.0 °C.
+
+### Keep music channels bound as instrument banks are loaded
+
+Updated dmusic to `b5d1e6a`. The synthesizer cached pointers into a growable font array and subtracted pointers from different allocations to repair them after a resize. Channels now point directly to the stable TinySoundFont objects. The cache retains the source DLS bank for as long as it uses its address as a lookup key. If the cache cannot add a new font it closes that font and preserves the existing playable channels.
+
+A host test used 23 generated banks and the real conversion, cache and playback code. It grew the table twice, made one growth fail and retried, checked each channel and source bank reference, then played a note through every channel. The old implementation failed 309 of 674 checks, dropped ten established channels on the failed growth and left five allocations live. The fix passed all 674 and freed all allocations. Windows and Quest Release linked. The controlled cache relocation and allocation failure were verified on the host.
