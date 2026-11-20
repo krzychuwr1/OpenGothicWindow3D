@@ -174,3 +174,9 @@ On desktop Vulkan the old shader returned X motion 0.0 when a vertex moved +0.25
 ### Second scene for raster shadow visibility
 
 Repeated the measurement in `NW_TAVERNE` at noon using the same two APKs and CPU 1 / GPU 0. Baseline runs averaged 10.135 and 10.088 GPU ms/eye, 0.228 and 0.223 visibility ms/eye, and 45.8 and 45.9 fps. Candidate runs averaged 10.060 and 10.043 GPU ms/eye, both 0.178 visibility ms/eye, and 47.6 and 46.0 fps. Each had 14 VrApi samples. CPU recording was 6.535/6.398 ms on baseline and 6.476/6.492 ms on candidate. The visibility reduction repeated in the second scene; total GPU time fell about 0.12 ms per stereo frame. All four post-run checks reported 78% battery and 42.0 °C.
+
+### Focus overlay during lost position tracking
+
+When the runtime reported invalid eye positions, both eyes used the base game camera. The marker path depended on valid stereo and suppressed the name and melee bracket. The XR window now paints the overlay whenever it has a game camera and uses the second eye's shared render work even in the centered fallback.
+
+Tested a temporary Android build that forced eye position validity false, with SpaceWarp requested and combat active. Inspected 18 stereo PNG pairs (prefix `20261120-033348-006`). In pair 001 the centered "Wolf" label was visible in both eyes. RGB comparison showed identical pixels at its location and across the rest of the lower image. The frame used quads during the forced loss. The test switch is absent from the release source. No physical tracking interruption or held-input melee bracket was tested.

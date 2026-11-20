@@ -1556,7 +1556,7 @@ void MainWindow::renderFrame(bool xr) {
       if(vectors)
         prevEyeViewProject[view] = camera->viewProj();
       }
-    renderer.setSecondView(stereo && view==1);
+    renderer.setSecondView(camera!=nullptr && view==1);
     CommandBuffer& cmd = commands[cmdId];
     {
     struct EndEye {
@@ -1569,7 +1569,7 @@ void MainWindow::renderFrame(bool xr) {
         renderer.setMotionVectors(false,nullptr);
         }
       } endEye{stereo ? camera : nullptr, renderer};
-    if(stereo) {
+    if(camera!=nullptr) {
       const uint64_t te = nowUs();
       paintEyeOverlay(*camera);
       eyeMesh[cmdId].update(device,eyeOverlay);
@@ -1579,7 +1579,7 @@ void MainWindow::renderFrame(bool xr) {
     const uint64_t ts = nowUs();
     auto enc = cmd.startEncoding(device);
     timing.encStart += nowUs()-ts;
-    renderer.draw(backbuf,enc,cmdId,uiMesh[cmdId],numMesh[cmdId],stereo ? &eyeMesh[cmdId] : nullptr,inventory,video);
+    renderer.draw(backbuf,enc,cmdId,uiMesh[cmdId],numMesh[cmdId],camera!=nullptr ? &eyeMesh[cmdId] : nullptr,inventory,video);
     if(stereo) {
       auto* motion = XrWindow::inst()->motionTarget(uint8_t(view));
       auto* depth  = XrWindow::inst()->depthTarget (uint8_t(view));
