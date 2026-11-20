@@ -1843,8 +1843,12 @@ bool XrWindow::beginFrame() {
 
   if(isVisible()) {
     const int style = Gothic::settingsGetI("INTERNAL","xrWindowEdges");
-    s.edgeStyle = (style==1 || style==2) ? style : 0;
+    const int nextStyle = (style==1 || style==2) ? style : 0;
+    const bool contourChanged = s.edgeStyle!=nextStyle;
+    s.edgeStyle = nextStyle;
     s.placeWindow();
+    // No motion vector can describe an instantaneous change in source coverage.
+    s.skipExtrapolation |= contourChanged;
     // A focused game keeps ticking even when the runtime requests zero layers.
     s.updateInput();
     s.updateSurface();
