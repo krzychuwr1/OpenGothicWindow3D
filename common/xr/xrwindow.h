@@ -21,7 +21,6 @@ class XrWindow final {
     // Returns false (and leaves the normal window path) when no OpenXR runtime is present.
     static bool       preInit();
     static XrWindow*  inst();
-    static void       shutdown();
 
     void              attach(Tempest::Device& device);
 
@@ -33,7 +32,8 @@ class XrWindow final {
     // Time spent waiting inside submit() since the previous report
     static std::string timingReport();
 
-    // Processes runtime events and waits for the next display frame.
+    void              pollEvents();
+    // Waits for the next display frame.
     // Returns true when the application should render and then call submit().
     bool              beginFrame();
     // Render target of one eye for this frame (the window layer's swapchain image).

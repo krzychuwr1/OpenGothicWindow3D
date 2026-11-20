@@ -176,6 +176,7 @@ struct XrWindow::Impl {
   float                    windowWidth = 2.4f;
   float                    verticalFov = 67.5f;
   bool                     placed      = false;
+  XrTime                   recenterTime = 0;
   int                      grabbedBy   = -1;
   Grip                     grabbed     = Grip::None;
   bool                     grabNear    = false;
@@ -205,6 +206,7 @@ struct XrWindow::Impl {
   void createActions();
   void pollEvents();
   void updateInput();
+  void cancelInput();
   void placeWindow();
   void fillChrome();
   Grip targetAt(float x, float y) const;
@@ -227,20 +229,24 @@ XrWindow::XrWindow() : impl(new Impl()) {
   }
 
 XrWindow::~XrWindow() {
+  if(instance==this) {
+    vulkanCreateHooks() = {};
+    instance = nullptr;
+    }
   }
 
 XrWindow* XrWindow::inst() {
   return instance;
   }
 
-void XrWindow::shutdown() {
-  delete instance;
-  instance = nullptr;
-  }
-
 XrWindow::Impl::~Impl() {
   if(vk.device!=VK_NULL_HANDLE) {
     vkDeviceWaitIdle(vk.device);
+    for(int eye=0; eye<2; ++eye) {
+      targets[eye].clear();
+      mvTargets[eye].clear();
+      depthTargets[eye].clear();
+      }
     for(auto f:fence)
       if(f!=VK_NULL_HANDLE)
         vkDestroyFence(vk.device, f, nullptr);
@@ -686,6 +692,8 @@ void XrWindow::Impl::pollEvents() {
       case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED: {
         auto& e = *reinterpret_cast<XrEventDataSessionStateChanged*>(&ev);
         state = e.state;
+        if(state!=XR_SESSION_STATE_FOCUSED)
+          cancelInput();
         Log::i("OpenXR: session state ", int(state));
         if(state==XR_SESSION_STATE_READY) {
           XrSessionBeginInfo begin = {XR_TYPE_SESSION_BEGIN_INFO};
@@ -710,10 +718,12 @@ void XrWindow::Impl::pollEvents() {
           }
         break;
         }
-      case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING:
-        // The user recentred the view: bring the window back in front of them
-        placed = false;
+      case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING: {
+        auto& change = *reinterpret_cast<XrEventDataReferenceSpaceChangePending*>(&ev);
+        if(change.session==session && change.referenceSpaceType==XR_REFERENCE_SPACE_TYPE_LOCAL)
+          recenterTime = change.changeTime;
         break;
+        }
       case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
         running = false;
         SystemApi::exit();
@@ -726,6 +736,11 @@ void XrWindow::Impl::pollEvents() {
   }
 
 void XrWindow::Impl::placeWindow() {
+  if(recenterTime!=0 && frame.predictedDisplayTime>=recenterTime) {
+    recenterTime = 0;
+    placed = false;
+    cancelInput();
+    }
   XrSpaceLocation head = {XR_TYPE_SPACE_LOCATION};
   if(!XR_SUCCEEDED(xrLocateSpace(viewSpace, localSpace, frame.predictedDisplayTime, &head)))
     return;
@@ -748,6 +763,16 @@ void XrWindow::Impl::placeWindow() {
   placed = true;
   }
 
+void XrWindow::Impl::cancelInput() {
+  padState = {};
+  grabbedBy = -1;
+  grabbed = Grip::None;
+  for(auto& h:hands) {
+    h.hover = Grip::None;
+    h.grabHeld = true; // require release before a new grab
+    }
+  }
+
 void XrWindow::Impl::updateInput() {
   padState = PadState();
   if(state!=XR_SESSION_STATE_FOCUSED)
@@ -757,8 +782,10 @@ void XrWindow::Impl::updateInput() {
   XrActionsSyncInfo sync   = {XR_TYPE_ACTIONS_SYNC_INFO};
   sync.countActiveActionSets = 1;
   sync.activeActionSets      = &active;
-  if(!XR_SUCCEEDED(xrSyncActions(session, &sync)))
+  if(xrSyncActions(session, &sync)!=XR_SUCCESS) {
+    cancelInput();
     return;
+    }
 
   auto getF = [&](XrAction a, XrPath sub) {
     XrActionStateGetInfo gi = {XR_TYPE_ACTION_STATE_GET_INFO};
@@ -987,9 +1014,12 @@ bool XrWindow::eyeView(uint8_t eye, float verticalFovDeg, Camera::EyeView& out) 
   return true;
   }
 
+void XrWindow::pollEvents() {
+  impl->pollEvents();
+  }
+
 bool XrWindow::beginFrame() {
   auto& s = *impl;
-  s.pollEvents();
   if(!s.running) {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     return false;
@@ -1007,14 +1037,13 @@ bool XrWindow::beginFrame() {
   }
   s.frameBegun = true;
 
-  s.placeWindow();
-  s.updateInput();
-  s.locateEyes();
-
-  if(!s.frame.shouldRender) {
+  if(!s.frame.shouldRender || !isVisible()) {
     submit(false);
     return false;
     }
+  s.placeWindow();
+  s.updateInput();
+  s.locateEyes();
   return true;
   }
 
@@ -1244,7 +1273,7 @@ void XrWindow::submit(bool rendered) {
   s.frameBegun = false;
 
   std::lock_guard<std::mutex> guard(*s.vk.queueLock);
-  if(!s.chromeReady)
+  if(rendered && !s.chromeReady)
     s.fillChrome();
   const bool hasImage = rendered && s.acquired[0]>=0 && s.acquired[1]>=0;
   const bool warp     = hasImage && s.spaceWarpWanted &&
@@ -1358,7 +1387,7 @@ void XrWindow::submit(bool rendered) {
   XrFrameEndInfo end = {XR_TYPE_FRAME_END_INFO};
   end.displayTime          = s.frame.predictedDisplayTime;
   end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-  end.layerCount           = s.frame.shouldRender ? uint32_t(layers.size()) : 0;
+  end.layerCount           = s.frame.shouldRender && isVisible() ? uint32_t(layers.size()) : 0;
   end.layers               = layers.data();
   {
   const uint64_t t0 = xrUs();
@@ -1404,7 +1433,7 @@ XrWindow::~XrWindow() = default;
 
 bool      XrWindow::preInit()  { return false; }
 XrWindow* XrWindow::inst()     { return nullptr; }
-void      XrWindow::shutdown() {}
+void      XrWindow::pollEvents() {}
 void      XrWindow::attach(Tempest::Device&) {}
 Tempest::Size XrWindow::resolution() const { return {}; }
 bool      XrWindow::beginFrame() { return false; }

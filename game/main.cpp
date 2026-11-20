@@ -192,6 +192,8 @@ int main(int argc,const char** argv) {
   CrashLog::setGpu(gpuName);
 
   Tempest::Device      device{*api,gpuName};
+  // Release the XR image views and session while their Vulkan device is alive.
+  const std::unique_ptr<XrWindow> xrOwner(XrWindow::inst());
   CrashLog::setGpu(device.properties().name);
   if(auto xr = XrWindow::inst())
     xr->attach(device);

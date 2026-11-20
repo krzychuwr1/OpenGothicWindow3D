@@ -1278,8 +1278,10 @@ void MainWindow::tickPad(uint64_t dt) {
 #endif
   if(auto xr = XrWindow::inst())
     state = PadState::merge(state, xr->pad());
-  if(!state.connected)
+  if(!state.connected) {
+    pad.releaseAll();
     return;
+    }
 
   pad.tick(state, padMenuContext());
   if(padMenuContext())
@@ -1365,11 +1367,19 @@ void MainWindow::render(){
       // only recording the eyes waits for the runtime's frame timing.
       // The game holds still while the headset is off or a system menu has the focus.
       const uint64_t tu = nowUs();
+      xr->pollEvents();
       if(xr->isFocused())
         updateFrame();
-      if(!xr->isVisible()) {
-        xr->beginFrame();
-        return;
+      else {
+        if(padTime!=0) {
+          pad.releaseAll();
+          clearInput();
+          padLook = {};
+          dMouse = {};
+          padTime = 0;
+          }
+        prevBaseValid = false;
+        lastTick = Application::tickCount();
         }
       const uint64_t t0 = nowUs();
       if(!xr->beginFrame())
