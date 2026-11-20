@@ -768,3 +768,9 @@ Instance, session and window swapchain creation previously wrote directly to per
 A host runtime returned unusable handles and non-null function pointers on error, shortened lists after the sizing call, and rejected each startup resource separately. The old code failed 38 of 173 checks. The fix passed all 173. The uninstrumented Android release linked.
 
 On Quest a diagnostic rejected the grab-handle swapchain with a non-null output, and reported failure for sampler lookup after the runtime supplied a real function pointer. Five sampled frames reported both failed outputs null while the corners, panorama and environment button were ready. The compositor capture showed the city below the dusk sky with SpaceWarp enabled. VrApi reported 36.5 fps at CPU 1 / GPU 0. The injected failure cases for required instance/session/eye creation were exercised on the host. The installed uninstrumented release hash matched `2e0b4c6f440c4fe6d9d8d3425c1ea1efbf1dd4ef00779c2bbd85af335d94a63c`. The game was stopped, sleep released and owner INI hash unchanged at 95% and 38.0 °C.
+
+### Can water passes be omitted for either eye?
+
+A temporary Quest counter tested each active water and ghost cluster against the current eye frustum, with 1 cm added to its bounding sphere. After the waypoint and time commands, the city had 51–53 of 187 water clusters intersecting the frustum over 80 eye samples, the tavern 40–66 over 76, and the merchant path 47–51 over 108. Ghost counts were zero. All 264 eye samples required water under this conservative test. Occluded water can still intersect the frustum, including from inside the tavern.
+
+Dropped the diagnostic and the proposed per-eye CPU scan. It would skip zero passes at these viewpoints. These were feasibility runs at CPU 1 / GPU 0, with 60.8, 55.8 and 72.7 fps respectively. No before/after frame-time gain was measured. The game stopped and sleep was released after each run, at 95–96% battery and 39.0–41.0 °C.
