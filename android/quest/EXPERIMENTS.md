@@ -1,4 +1,4 @@
-# XR experiments (branch `xr-multiview-spacewarp`)
+# XR experiments (branches `xr-spacewarp`, `xr-multiview`, `xr-multiview-spacewarp`)
 
 Measurements are from Meta Quest 3 with `tools/bench-quest.ps1` (new game, hero teleported to a
 waypoint at noon, `-gpuprofile`). Frame rates vary a few fps between runs; compare runs made at
@@ -51,23 +51,17 @@ graphics-device choice, which has no use on the headset, is repurposed for it. I
   zero on frames without an update.
 - Particles carry no vectors.
 
+**Checking the vectors:** `-show motion` paints each eye's motion vectors over the dimmed picture
+(right red, up green, left and down blue) and `bench-quest.ps1 -Scenario combat -EyeCaptures 2`
+saves both eyes' pictures. Moving objects are tested against the camera pass's depth, which is
+sampled at motion-vector resolution; their surfaces are pulled 3% towards the camera for that test
+(without it their vectors came out in vertical stripes). Weapons swung by characters get their own
+vectors.
+
 ## Multiview
 
-Not implemented. Tempest has no layered render targets or multiview support, the renderer is
-GPU-driven (indirect draws), and the XR path gives each eye its own frame slot. Multiview would
-need layered targets and per-layer views in Tempest, a shared command buffer for both eyes, per
-view matrices through `gl_ViewIndex` in the material shaders, and every later pass reading its
-eye's layer.
-
-**Upper bound measured** (`-skip eye1gbuffer` skips the second eye's G-buffer entirely; the image
-is wrong, only the timing matters), city at noon, SpaceWarp off:
-
-| | GPU ms per view | fps |
-| --- | --- | --- |
-| both eyes draw the G-buffer | 7.82-7.86 | 58-62 |
-| second eye skips it | 6.52-6.59 | 56-70 |
-
-So a perfectly free second-eye G-buffer would save about 2.6 ms per frame. Real multiview still
-runs vertex and fragment work per view; on mobile GPUs it typically saves 10-30% of the geometry
-pass and much of its CPU recording, which is already small here (about 0.2 ms per eye, because
-draws are indirect). Expected gain: roughly 0.3-0.8 ms per frame, for a large renderer change.
+Measured on the `xr-multiview` branch with real multiview rendering (two-layer targets and a view
+mask in Tempest): the Adreno 740 draws the G-buffer for both eyes in 4.3 ms against 4.6-5.0 ms for
+two passes, and sharing culling needs an occlusion test valid for both eyes. A full implementation
+would gain about 1-1.5 ms per frame for a change across most of the renderer, so it is not enabled.
+Numbers, method and what it would take: [MULTIVIEW.md](MULTIVIEW.md).
