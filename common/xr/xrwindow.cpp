@@ -3,6 +3,8 @@
 
 #if defined(__ANDROID__) && defined(OPENGOTHIC_XR)
 
+#include "gothic.h"
+
 #include <Tempest/VulkanInterop>
 #include <Tempest/AndroidApi>
 #include <Tempest/Log>
@@ -81,7 +83,7 @@ static V3 toWorld(const XrPosef& pose, const V3& p) {
   }
 
 // Parts of the window frame a hand can grab
-enum class Grip : uint8_t { None, Handle, CornerLeft, CornerRight };
+enum class Grip : uint8_t { None, Handle, CornerLeft, CornerRight, Environment };
 
 struct Hand {
   XrPath         path        = XR_NULL_PATH;
@@ -104,6 +106,8 @@ struct XrWindow::Impl {
   // Instance
   XrInstance               instance = XR_NULL_HANDLE;
   XrSystemId               system   = XR_NULL_SYSTEM_ID;
+  bool                     hasPanorama = false;
+  bool                     hasEquirect2 = false;
   bool                     hasPassthrough     = false;
   bool                     hasHandInteraction = false;
   bool                     hasPerfSettings    = false;
@@ -114,6 +118,8 @@ struct XrWindow::Impl {
   PFN_xrGetVulkanGraphicsDevice2KHR     xrGetVulkanGraphicsDevice   = nullptr;
   PFN_xrCreateVulkanDeviceKHR           xrCreateVulkanDevice        = nullptr;
   PFN_xrGetVulkanGraphicsRequirements2KHR xrGetVulkanRequirements   = nullptr;
+  PFN_xrPassthroughStartFB              xrStartPassthrough          = nullptr;
+  PFN_xrPassthroughPauseFB              xrPausePassthrough          = nullptr;
   PFN_xrCreatePassthroughFB             xrCreatePassthrough         = nullptr;
   PFN_xrDestroyPassthroughFB            xrDestroyPassthrough        = nullptr;
   PFN_xrCreatePassthroughLayerFB        xrCreatePassthroughLayer    = nullptr;
@@ -162,6 +168,10 @@ struct XrWindow::Impl {
   // Window frame parts: grab handle (idle/hover/held) and resize corners (left/right, hover/held)
   XrSwapchain              handleSwapchain = XR_NULL_HANDLE;
   XrSwapchain              cornerSwapchain = XR_NULL_HANDLE;
+  XrSwapchain              panorama = XR_NULL_HANDLE;
+  XrSwapchain              environmentButton = XR_NULL_HANDLE;
+  static constexpr uint32_t SkyW = 2048, SkyH = SkyW/2, ButtonW = 128, ButtonH = 80;
+  bool                     panoramaReady = false, buttonReady = false, immersive = false;
   bool                     chromeAttempted = false;
   bool                     chromeReady     = false;
   static constexpr uint32_t HandleW = 256, HandleH = 32, CornerSize = 64;
@@ -210,6 +220,9 @@ struct XrWindow::Impl {
   void cancelInput();
   void placeWindow();
   void fillChrome();
+  void fillEnvironment();
+  bool setEnvironment(bool useSky);
+  V3   buttonCenter() const { return handleCenter() + V3{0,-0.10f,0}; }
   Grip targetAt(float x, float y) const;
   V3   handleCenter() const;
   void releaseEyes();
@@ -258,6 +271,10 @@ XrWindow::Impl::~Impl() {
     xrDestroyPassthroughLayer(passthroughLayer);
   if(passthrough!=XR_NULL_HANDLE)
     xrDestroyPassthrough(passthrough);
+  if(panorama!=XR_NULL_HANDLE)
+    xrDestroySwapchain(panorama);
+  if(environmentButton!=XR_NULL_HANDLE)
+    xrDestroySwapchain(environmentButton);
   if(handleSwapchain!=XR_NULL_HANDLE)
     xrDestroySwapchain(handleSwapchain);
   if(cornerSwapchain!=XR_NULL_HANDLE)
@@ -311,6 +328,10 @@ bool XrWindow::Impl::createInstance() {
       Log::e("OpenXR: missing ", e);
       return false;
       }
+  hasEquirect2       = has(XR_KHR_COMPOSITION_LAYER_EQUIRECT2_EXTENSION_NAME);
+  hasPanorama        = hasEquirect2 || has(XR_KHR_COMPOSITION_LAYER_EQUIRECT_EXTENSION_NAME);
+  if(hasPanorama)
+    ext.push_back(hasEquirect2 ? XR_KHR_COMPOSITION_LAYER_EQUIRECT2_EXTENSION_NAME : XR_KHR_COMPOSITION_LAYER_EQUIRECT_EXTENSION_NAME);
   hasPassthrough     = has(XR_FB_PASSTHROUGH_EXTENSION_NAME);
   hasHandInteraction = has(XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
   hasPerfSettings    = has(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
@@ -356,7 +377,9 @@ bool XrWindow::Impl::createInstance() {
   if(hasPerfSettings)
     hasPerfSettings = fn("xrPerfSettingsSetPerformanceLevelEXT", xrSetPerfLevel);
   if(hasPassthrough) {
-    hasPassthrough = fn("xrCreatePassthroughFB",       xrCreatePassthrough)      &&
+    hasPassthrough = fn("xrPassthroughStartFB",        xrStartPassthrough)       &&
+                     fn("xrPassthroughPauseFB",        xrPausePassthrough)       &&
+                     fn("xrCreatePassthroughFB",       xrCreatePassthrough)      &&
                      fn("xrDestroyPassthroughFB",      xrDestroyPassthrough)     &&
                      fn("xrCreatePassthroughLayerFB",  xrCreatePassthroughLayer) &&
                      fn("xrDestroyPassthroughLayerFB", xrDestroyPassthroughLayer);
@@ -514,6 +537,19 @@ void XrWindow::Impl::createSwapchains() {
   info.height      = CornerSize;
   info.arraySize   = 4;
   ok(xrCreateSwapchain(session, &info, &cornerSwapchain), "corner swapchain");
+
+  if(hasPanorama) {
+    info.width = SkyW;
+    info.height = SkyH;
+    info.arraySize = 1;
+    info.usageFlags |= XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+    if(ok(xrCreateSwapchain(session, &info, &panorama), "static environment swapchain")) {
+      info.width = ButtonW;
+      info.height = ButtonH;
+      info.arraySize = 4; // room / sky icons, each idle or hovered
+      ok(xrCreateSwapchain(session, &info, &environmentButton), "environment button swapchain");
+      }
+    }
   }
 
 void XrWindow::Impl::createSpaceWarpSwapchains() {
@@ -869,9 +905,11 @@ void XrWindow::Impl::updateInput() {
       if(released || !tracked) {
         grabbedBy  = -1;
         grabbed    = Grip::None;
-        h.grabHeld = false;
+        h.grabHeld = !released;
         continue;
         }
+      if(grabbed==Grip::Environment)
+        continue; // the press edge handled the switch
       const XrPosef& holder = grabNear ? h.nearPose : h.aim;
       if(!grabNear) {
         // Thumbstick pushes a pointed-at window away or pulls it closer
@@ -901,7 +939,12 @@ void XrWindow::Impl::updateInput() {
       grabbed   = h.hover;
       grabNear  = h.hoverNear;
       grabLocal = toLocal(grabNear ? h.nearPose : h.aim, h.hit);
-      if(grabbed!=Grip::Handle) {
+      if(grabbed==Grip::Environment) {
+        if(setEnvironment(!immersive)) {
+          Gothic::settingsSetI("INTERNAL", "xrEnvironment", immersive ? 1 : 0);
+          Gothic::flushSettings();
+          }
+        } else if(grabbed!=Grip::Handle) {
         const V3    l     = toLocal(windowPose, h.hit);
         const float reach = std::max(std::max(std::abs(l.x), std::abs(l.y)*float(width)/float(height)), 0.05f);
         grabScale = windowWidth/reach;
@@ -949,6 +992,9 @@ Grip XrWindow::Impl::targetAt(float x, float y) const {
   const V3 hc = handleCenter();
   if(std::abs(x-hc.x)<0.16f && std::abs(y-hc.y)<0.045f)
     return Grip::Handle;
+  const V3 button = buttonCenter();
+  if(buttonReady && std::abs(x-button.x)<0.065f && std::abs(y-button.y)<0.04f)
+    return Grip::Environment;
   return Grip::None;
   }
 
@@ -1150,6 +1196,110 @@ static bool uploadStatic(const VulkanNativeContext& vk, VkCommandBuffer cb, VkFe
   return ok(xrReleaseSwapchainImage(sc, &rel), "release static image");
   }
 
+// Equirectangular sRGB panorama. All frequencies around the horizon are
+// integral, so the mountain profiles meet exactly at the longitude seam.
+static std::vector<uint32_t> duskPanorama(uint32_t w, uint32_t h) {
+  std::vector<uint32_t> pixels(size_t(w)*h);
+  auto rgb = [](float r, float g, float b) {
+    auto byte = [](float v) { return uint32_t(std::clamp(v,0.f,255.f)+0.5f); };
+    return byte(r) | byte(g)<<8 | byte(b)<<16 | 0xff000000u;
+    };
+  const float pi = float(M_PI);
+  for(uint32_t x=0; x<w; ++x) {
+    const float longitude = (float(x)+0.5f)*2.f*pi/float(w);
+    const float glow = std::pow(0.5f+0.5f*std::cos(longitude-1.7f), 3.f);
+    const float farRidge = 0.067f + 0.035f*std::sin(3*longitude) + 0.020f*std::sin(9*longitude+1.3f)
+                           + 0.013f*std::cos(16*longitude) + 0.003f*std::sin(57*longitude);
+    const float nearRidge = 0.017f + 0.021f*std::cos(4*longitude+1.f) + 0.009f*std::sin(11*longitude)
+                            + 0.003f*std::sin(41*longitude+2.f);
+    for(uint32_t y=0; y<h; ++y) {
+      const float lat = (0.5f-(float(y)+0.5f)/float(h))*pi;
+      const float haze = std::exp(-std::abs(lat)*3.7f);
+      float r = 13.f+(47.f+37.f*glow)*haze;
+      float g = 20.f+(42.f+12.f*glow)*haze;
+      float b = 39.f+40.f*haze;
+      if(lat<farRidge) {
+        r = 37.f+8.f*glow;
+        g = 43.f+3.f*glow;
+        b = 59.f;
+        }
+      if(lat<nearRidge) {
+        r = 24.f;
+        g = 30.f;
+        b = 42.f;
+        }
+      if(lat<-0.037f) {
+        const float ground = std::exp((lat+0.037f)*6.f);
+        r = 15.f + 10.f*ground;
+        g = 20.f + 12.f*ground;
+        b = 28.f + 16.f*ground;
+        }
+      // Ordered sub-byte noise breaks up colour bands in the dark gradients.
+      const float grain = float((x*13u+y*7u+(x^y)*3u)%17u)/17.f-0.5f;
+      pixels[size_t(y)*w+x] = rgb(r+grain, g+grain, b+grain);
+      }
+    }
+  uint32_t seed = 0x38a41b7du;
+  auto sample = [&]() {
+    seed = seed*1664525u+1013904223u;
+    return float(seed>>8)*(1.f/16777216.f);
+    };
+  for(unsigned i=0; i<1200; ++i) {
+    const uint32_t x = uint32_t(sample()*float(w));
+    const float latitude = std::asin(0.17f+0.82f*sample());
+    const uint32_t y = uint32_t((0.5f-latitude/pi)*float(h));
+    const float shine = 68.f + 92.f*std::pow(sample(), 4.f);
+    pixels[size_t(y)*w+x] = rgb(shine*0.89f, shine*0.94f, shine);
+    }
+  return pixels;
+  }
+
+bool XrWindow::Impl::setEnvironment(bool useSky) {
+  if(useSky && !panoramaReady)
+    return false;
+  if(immersive==useSky)
+    return true;
+  if(passthrough!=XR_NULL_HANDLE &&
+     !ok(useSky ? xrPausePassthrough(passthrough) : xrStartPassthrough(passthrough), "switch passthrough"))
+    return false;
+  immersive = useSky;
+  Log::i("OpenXR: environment ", immersive ? "dusk panorama" : "passthrough");
+  return true;
+  }
+
+void XrWindow::Impl::fillEnvironment() {
+  if(panorama==XR_NULL_HANDLE)
+    return;
+  panoramaReady = uploadStatic(vk, cmd[0], fence[0], panorama, SkyW, SkyH, 1, duskPanorama(SkyW,SkyH));
+  if(!panoramaReady)
+    return;
+  if(environmentButton!=XR_NULL_HANDLE && passthroughLayer!=XR_NULL_HANDLE) {
+    std::vector<uint32_t> px(size_t(ButtonW)*ButtonH*4);
+    for(unsigned layer=0; layer<4; ++layer) {
+      const bool sky = layer>=2, hover = (layer&1)!=0;
+      for(uint32_t y=0; y<ButtonH; ++y)
+        for(uint32_t x=0; x<ButtonW; ++x) {
+          const float u = float(x)+0.5f-float(ButtonW)*0.5f;
+          const float v = float(y)+0.5f-float(ButtonH)*0.5f;
+          const float rim = std::hypot(std::max(std::abs(u)-22.f,0.f), v);
+          // A crescent invites entering VR. A window icon returns to the room.
+          const float moon = std::min(16.f-std::hypot(u,v), std::hypot(u-8.f,v+5.f)-14.f);
+          const float window = 2.f-std::abs(std::max(std::abs(u)-17.f, std::abs(v)-12.f));
+          const float ink = std::clamp((sky ? window : moon)+0.5f,0.f,1.f);
+          const float edge = std::clamp(1.5f-std::abs(rim-32.f),0.f,1.f);
+          const float light = std::max(ink,edge*0.62f);
+          px[(size_t(layer)*ButtonH+y)*ButtonW+x] =
+              pixel(0.12f+0.84f*light,0.15f+0.82f*light,0.20f+0.8f*light,
+                    hover ? 0.97f : 0.58f+0.27f*light, 34.f-rim);
+          }
+      }
+    buttonReady = uploadStatic(vk, cmd[0], fence[0], environmentButton, ButtonW, ButtonH, 4, px);
+    }
+  // Settings exist by the first rendered frame. An incomplete button should
+  // never strand a wearer in VR when passthrough is available.
+  setEnvironment(passthroughLayer==XR_NULL_HANDLE || (buttonReady && Gothic::settingsGetI("INTERNAL","xrEnvironment")==1));
+  }
+
 void XrWindow::Impl::fillChrome() {
   chromeAttempted = true;
   if(handleSwapchain==XR_NULL_HANDLE || cornerSwapchain==XR_NULL_HANDLE)
@@ -1299,8 +1449,10 @@ bool XrWindow::submit(bool rendered) {
   s.frameBegun = false;
 
   std::lock_guard<std::mutex> guard(*s.vk.queueLock);
-  if(rendered && !s.chromeAttempted)
+  if(rendered && !s.chromeAttempted) {
     s.fillChrome();
+    s.fillEnvironment();
+    }
   const bool hasImage = rendered && s.acquired[0]>=0 && s.acquired[1]>=0;
   const bool warp     = hasImage && s.spaceWarpWanted &&
                         s.mvAcquired[0]>=0 && s.mvAcquired[1]>=0 && s.depthAcquired[0]>=0 && s.depthAcquired[1]>=0;
@@ -1310,7 +1462,29 @@ bool XrWindow::submit(bool rendered) {
   std::vector<const XrCompositionLayerBaseHeader*> layers;
 
   XrCompositionLayerPassthroughFB pt = {XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};
-  if(s.passthroughLayer!=XR_NULL_HANDLE) {
+  XrCompositionLayerEquirect2KHR sky = {XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR};
+  XrCompositionLayerEquirectKHR sky1 = {XR_TYPE_COMPOSITION_LAYER_EQUIRECT_KHR};
+  if(s.immersive) {
+    sky.space = s.localSpace;
+    sky.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    sky.subImage.swapchain = s.panorama;
+    sky.subImage.imageRect.extent = {int32_t(Impl::SkyW), int32_t(Impl::SkyH)};
+    sky.pose.orientation.w = 1.f;
+    sky.radius = 0.f; // infinite sphere, stable under head translation
+    sky.centralHorizontalAngle = 2.f*float(M_PI);
+    sky.upperVerticalAngle = float(M_PI)*0.5f;
+    sky.lowerVerticalAngle = -sky.upperVerticalAngle;
+    if(s.hasEquirect2) {
+      layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&sky));
+      } else {
+      sky1.space = sky.space;
+      sky1.eyeVisibility = sky.eyeVisibility;
+      sky1.subImage = sky.subImage;
+      sky1.pose = sky.pose;
+      sky1.scale = {1.f,1.f};
+      layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&sky1));
+      }
+    } else if(s.passthroughLayer!=XR_NULL_HANDLE) {
     pt.layerHandle = s.passthroughLayer;
     layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&pt));
     }
@@ -1364,6 +1538,20 @@ bool XrWindow::submit(bool rendered) {
     }
 
   // Frame parts: the grab handle, and the resize bracket of a corner a hand is reaching for
+  XrCompositionLayerQuad button = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+  if(s.buttonReady && hasImage) {
+    const bool hover = s.grabbed==Grip::Environment || s.hands[0].hover==Grip::Environment || s.hands[1].hover==Grip::Environment;
+    button.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    button.space = s.localSpace;
+    button.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    button.subImage.swapchain = s.environmentButton;
+    button.subImage.imageRect.extent = {int32_t(Impl::ButtonW), int32_t(Impl::ButtonH)};
+    button.subImage.imageArrayIndex = (s.immersive ? 2u : 0u) + (hover ? 1u : 0u);
+    button.pose = s.windowPose;
+    button.pose.position = toXr(toWorld(s.windowPose, s.buttonCenter()));
+    button.size = {0.104f,0.065f};
+    layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&button));
+    }
   XrCompositionLayerQuad handle = {XR_TYPE_COMPOSITION_LAYER_QUAD};
   std::array<XrCompositionLayerQuad,2> corners;
   if(s.chromeReady && hasImage) {
