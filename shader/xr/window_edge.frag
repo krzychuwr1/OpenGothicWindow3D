@@ -19,9 +19,16 @@ float distanceAt(vec2 pixel) {
   }
 
 float coverageAt(float inside) {
+  if(push.feather>0.0) {
+    float ramp = push.feather;
+    // A wider feather already covers the maximum distance change across a quad.
+    // For a subpixel feather, use the same neighbours as the motion contour.
+    if(ramp<push.metresPerPixel.x+push.metresPerPixel.y)
+      ramp = max(ramp,max(fwidthFine(inside),1e-7));
+    return smoothstep(0.0,ramp,inside);
+    }
   float aa = 0.5*max(fwidth(inside),1e-7);
-  return push.feather>0.0 ? smoothstep(0.0,max(push.feather,2.0*aa),inside)
-                          : smoothstep(-aa,aa,inside);
+  return smoothstep(-aa,aa,inside);
   }
 
 #ifdef MOTION
@@ -44,20 +51,16 @@ bool sceneSide(vec2 pixel) {
 
 void main() {
   vec2 pixel = gl_FragCoord.xy;
-  float coverage = coverageAt(distanceAt(pixel));
 #ifdef MOTION
-  if(push.guard!=0u) {
-    // Pin exactly the first four-connected scene texel at the aperture.
-    if(sceneSide(pixel) && sceneSide(pixel-vec2(1,0)) && sceneSide(pixel+vec2(1,0)) &&
-       sceneSide(pixel-vec2(0,1)) && sceneSide(pixel+vec2(0,1)))
-      discard;
-    }
-  else if(coverage>=0.5)
+  // Use the same halfway test for the centre and its four neighbours.
+  if(sceneSide(pixel) && (push.guard==0u ||
+     (sceneSide(pixel-vec2(1,0)) && sceneSide(pixel+vec2(1,0)) &&
+      sceneSide(pixel-vec2(0,1)) && sceneSide(pixel+vec2(0,1)))))
     discard;
   result = vec4(0);
   gl_FragDepth = 0.0;
 #else
-  result = vec4(1,1,1,coverage);
+  result = vec4(1,1,1,coverageAt(distanceAt(pixel)));
 #endif
   }
 #endif
