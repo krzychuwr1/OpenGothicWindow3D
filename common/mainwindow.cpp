@@ -185,6 +185,7 @@ void MainWindow::setupUi() {
   addWidget(&chapter);
   addWidget(&video);
 #if defined(__MOBILE_PLATFORM__)
+  mobileUi.setVisible(XrWindow::inst()==nullptr);
   addWidget(&mobileUi);
 #endif
   addWidget(&rootMenu);

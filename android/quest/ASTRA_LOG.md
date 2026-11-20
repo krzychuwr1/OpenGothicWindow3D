@@ -812,3 +812,7 @@ In the baseline SpaceWarp captures, 152 bidirectionally tracked patches on build
 ### Recognize a stopped Quest launcher during the occupancy check
 
 At 11:43 CET the display was asleep. Android retained a window-manager focus token for the system HomeActivity while its own activity record and all ten other activities were STOPPED and hidden. Every current-focus window was null, and the game process was absent. The benchmark now recognizes that standby state before installation and again before wake. An awake display, active window, another focused application, resumed activity or unreadable foreground still blocks the run. A replay of the actual standby dump passed, and six separate occupied or unknown cases were rejected.
+
+### Remove the touchscreen walk pad from the Quest HUD
+
+The touch-to-walk widget painted a 100 × 100 rectangle with 20% white at (10,790) in a 1600 × 900 eye. Across the four borders, the inward RGB jump in the stationary right eye at `20261120-084233-586` was 51 on each side. The mobile widget now stays hidden for an OpenXR window. Tempest also excludes hidden children from pointer targeting. Flat Android retains the walk pad.
