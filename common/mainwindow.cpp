@@ -1672,12 +1672,14 @@ void MainWindow::renderFrame(bool xr) {
       std::snprintf(name, sizeof(name), "eye-%03u-%c.png", captureCount-1, view==0 ? 'L' : 'R');
       // Encoding a PNG takes about a second at low clocks: off the render thread
       captureWriter[view] = std::async(std::launch::async, [pm=device.readPixels(backbuf), file=std::string(name)] {
+        const auto tmp = file+".tmp";
         try {
-          const auto tmp = file+".tmp";
           pm.save(tmp.c_str(), "png");
           std::filesystem::rename(tmp,file);
           }
         catch(const std::exception& e) {
+          std::error_code ec;
+          std::filesystem::remove(tmp,ec);
           Log::e("Eye capture failed: ", e.what());
           }
         });

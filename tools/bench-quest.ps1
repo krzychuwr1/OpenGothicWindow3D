@@ -44,11 +44,24 @@ function Invoke-BenchAdb {
 }
 
 function Copy-BenchCaptures {
+  $eyeFiles = @()
+  if ($EyeCaptures -gt 0) {
+    $new = @(Invoke-BenchAdb shell run-as $Package ls files | Where-Object { $_ -cmatch '^eye-\d+-[LR]\.png$' -and $eyesBefore -cnotcontains $_ })
+    foreach ($left in $new -clike '*-L.png') {
+      $right = $left -creplace '-L\.png$','-R.png'
+      if ($new -ccontains $right) { $eyeFiles += $left,$right }
+    }
+    if ($eyeFiles.Count -eq 0) { throw 'No complete stereo PNG pair for this run' }
+  }
   if ($eyeFiles.Count -gt 0 -or $shots.Count -gt 0) {
     New-Item -ItemType Directory -Force $dir | Out-Null
   }
   foreach ($f in $eyeFiles) {
     $dst = Join-Path $dir "$stamp-$Waypoint-$Scenario-$f"
+    $remoteHash = Invoke-BenchAdb shell run-as $Package sha256sum "files/$f"
+    if ($remoteHash -notmatch '^([0-9a-fA-F]{64})\s') { throw "Invalid checksum for $f" }
+    $expected = $Matches[1]
+    $tmp = "$dst.$([Guid]::NewGuid().ToString('N')).tmp"
     $info = [Diagnostics.ProcessStartInfo]::new()
     $info.FileName = 'adb'
     $info.UseShellExecute = $false
@@ -56,11 +69,16 @@ function Copy-BenchCaptures {
     foreach ($arg in 'exec-out','run-as',$Package,'cat',"files/$f") { $info.ArgumentList.Add($arg) }
     $proc = [Diagnostics.Process]::Start($info)
     try {
-      $out = [IO.File]::Create($dst)
+      $out = [IO.File]::Open($tmp, [IO.FileMode]::CreateNew)
       try { $proc.StandardOutput.BaseStream.CopyTo($out) } finally { $out.Dispose() }
       $proc.WaitForExit()
       if ($proc.ExitCode -ne 0) { throw "Could not pull $f" }
-    } finally { $proc.Dispose() }
+      if ((Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash -ne $expected) { throw "Checksum mismatch for $f" }
+      [IO.File]::Move($tmp,$dst)
+    } finally {
+      $proc.Dispose()
+      if ([IO.File]::Exists($tmp)) { [IO.File]::Delete($tmp) }
+    }
     "eye capture: $dst"
   }
   # Leave complete pairs on the headset if any local eye transfer fails.
@@ -97,8 +115,8 @@ $wakeRequested = $false
 $launched = $false
 $gamePid = $null
 $capturesReady = $false
+$stoppedRun = $false
 $shots = @()
-$eyeFiles = @()
 $eyesBefore = @()
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 $dir = Join-Path (Split-Path $PSScriptRoot) 'captures'
@@ -165,21 +183,16 @@ try {
     if ($new.Count -ne 1) { throw "Could not identify screenshot $($i+1) from this run" }
     $shots += $new
   }
-  if ($EyeCaptures -gt 0) {
-    $new = @(Invoke-BenchAdb shell run-as $Package ls files | Where-Object { $_ -cmatch '^eye-\d+-[LR]\.png$' -and $eyesBefore -cnotcontains $_ })
-    foreach ($left in $new -clike '*-L.png') {
-      $right = $left -creplace '-L\.png$','-R.png'
-      if ($new -ccontains $right) { $eyeFiles += $left,$right }
-    }
-    if ($eyeFiles.Count -eq 0) { throw 'No complete stereo PNG pair for this run' }
-  }
   $capturesReady = $true
 } finally {
   try {
     # A failing adb call must not prevent the remaining cleanup attempts.
     if ($launched) {
       $currentPid = & adb shell pidof $Package
-      if (-not $gamePid -or $currentPid -eq $gamePid) { & adb shell am force-stop $Package }
+      if (-not $gamePid -or $currentPid -eq $gamePid) {
+        & adb shell am force-stop $Package
+        $stoppedRun = $gamePid -and $currentPid -eq $gamePid -and $LASTEXITCODE -eq 0
+      }
     }
     if ($wakeRequested) { & adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable | Out-Null }
     if ($forcedClocks) {
@@ -191,7 +204,13 @@ try {
     }
     if ($argsFile) { & adb shell rm -f $remoteStaging }
     if ($argsFile) { Remove-Item -LiteralPath $argsFile }
-    if ($capturesReady) { Copy-BenchCaptures }
+    if ($capturesReady) {
+      if ($EyeCaptures -gt 0) {
+        & adb shell pidof $Package | Out-Null
+        if (-not $stoppedRun -or $LASTEXITCODE -ne 1) { throw 'Cannot collect eye captures until the benchmark process has stopped' }
+      }
+      Copy-BenchCaptures
+    }
   } finally {
     $lease.ReleaseMutex()
     $lease.Dispose()
