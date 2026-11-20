@@ -1257,11 +1257,11 @@ bool XrWindow::beginFrame() {
   return true;
   }
 
-// Premultiplied RGBA8 pixel with coverage `a` of colour (r,g,b) at opacity `o`
+// Store straight RGB so the compositor applies coverage after decoding the sRGB swapchain.
 static uint32_t pixel(float r, float g, float b, float o, float a) {
   a = std::clamp(a, 0.f, 1.f)*o;
   auto c = [](float v) { return uint32_t(std::clamp(v, 0.f, 1.f)*255.f + 0.5f); };
-  return c(r*a) | (c(g*a)<<8) | (c(b*a)<<16) | (c(a)<<24);
+  return c(r) | (c(g)<<8) | (c(b)<<16) | (c(a)<<24);
   }
 
 static bool uploadStatic(const VulkanNativeContext& vk, VkCommandBuffer cb, VkFence fence, XrSwapchain sc,
@@ -1731,10 +1731,12 @@ bool XrWindow::submit(bool rendered) {
     }
 
   // Frame parts: the grab handle, and the resize bracket of a corner a hand is reaching for
+  constexpr XrCompositionLayerFlags chromeFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
+                                               XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
   XrCompositionLayerQuad button = {XR_TYPE_COMPOSITION_LAYER_QUAD};
   if(s.buttonReady && hasImage) {
     const bool hover = s.grabbed==Grip::Environment || s.hands[0].hover==Grip::Environment || s.hands[1].hover==Grip::Environment;
-    button.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    button.layerFlags = chromeFlags;
     button.space = s.localSpace;
     button.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     button.subImage.swapchain = s.environmentButton;
@@ -1757,7 +1759,7 @@ bool XrWindow::submit(bool rendered) {
     if(s.grabbed==Grip::CornerLeft)  cornerHeld[0] = cornerOn[0] = true;
     if(s.grabbed==Grip::CornerRight) cornerHeld[1] = cornerOn[1] = true;
 
-    handle.layerFlags                = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    handle.layerFlags                = chromeFlags;
     handle.space                     = s.localSpace;
     handle.eyeVisibility             = XR_EYE_VISIBILITY_BOTH;
     handle.subImage.swapchain        = s.handleSwapchain;
@@ -1778,7 +1780,7 @@ bool XrWindow::submit(bool rendered) {
       const V3 at{sx*(halfW + 0.012f - k), -halfH - 0.012f + k, 0.002f};
       auto& q = corners[size_t(c)];
       q = {XR_TYPE_COMPOSITION_LAYER_QUAD};
-      q.layerFlags               = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+      q.layerFlags               = chromeFlags;
       q.space                    = s.localSpace;
       q.eyeVisibility            = XR_EYE_VISIBILITY_BOTH;
       q.subImage.swapchain       = s.cornerSwapchain;

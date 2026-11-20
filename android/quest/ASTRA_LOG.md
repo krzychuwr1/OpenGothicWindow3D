@@ -385,3 +385,9 @@ Isolated host processes ran the actual fence destructor and upload pool with a l
 Freeing an instance range between two free neighbours merged only one side. Three contiguous regions could remain in two pieces, forcing the next large mesh or palette to grow CPU storage and potentially reallocate the GPU buffer. Freeing a zero-size ID could also insert a useless free range. The allocator now merges both sides of a released span and ignores empty ranges.
 
 A host test used the production allocation and free functions. It allocated four 128-byte regions, tried all 24 release orders and then requested 512 bytes. Old code grew the backing store in 16 orders (up to 1,088 bytes including the reserved first matrix) and retained an empty range in all 24. The fix reused the original 576 bytes in every order and left no empty ranges. Android Release linked. This is a measured storage bound for the fixture; live scene memory savings were not measured.
+
+### Blend translucent window controls in linear light
+
+The handle, resize brackets and surroundings button multiplied sRGB colour bytes by opacity before OpenXR decoded them. At the centre of the idle handle this yielded 0.136 linear red over black instead of 0.357. The generated textures now store straight RGB and all three quad types request source alpha with the unpremultiplied-alpha flag. The compositor applies coverage in linear light. [OpenXR swapchain colour space](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XrSwapchain.html)
+
+A host harness compiled the pixel function and layer flags from each revision. Across sRGB and UNORM formats, four colours, three opacities and four coverage values for all three controls, 81 of 288 old results exceeded a 0.006 linear tolerance; all corrected results passed. Android Release linked. The numeric test models compositor blending. Headset appearance of this change awaits a compositor capture.
