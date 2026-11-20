@@ -209,6 +209,9 @@ struct XrWindow::Impl {
   bool                     dimStyleAvailable = false, dimUsesOpacity = false, grabTrigger = false;
   float                    passthroughDim = 0.f;
   XrTime                   lastDimHover = 0;
+  uint32_t                 smokeFrame = 0;
+  XrTime                   smokeCaptureUntil = 0;
+  Tempest::Vec2            smokeWindow;
   static constexpr uint32_t SkyW = 2048, SkyH = SkyW/2, ButtonW = 128, ButtonH = 80;
   bool                     panoramaReady = false, buttonReady = false, immersive = false;
   bool                     staticImagesAttempted = false;
@@ -275,6 +278,7 @@ struct XrWindow::Impl {
   void fillCorners(VkCommandBuffer cmd, VkFence fence);
   void fillEnvironment(VkCommandBuffer cmd, VkFence fence);
   bool setEnvironment(bool useSky);
+  void smokeHand(Hand& h);
   bool applyDim(float level);
   void saveDim();
   int sliderRow() const;
@@ -1203,6 +1207,71 @@ void XrWindow::Impl::cancelInput() {
     }
   }
 
+// Repeat the same physical inputs through the normal hit-test and capture path.
+// Only -xrsmoke enables this sequence. Frames count after the save has loaded.
+void XrWindow::Impl::smokeHand(Hand& hand) {
+  if(!frame.shouldRender || !headValid || !placed || !buttonReady ||
+      !Gothic::inst().world() || !Gothic::inst().player() || Gothic::inst().checkLoading()!=Gothic::LoadState::Idle)
+    return;
+  ++smokeFrame;
+  const uint32_t f = smokeFrame;
+  if(f==1) {
+    smokeWindow = Tempest::Vec2(windowWidth,physicalHeight);
+    Log::i("XR smoke room: world loaded, passthrough=",!immersive);
+    }
+  // Hold each inspection pose for several seconds at half refresh.
+  if(f==111)
+    Log::i("XR smoke sky: immersive=",immersive);
+  if(f==295)
+    Log::i("XR smoke passthrough: active=",!immersive);
+  if(f==470)
+    Log::i("XR smoke dim: level=",passthroughDim," sliderRow=",sliderRow());
+  if(f==621)
+    Log::i("XR smoke resized: metres=",windowWidth,"x",physicalHeight);
+  if(f==735) {
+    Gothic::settingsSetI("INTERNAL","xrSurfaceLight",1);
+    smokeCaptureUntil = frame.predictedDisplayTime+7'000'000'000;
+    Log::i("XR smoke surface light: setting=",Gothic::settingsGetI("INTERNAL","xrSurfaceLight"));
+    }
+  if(smokeCaptureUntil>0 && frame.predictedDisplayTime>=smokeCaptureUntil) {
+    smokeCaptureUntil = 0;
+    Log::i("XR smoke complete");
+    }
+  hand.aimValid = false;
+  hand.nearValid = false;
+  hand.trigger = 0.f;
+  hand.grab = 0.f;
+  if(f>710)
+    return;
+
+  V3 point = buttonCenter();
+  bool ray = false;
+  if(f<320) {
+    hand.grab = (f>=108 && f<116) || (f>=292 && f<300) ? 1.f : 0.f;
+    } else if(f<530) {
+    // Aim and trigger. Start at the light end and drag continuously.
+    point.x += DimLeft+DimTravel*0.85f*std::clamp((float(f)-330.f)/94.f,0.f,1.f);
+    ray = true;
+    hand.trigger = f>=330 && f<500 ? 1.f : 0.f;
+    } else {
+    // Pinch the right corner near the screen, then extend from its original pose.
+    const float t = std::clamp((float(f)-540.f)/50.f,0.f,1.f);
+    point = {smokeWindow.x*0.5f+0.40f*t,-smokeWindow.y*0.5f-0.15f*t,0.01f};
+    hand.grab = f>=540 && f<610 ? 1.f : 0.f;
+    }
+  XrPosef pose = windowPose;
+  if(ray)
+    point.z = 0.5f;
+  pose.position = toXr(toWorld(windowPose,point));
+  if(ray) {
+    hand.aimValid = true;
+    hand.aim = pose;
+    } else {
+    hand.nearValid = true;
+    hand.nearPose = pose;
+    }
+  }
+
 void XrWindow::Impl::updateInput() {
   releasePad = padState;
   padState = {};
@@ -1283,6 +1352,8 @@ void XrWindow::Impl::updateInput() {
     h.nearValid = locate(h.nearSpace, h.nearPose);
     h.grab      = getF(aGrab, h.path);
     h.trigger   = getF(aTrigger,h.path);
+    if(i==0 && CommandLine::inst().xrSmokeTest())
+      smokeHand(h);
     h.hover     = Grip::None;
     h.hoverNear = false;
 

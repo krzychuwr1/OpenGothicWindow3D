@@ -172,6 +172,14 @@ Gothic::Gothic(GameModDescriptor desc) {
 
   baseIniFile.reset(new IniFile(nestedPath({u"system",u"Gothic.ini"},Dir::FT_File)));
   iniFile    .reset(new IniFile(u"Gothic.ini"));
+#if defined(OPENGOTHIC_XR)
+  if(CommandLine::inst().xrSmokeTest()) {
+    // Begin from a reproducible room state. Smoke changes stay in this process.
+    iniFile->set("INTERNAL","xrEnvironment",0);
+    iniFile->set("INTERNAL","xrPassthroughDim",0.f);
+    iniFile->set("INTERNAL","xrSurfaceLight",0);
+    }
+#endif
 #if defined(__ANDROID__)
   // Mobile GPU: 3D at 75%, interface at full resolution
   const int defaultResIndex = 1;
@@ -937,6 +945,10 @@ float Gothic::settingsSoundVolume() {
   }
 
 void Gothic::flushSettings() {
+#if defined(OPENGOTHIC_XR)
+  if(CommandLine::inst().xrSmokeTest())
+    return;
+#endif
   instance->iniFile->flush();
   }
 

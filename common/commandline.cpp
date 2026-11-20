@@ -145,6 +145,9 @@ CommandLine::CommandLine(int argc, const char** argv) {
     else if(arg=="-xrturn" && i+1<argc) {
       turnRate = std::clamp(float(std::atof(argv[++i])), -360.f, 360.f);
       }
+    else if(arg=="-xrsmoke") {
+      smokeTest = true;
+      }
     else if(arg=="-xrforward") {
       walkForward = true;
       }

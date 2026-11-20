@@ -60,6 +60,7 @@ class CommandLine {
     float               xrWindowWidth() const { return portalWidth; }
     float               xrWindowHeight() const { return portalHeight; }
     float               xrTurnRate() const { return turnRate; }
+    bool                xrSmokeTest() const { return smokeTest; }
     bool                xrWalkForward() const { return walkForward; }
     int                 xrCaptureBurst() const { return captureBurst; }
     // -capture SECONDS writes both rendered eyes to PNG files in the app's files folder.
@@ -89,6 +90,7 @@ class CommandLine {
     float               turnRate = 0.f;
     float               portalWidth = 2.4f, portalHeight = 1.35f;
     bool                walkForward = false;
+    bool                smokeTest = false;
     std::string         perfLevel;
     std::vector<SettingOverride> settingOverrides;
     bool                devmode      = false;
