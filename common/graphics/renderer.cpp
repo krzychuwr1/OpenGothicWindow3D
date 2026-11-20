@@ -1891,16 +1891,18 @@ void Renderer::drawShadowMap(Encoder<CommandBuffer>& cmd, uint8_t fId, WorldView
     if(shadowMap[i].isEmpty())
       continue;
     if(lit && !shadowStatic[i].isEmpty()) {
-      const bool moved = !shadowStaticValid[i] || std::memcmp(shadowStaticMatrix[i].data(), shadowMatrix[i].data(), sizeof(float)*16)!=0;
+      const uint64_t revision = view.drawCommands().staticShadowRevision();
+      const bool refresh = !shadowStaticValid[i] || shadowRevision[i]!=revision ||
+                           std::memcmp(shadowStaticMatrix[i].data(), shadowMatrix[i].data(), sizeof(float)*16)!=0;
       // The far cascade's moving casters are refreshed every other frame: a frame of lag at that
       // distance is invisible. Its map keeps the previous frame's content in between.
-      if(i==1 && !moved && shadowWasLit && (shadowFrame%2)!=0)
+      if(i==1 && !refresh && shadowWasLit && (shadowFrame%2)!=0)
         continue;
-      // Landscape and static objects change only when the cascade moves: render them into a cache
-      if(moved) {
+      if(refresh) {
         cmd.setDebugMarker(string_frm("ShadowMap #",i," static"));
         cmd.setFramebuffer({}, {shadowStatic[i], 0.f, Tempest::Preserve});
         view.drawShadowStatic(cmd,i);
+        shadowRevision[i]     = revision;
         shadowStaticMatrix[i] = shadowMatrix[i];
         shadowStaticValid[i]  = true;
         }

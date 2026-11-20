@@ -154,11 +154,17 @@ uint16_t DrawCommands::commandId(const Material& m, Type type, uint32_t bucketId
   if(pMain==nullptr && pShadow==nullptr && pHiZ==nullptr)
     return uint16_t(-1);
 
+  bool staticShadow = (type==Static || type==Landscape);
+#if defined(OPENGOTHIC_XR)
+  // Animated cutout texels change the caster silhouette even on fixed geometry.
+  if(m.alpha==Material::AlphaTest && (m.hasUvAnimation() || m.hasFrameAnimation()))
+    staticShadow = false;
+#endif
   for(size_t i=0; i<cmd.size(); ++i) {
 #if defined(OPENGOTHIC_XR)
     // Static and movable meshes can share shaders. Their shadow and motion
     // passes classify the whole indirect command by type.
-    if(cmd[i].type!=type)
+    if(cmd[i].type!=type || cmd[i].staticShadow!=staticShadow)
       continue;
 #endif
     if(cmd[i].pMain!=pMain || cmd[i].pShadow!=pShadow || cmd[i].pHiZ!=pHiZ)
@@ -181,6 +187,7 @@ uint16_t DrawCommands::commandId(const Material& m, Type type, uint32_t bucketId
 #endif
   cx.bucketId    = bindless ? 0xFFFFFFFF : bucketId;
   cx.type        = type;
+  cx.staticShadow = staticShadow;
   cx.alpha       = m.alpha;
   cmd.push_back(std::move(cx));
   cmdDurtyBit = true;
@@ -190,6 +197,7 @@ uint16_t DrawCommands::commandId(const Material& m, Type type, uint32_t bucketId
 void DrawCommands::addClusters(uint16_t cmdId, uint32_t meshletCount) {
   cmdDurtyBit = true;
   cmd[cmdId].maxPayload += meshletCount;
+  markShadowChanged(cmdId);
   }
 
 void DrawCommands::commit(Encoder<CommandBuffer>& enc) {
@@ -480,7 +488,7 @@ void DrawCommands::drawCommon(Tempest::Encoder<Tempest::CommandBuffer>& cmd, Sce
     if(cx.alpha!=func)
       continue;
     if(casters!=Casters::All) {
-      const bool isStatic = (cx.type==Type::Landscape || cx.type==Type::Static);
+      const bool isStatic = cx.staticShadow;
       if(casters==Casters::Movable && cx.type!=Type::Movable)
         continue;
       if(casters==Casters::Animated && cx.type==Type::Movable)

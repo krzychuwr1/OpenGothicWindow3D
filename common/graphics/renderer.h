@@ -185,10 +185,10 @@ class Renderer final {
     Tempest::Matrix4x4        proj, viewProj, viewProjLwc;
     Tempest::Matrix4x4        shadowMatrix[Resources::ShadowLayers];
     Tempest::Matrix4x4        shadowMatrixVsm;
-    // Static casters of the near cascade, re-rendered only when the cascade moves (XR builds)
-    // Static casters per cascade, re-rendered only when the cascade moves (XR builds)
+    // XR caches static caster depth per cascade until the matrix or geometry changes.
     Tempest::ZBuffer          shadowStatic      [Resources::ShadowLayers];
     Tempest::Matrix4x4        shadowStaticMatrix[Resources::ShadowLayers];
+    uint64_t                  shadowRevision    [Resources::ShadowLayers] = {};
     bool                      shadowStaticValid [Resources::ShadowLayers] = {};
     uint64_t                  shadowFrame  = 0;
     // Point lights visible to the view being drawn, one list per frame slot

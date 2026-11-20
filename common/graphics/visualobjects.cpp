@@ -50,8 +50,13 @@ struct VisualObjects::MorphData {
 void VisualObjects::Item::setObjMatrix(const Tempest::Matrix4x4& pos) {
   if(owner!=nullptr) {
     auto& obj = owner->objects[id];
-    if(obj.pos!=pos)
+    if(obj.pos!=pos) {
       owner->updateRtAs(id);
+#if defined(OPENGOTHIC_XR)
+      if(obj.type==DrawCommands::Static)
+        owner->drawCmd.markShadowChanged(obj.cmdId);
+#endif
+      }
     obj.pos = pos;
     owner->updateInstance(id);
     }
@@ -68,6 +73,10 @@ void VisualObjects::Item::setFatness(float f) {
     if(owner->objects[id].fatness == f)
       return;
     owner->objects[id].fatness = f;
+#if defined(OPENGOTHIC_XR)
+    if(owner->objects[id].type==DrawCommands::Static)
+      owner->drawCmd.markShadowChanged(owner->objects[id].cmdId);
+#endif
     owner->updateInstance(id);
     }
   }

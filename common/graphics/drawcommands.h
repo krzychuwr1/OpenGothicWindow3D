@@ -28,6 +28,7 @@ class DrawCommands {
       const Tempest::RenderPipeline* pHiZ         = nullptr;
       const Tempest::RenderPipeline* pMotion      = nullptr;
       Type                           type         = Type::Landscape;
+      bool                           staticShadow = false;
 
       Material::AlphaFunc            alpha        = Material::Solid;
       uint32_t                       firstPayload = 0;
@@ -53,6 +54,13 @@ class DrawCommands {
     void     commit(Tempest::Encoder<Tempest::CommandBuffer>& cmd);
     uint16_t commandId(const Material& m, Type type, uint32_t bucketId);
     void     addClusters(uint16_t cmdId, uint32_t meshletCount);
+    uint64_t staticShadowRevision() const { return shadowRevision; }
+    void     markShadowChanged(uint16_t cmdId) {
+#if defined(OPENGOTHIC_XR)
+      if(cmd[cmdId].staticShadow && cmd[cmdId].pShadow!=nullptr)
+        ++shadowRevision;
+#endif
+      }
 
     void     visibilityPass(Tempest::Encoder<Tempest::CommandBuffer>& cmd, int pass, bool rasterShadows);
     void     visibilityVsm(Tempest::Encoder<Tempest::CommandBuffer>& cmd);
@@ -126,6 +134,7 @@ class DrawCommands {
     DrawClusters&            clusters;
     const SceneGlobals&      scene;
     size_t                   maxPayload = 0;
+    uint64_t                 shadowRevision = 0;
 
     std::vector<DrawCmd>     cmd;
     std::vector<DrawCmd*>    ord;
