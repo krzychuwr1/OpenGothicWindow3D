@@ -10,6 +10,7 @@
 
 #include "worldview.h"
 #include "shaders.h"
+#include "xr/layeredtargets.h"
 
 class Camera;
 class InventoryMenu;
@@ -190,6 +191,7 @@ class Renderer final {
     Tempest::Attachment       sceneDepth;
 
     Tempest::Attachment       gbufDiffuse;
+    LayeredTargets            mvTest;   // -skip mvtest: two-layer G-buffer for the multiview timing test
     Tempest::Attachment       gbufNormal;
 
     struct Shadow {
