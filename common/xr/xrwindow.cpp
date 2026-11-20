@@ -1012,6 +1012,7 @@ void XrWindow::Impl::updateInput() {
 
   // Pointing at or touching the frame parts: the handle moves the window, the corners resize it.
   // The game image itself is never a grab target, so playing never moves the window by accident.
+  const bool canManipulate = frame.shouldRender && placed && headValid;
   const V3 wNormal = rotate(windowPose.orientation, V3{0,0,1});
 
   for(size_t i=0; i<hands.size(); ++i) {
@@ -1083,8 +1084,10 @@ void XrWindow::Impl::updateInput() {
         h.grabHeld = !released;
         continue;
         }
-      if(grabbed==Grip::Environment)
-        continue; // the press edge handled the switch
+      if(!canManipulate || grabbed==Grip::Environment) {
+        lastGrabTime = frame.predictedDisplayTime;
+        continue;
+        }
       const XrPosef& holder = grabNear ? h.nearPose : h.aim;
       if(!grabNear) {
         // Thumbstick pushes a pointed-at window away or pulls it closer
@@ -1114,7 +1117,7 @@ void XrWindow::Impl::updateInput() {
         windowWidth = std::clamp(reach*grabScale, 0.6f, 6.f);
         }
       }
-    else if(grabbedBy<0 && pressed && !h.grabHeld && h.hover!=Grip::None) {
+    else if(canManipulate && grabbedBy<0 && pressed && !h.grabHeld && h.hover!=Grip::None) {
       grabbedBy = int(i);
       grabbed   = h.hover;
       grabNear  = h.hoverNear;
@@ -1287,14 +1290,17 @@ bool XrWindow::beginFrame() {
   }
   s.frameBegun = true;
 
-  if(!s.frame.shouldRender || !isVisible()) {
-    submit(false);
-    return false;
+  if(isVisible()) {
+    s.placeWindow();
+    // A focused game keeps ticking even when the runtime requests zero layers.
+    s.updateInput();
+    if(s.frame.shouldRender) {
+      s.locateEyes();
+      return true;
+      }
     }
-  s.placeWindow();
-  s.updateInput();
-  s.locateEyes();
-  return true;
+  submit(false);
+  return false;
   }
 
 // Store straight RGB so the compositor applies coverage after decoding the sRGB swapchain.
