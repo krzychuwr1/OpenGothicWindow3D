@@ -454,3 +454,16 @@ A mock Vulkan test covered twelve map/cache/success cases: the old code failed e
 ### Distinguish the experiment branches from the audited build
 
 The experiment notes now identify which branches still use current-frame morph offsets and solid cutout silhouettes. The foveation notes link the implemented setting and the measured main-street and tavern savings. The controls reference includes the surroundings switch among the grip and pinch targets. The original experiment measurements remain available for the owner’s branch layout.
+
+### Reuse reset Vulkan command buffers on Android
+
+Tempest `901ba68d` retains up to 64 extra command-buffer handles per pool after reset. The first command stays in place and excess handles are freed. A driver fixture recorded 16 frames with 1–97 commands. Allocations fell from 602 to 98 and individual frees from 601 to 33. Both versions peaked at 97 live handles with zero state or ownership violations.
+
+On Quest 3, both waypoints used CPU level 1 / GPU level 0, the same scene arguments and control/candidate/candidate/control order. Installed APK hashes were checked on each switch. Each recording and GPU number below is the mean of the final four app reports in that run. The control was the clean `ae4d16fc` APK. The candidate also included `71a15ca3`’s separate pool teardown and unused reset allocation cleanup.
+
+| Scene | Stereo recording CPU ms, control | Stereo recording CPU ms, reuse | GPU ms/eye, control → reuse | VrApi FPS, control → reuse |
+| --- | --- | --- | --- | --- |
+| City main street | 5.623, 5.631 | 5.371, 5.345 | 8.043, 8.047 → 8.040, 8.067 | 60.4, 60.5 → 60.4, 60.5 |
+| Tavern | 6.429, 6.464 | 6.137, 6.137 | 9.590, 9.570 → 9.568, 9.590 | 51.1, 51.6 → 51.6, 51.4 |
+
+Kept the change for 0.269 ms less CPU recording per stereo frame in the city and 0.310 ms in the tavern. FPS and GPU timings overlapped across variants. The benchmark stopped the game and released the wake override between runs. Final battery was 88% at 42.0 °C.
