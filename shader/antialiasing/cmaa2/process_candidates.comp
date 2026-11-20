@@ -19,11 +19,17 @@ layout(binding = 7, std430) buffer UboWorkingExecuteIndirectBuffer {
 #if CMAA2_COLLECT_EXPAND_BLEND_ITEMS
 const  uint CMAA2_BLEND_ITEM_SLM_SIZE = 768;
 shared uint  g_groupSharedBlendItemCount;
+shared uint  g_groupSharedBlendLimit;
 shared uvec2 g_groupSharedBlendItems[CMAA2_BLEND_ITEM_SLM_SIZE];
 #endif
 
 void storeColorSample(uvec2 pixelPos, vec3 color, bool isComplexShape) {
+  if(any(greaterThanEqual(pixelPos, uvec2(textureSize(sceneTonemapped, 0)))))
+    return;
   uint counterIndex = atomicAdd(controlBuffer.blendColorSamplesCount, 1);
+  // Never publish a list head whose item did not fit in the allocated buffer.
+  if(counterIndex >= deferredBlendItemList.length())
+    return;
 
   uvec2 quadPos = pixelPos / uvec2(2, 2);
   uint offsetXY = (pixelPos.y % 2) * 2 + (pixelPos.x % 2);
@@ -115,8 +121,13 @@ bool collectBlendZs(uvec2 screenPos, bool horizontal, bool invertedZShape, float
   const uint blendItemCount = uint(loopTo - loopFrom + 1.0);
   itemIndex = atomicAdd(g_groupSharedBlendItemCount, blendItemCount);
 
-  if((itemIndex + blendItemCount) > CMAA2_BLEND_ITEM_SLM_SIZE)
+  if((itemIndex + blendItemCount) > CMAA2_BLEND_ITEM_SLM_SIZE) {
+    // At most one reservation straddles the end. Its unused tail must not
+    // be consumed after this invocation falls back to direct blending.
+    if(itemIndex < CMAA2_BLEND_ITEM_SLM_SIZE)
+      g_groupSharedBlendLimit = itemIndex;
     return false;
+    }
 
   float totalLength = loopTo - loopFrom + 1.0 - leftOdd - rightOdd;
   float lerpStep = 1.0 / totalLength;
@@ -221,8 +232,10 @@ vec4 computeSimpleShapeBlendValues(vec4 edges, vec4 edgesLeft, vec4 edgesRight, 
 
 void main() {
 #if CMAA2_COLLECT_EXPAND_BLEND_ITEMS 
-  if(gl_LocalInvocationID.x == 0)
+  if(gl_LocalInvocationID.x == 0) {
     g_groupSharedBlendItemCount = 0;
+    g_groupSharedBlendLimit = CMAA2_BLEND_ITEM_SLM_SIZE;
+    }
   barrier();
 #endif
 
@@ -318,7 +331,7 @@ void main() {
 #if CMAA2_COLLECT_EXPAND_BLEND_ITEMS
   barrier();
 
-  uint totalItemCount = min(CMAA2_BLEND_ITEM_SLM_SIZE, g_groupSharedBlendItemCount);
+  uint totalItemCount = min(g_groupSharedBlendLimit, g_groupSharedBlendItemCount);
 
   uint loops = (totalItemCount + (CMAA2_PROCESS_CANDIDATES_NUM_THREADS - 1) - gl_LocalInvocationID.x) / CMAA2_PROCESS_CANDIDATES_NUM_THREADS;
 
@@ -351,6 +364,8 @@ void main() {
     }
 #endif
 
+  // The last group sizes the draw from counters written by every invocation.
+  memoryBarrierBuffer();
   barrier();
   if(gl_LocalInvocationIndex==0) {
     //NOTE: gl_NumWorkGroups is not implemented in DX12

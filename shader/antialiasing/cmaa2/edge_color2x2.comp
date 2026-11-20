@@ -101,7 +101,8 @@ void main() {
 
   barrier();
 
-  if(inOutputKernel) {
+  const uvec2 imageExtent = uvec2(textureSize(sceneTonemapped, 0));
+  if(inOutputKernel && all(lessThan(pixelPos, imageExtent))) {
     uvec4 outEdges   = uvec4(0);
     vec2  topRow     = shared2x2FracEdgesH[center2x2.x][center2x2.y-1].zw;
     vec2  leftColumn = shared2x2FracEdgesV[center2x2.x-1][center2x2.y].yw;
@@ -168,11 +169,12 @@ void main() {
 
         // if there's at least one two edge corner, this is a candidate for simple or complex shape processing...
         bool isCandidate = (edges.x * edges.y + edges.y * edges.z + edges.z * edges.w + edges.w * edges.x) != 0;
-        if(isCandidate) {
+        if(isCandidate && all(lessThan(localPixelPos, imageExtent))) {
           uint counterIndex;
           counterIndex = atomicAdd(controlBuffer.shapeCandidateCount, 1);
           // 14-17 bits are free
-          shapeCandidates[counterIndex] = (localPixelPos.x << 18) | localPixelPos.y;
+          if(counterIndex < shapeCandidates.length())
+            shapeCandidates[counterIndex] = (localPixelPos.x << 18) | localPixelPos.y;
           }
 
         // Write out edges - we write out all, including empty pixels, to make sure shape detection edge tracing
@@ -184,6 +186,8 @@ void main() {
     storeEdge(pixelPos, outEdges);
     }
 
+  // Publish every lane's contributions before its group announces completion.
+  memoryBarrierBuffer();
   barrier();
   if(gl_LocalInvocationIndex==0) {
     //NOTE: gl_NumWorkGroups is not implemented in DX12
@@ -201,6 +205,8 @@ void main() {
       candidateCmd.x = (shapeCandidateCount + CMAA2_PROCESS_CANDIDATES_NUM_THREADS - 1) / CMAA2_PROCESS_CANDIDATES_NUM_THREADS;
       candidateCmd.y = 1;
       candidateCmd.z = 1;
+      // An empty dispatch cannot update the draw count left by the other eye.
+      applyCmd.vertexCount = 0;
       }
     }
   }

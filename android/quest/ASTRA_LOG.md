@@ -878,3 +878,8 @@ The occupancy guard passed before install and before wake. With CPU 1 / GPU 0 re
 Across frames 25–78, the actual camera turn averaged 0.524° per app frame with 0.022° standard deviation. Display intervals measured 28.60 ± 4.03 ms and simulation steps 29.15 ± 1.11 ms. Across frames 95–150 the camera averaged 0.505 ± 0.011°. App timings before the drag showed 35.8–36.0 fps and 9.78–11.19 GPU ms per eye. The saved game log ends mid-line during resizing, before a complete large-window GPU sample. The retained VrApi buffer covered system processes, so a game ASW/stale count is unavailable for this run. A final plain-stereo movement comparison and controlled large-window cost remain unmeasured. [Game log](../../build/captures/u4-20261120-120043-913/game.txt)
 
 The available game log contained no XR or Vulkan errors. It retained the baseline asset warnings for `INVISIBLE_VOBBOX.3DS`, two missing sound effects and ZenKit section `f590`. The phase log and screenshots cover the later controls. The spatial-data permission panel prevented observing the projected light. After granting access, move the window to sample a surface. If the runtime requires permission at instance creation, restart with Surface light enabled. The smoke performed no permission grant or room scan.
+
+
+## Update 5 investigation
+
+Enabling the engine’s CMAA2 through Video exposed unchecked candidate and blend-list appends, a partial reservation that could expose unwritten workgroup memory, and a stale indirect draw after an empty pass. The compute shaders now bound those accesses, publish the counters before the last workgroup prepares indirect arguments, and clear an empty draw. All five Android CMAA2 SPIR-V modules passed the NDK Vulkan 1.0 validator.

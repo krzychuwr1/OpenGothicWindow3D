@@ -60,7 +60,7 @@ layout(binding = 4) buffer UboWorkingDeferredBlendItemList {
 
 layout(binding = 5, r32ui) uniform uimage2D deferredBlendItemListHeads;
 
-layout(binding = 6) buffer UboWorkingControlBuffer {
+layout(binding = 6) coherent buffer UboWorkingControlBuffer {
   uint iterator;
   uint shapeCandidateCount;
   uint blendColorSamplesCount;
@@ -79,18 +79,23 @@ vec4 unpackEdgesFlt(uint value) {
   }
 
 vec3 loadSourceColor(ivec2 pixelPos, ivec2 offset) {
-  vec3 color = texelFetch(sceneTonemapped, pixelPos + offset, 0).xyz;
+  ivec2 xy = clamp(pixelPos + offset, ivec2(0), textureSize(sceneTonemapped, 0) - 1);
+  vec3 color = texelFetch(sceneTonemapped, xy, 0).xyz;
   return color;
   }
 
 void storeEdge(uvec2 pos, uvec4 outEdges) {
   imageStore(workingEdges, ivec2(pos.x / 2, pos.y + 0), vec4(((outEdges[1] << 4) | outEdges[0]) / 255.0));
-  imageStore(workingEdges, ivec2(pos.x / 2, pos.y + 1), vec4(((outEdges[3] << 4) | outEdges[2]) / 255.0));
+  if(pos.y + 1 < imageSize(workingEdges).y)
+    imageStore(workingEdges, ivec2(pos.x / 2, pos.y + 1), vec4(((outEdges[3] << 4) | outEdges[2]) / 255.0));
   }
 
 uint loadEdge(ivec2 pixelPos, ivec2 offset) {
-  uint a    = uint((pixelPos.x + offset.x) % 2);
-  uint edge = uint(imageLoad(workingEdges, ivec2((pixelPos.x + offset.x) / 2, pixelPos.y + offset.y)).x * 255. + 0.5);
+  ivec2 xy = pixelPos + offset;
+  if(any(lessThan(xy, ivec2(0))) || any(greaterThanEqual(xy, textureSize(sceneTonemapped, 0))))
+    return 0;
+  uint a    = uint(xy.x % 2);
+  uint edge = uint(imageLoad(workingEdges, ivec2(xy.x / 2, xy.y)).x * 255. + 0.5);
   edge = (edge >> (a * 4)) & 0xF;
   return edge;
   }
