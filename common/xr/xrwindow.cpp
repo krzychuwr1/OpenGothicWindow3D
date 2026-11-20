@@ -196,6 +196,7 @@ struct XrWindow::Impl {
   int32_t                  depthAcquired[2] = {-1, -1};
   bool                     spaceWarpWanted  = false;
   bool                     skipExtrapolation = true;
+  bool                     scalePicture = true;
   XrPosef                  eyePose[2] = {};
   XrFovf                   eyeFov [2] = {};
   float                    eyeNear[2] = {};
@@ -1569,6 +1570,9 @@ Grip XrWindow::Impl::targetAt(float x, float y) const {
   }
 
 void XrWindow::Impl::locateEyes() {
+  const bool scale = Gothic::settingsGetI("INTERNAL","xrResizeMode")==0;
+  skipExtrapolation |= scale!=scalePicture;
+  scalePicture = scale;
   XrViewLocateInfo info = {XR_TYPE_VIEW_LOCATE_INFO};
   info.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
   info.displayTime           = frame.predictedDisplayTime;
@@ -1604,20 +1608,21 @@ bool XrWindow::eyeView(uint8_t eye, float verticalFovDeg, Camera::EyeView& out) 
   auto& s = *impl;
   if(!s.eyesValid || eye>1)
     return false;
-  // Life size: one metre in the room is one metre (100 units) in the game. The window maps onto a
-  // plane in front of the game camera, placed so that an eye at the matching distance sees exactly
-  // the game's own field of view; any other eye position sees the scene through the window with
-  // parallax. Geometry between the eye and that plane is clipped, so nothing pokes through the frame.
+  // Scale-picture stretches the image in the window plane. Transform lateral eye motion by
+  // the inverse magnification as well, so stereo still converges at the physical window.
+  // Eye distance and depth stay in metres in both modes, including for SpaceWarp.
   const float units = 100.f;
-  const float halfW = s.windowWidth*0.5f*units;
-  const float halfH = s.windowHeight()*0.5f*units;
+  const float unitsX = s.scalePicture ? units*(2.4f/s.windowWidth) : units;
+  const float unitsY = s.scalePicture ? units*(1.35f/s.windowHeight()) : units;
+  const float halfW = s.windowWidth*0.5f*unitsX;
+  const float halfH = s.windowHeight()*0.5f*unitsY;
   const float plane = Impl::portalDistance(verticalFovDeg)*units;
 
   V3 e = s.eyeInWindow[eye];
   e.z  = std::max(e.z, 0.05f);   // behind or inside the window: hold the eye just in front of it
   // View space of the game camera: +x right, +y down (Vulkan), +z forward
-  const float ex = e.x*units;
-  const float ey = -e.y*units;
+  const float ex = e.x*unitsX;
+  const float ey = -e.y*unitsY;
   const float dz = e.z*units;    // eye distance to the window plane
   out.offset = Tempest::Vec3(ex, ey, plane-dz);
   out.zNear  = dz;

@@ -398,20 +398,48 @@ void GameMenu::initItems() {
 #ifdef OPENGOTHIC_XR
 void GameMenu::addXrVideoChoices(bool foveation, bool surfaceLight) {
   const auto end = std::end(hItems);
-  auto row = std::find_if(std::begin(hItems),end,[](const Item& i){ return i.handle && i.name=="MENUITEM_VID_RESOLUTION"; });
-  if(end-row<5 || !row[1].handle || row[1].name!="MENUITEM_VID_RESOLUTION_CHOICE" ||
-     !row[2].handle || row[2].name!="MENUITEM_VID_BRIGHTNESS")
+  auto device = std::find_if(std::begin(hItems),end,[](const Item& i){ return i.handle && i.name=="MENUITEM_VID_DEVICE"; });
+  static const char* stock[] = {"MENUITEM_VID_DEVICE","MENUITEM_VID_DEVICE_CHOICE",
+                                "MENUITEM_VID_RESOLUTION","MENUITEM_VID_RESOLUTION_CHOICE",
+                                "MENUITEM_VID_BRIGHTNESS","MENUITEM_VID_BRIGHTNESS_SLIDER",
+                                "MENUITEM_VID_CONTRAST","MENUITEM_VID_CONTRAST_SLIDER",
+                                "MENUITEM_VID_GAMMA","MENUITEM_VID_GAMMA_SLIDER","MENUITEM_VID_BACK"};
+  struct Choice {
+    bool enabled;
+    const char *id, *title, *values, *help, *key;
+    };
+  const Choice choices[] = {
+    {true,"MENUITEM_XR_RESIZE","Window resize","Scale picture|Show more","Choose what happens to the game view when resizing the window","xrResizeMode"},
+    {foveation,"MENUITEM_XR_FOVEATION","Foveation","Off|On","Shades peripheral lighting at lower detail around the direction your head faces","xrFoveation"},
+    {surfaceLight,"MENUITEM_XR_SURFACE_LIGHT","Surface light","Off|On","Spills the game's colours onto the table or floor below the window","xrSurfaceLight"},
+    };
+  const auto count = std::count_if(std::begin(choices),std::end(choices),[](const Choice& c){ return c.enabled; });
+  if(end-device<std::ptrdiff_t(std::size(stock))+2*count)
     return;
-  const int spacing = (row[2].handle->pos_y-row[0].handle->pos_y)/2;
-  if(spacing<=0 || row[1].handle->pos_y+spacing>=row[2].handle->pos_y)
+  for(size_t i=0;i<std::size(stock);++i)
+    if(!device[i].handle || device[i].name!=stock[i])
+      return;
+  auto back = device+std::size(stock)-1;
+  if(std::any_of(back+1,end,[](const Item& i){ return i.handle!=nullptr; }))
     return;
-  auto add = [&](Item* insert, int y, const char* id, const char* title, const char* help, const char* option) {
-    std::move_backward(insert,end-2,end);
+  const int start = device->handle->pos_y;
+  const int spacing = (back->handle->pos_y-start)/int(5+count);
+  if(spacing<=0)
+    return;
+
+  // Insert each label directly before its choice for the normal EFFECTS
+  // action and touch handling. Keep the stock heading, Back and help positions.
+  Item* row = device+2;
+  Item* insert = row+2;
+  std::move_backward(insert,back+1,back+1+2*count);
+  for(auto& choice:choices) {
+    if(!choice.enabled)
+      continue;
     for(int i=0;i<2;++i) {
       const auto& src = row[i];
       auto& dst = insert[i];
       dst = Item{};
-      dst.name = id;
+      dst.name = choice.id;
       if(i==1)
         dst.name += "_CHOICE";
       dst.img = src.img;
@@ -420,40 +448,29 @@ void GameMenu::addXrVideoChoices(bool foveation, bool surfaceLight) {
       auto& cell = *dst.handle;
       cell.type = i==0 ? zenkit::MenuItemType::TEXT : zenkit::MenuItemType::CHOICEBOX;
       cell.pos_x = style.pos_x;
-      cell.pos_y = y+(style.pos_y-row[0].handle->pos_y);
+      cell.pos_y = style.pos_y;
       cell.dim_x = style.dim_x;
       cell.dim_y = style.dim_y;
       cell.fontname = style.fontname;
       cell.flags = i==0 ? zenkit::MenuItemFlag::SELECTABLE | zenkit::MenuItemFlag::EFFECTS : zenkit::MenuItemFlag::CENTERED;
       if(i==0) {
-        cell.text[0] = title;
-        cell.text[1] = help;
+        cell.text[0] = choice.title;
+        cell.text[1] = choice.help;
         } else {
-        cell.text[0] = "Off|On";
-        cell.on_chg_set_option = option;
+        cell.text[0] = choice.values;
+        cell.on_chg_set_option = choice.key;
         cell.on_chg_set_option_section = "INTERNAL";
         updateItem(dst);
         }
       }
-    };
-  if(foveation && !end[-2].handle && !end[-1].handle)
-    add(row+2,row[0].handle->pos_y+spacing,"MENUITEM_XR_FOVEATION","Foveation",
-        "Shades peripheral lighting at lower detail around the direction your head faces","xrFoveation");
-
-  // Stock Video has space below Gamma for another option and Back. Leave
-  // custom menu layouts alone if the expected ordering or space is missing.
-  auto back = std::find_if(row+2,end,[](const Item& i){ return i.handle && i.name=="MENUITEM_VID_BACK"; });
-  if(!surfaceLight || back==end || back-row<4 || back[-1].name!="MENUITEM_VID_GAMMA_SLIDER" ||
-     back[-2].name!="MENUITEM_VID_GAMMA" || !back[-2].handle || end-back<3 ||
-     std::any_of(back+1,end,[](const Item& i){ return i.handle!=nullptr; }))
-    return;
-  const int y = back[-2].handle->pos_y+spacing;
-  const int backY = y+spacing;
-  if(back->handle->pos_y<=y || backY+spacing>=int(scriptDiv))
-    return;
-  add(back,y,"MENUITEM_XR_SURFACE_LIGHT","Surface light",
-      "Spills the game's colours onto the table or floor below the window","xrSurfaceLight");
-  back[2].handle->pos_y = backY;
+    insert+=2;
+    }
+  back+=2*count;
+  for(auto it=device;it<back;it+=2) {
+    const int offset = it[1].handle->pos_y-it->handle->pos_y;
+    it->handle->pos_y = start+int((it-device)/2)*spacing;
+    it[1].handle->pos_y = it->handle->pos_y+offset;
+    }
   }
 #endif
 
