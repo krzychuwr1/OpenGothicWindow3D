@@ -240,6 +240,9 @@ struct XrWindow::Impl {
   RenderPipeline           edgeOpaque, edgeCoverage, edgeMotion;
   float                    verticalFov = 67.5f;
   bool                     placed      = false;
+  bool                     probePlaced = false;
+  XrTime                   probeStableSince = 0;
+  XrPosef                  probeAnchor{};
   std::vector<XrTime>      recenterTimes;
   int                      grabbedBy   = -1;
   Grip                     grabbed     = Grip::None;
@@ -1178,20 +1181,58 @@ void XrWindow::Impl::placeWindow() {
   const auto due = [this](XrTime t) { return t<=frame.predictedDisplayTime; };
   if(std::erase_if(recenterTimes,due)!=0) {
     placed = false;
+    if(probePlaced) {
+      probePlaced = false;
+      probeStableSince = 0;
+      Log::i("XR bench placement reset by LOCAL space change");
+      }
     cancelInput();
     }
   skipExtrapolation = !placed;
   headValid = false;
   XrSpaceLocation head = {XR_TYPE_SPACE_LOCATION};
-  if(!XR_SUCCEEDED(xrLocateSpace(viewSpace, localSpace, frame.predictedDisplayTime, &head)))
+  if(!XR_SUCCEEDED(xrLocateSpace(viewSpace, localSpace, frame.predictedDisplayTime, &head))) {
+    probeStableSince = 0;
     return;
+    }
   const bool valid = (head.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
                      (head.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
-  if(!valid)
+  if(!valid) {
+    probeStableSince = 0;
     return;
+    }
   headValid = true;
   headForward = rotate(head.pose.orientation,V3{0,0,-1});
   headPos = toV3(head.pose.position);
+  if(CommandLine::inst().xrFaceView() && !probePlaced) {
+    // The unattended headset can rest on its side. Wait for tracking to settle
+    // after world load, place the bench scene along the gaze ray once, and leave it fixed.
+    const auto& a = probeAnchor.orientation;
+    const auto& b = head.pose.orientation;
+    const float cosHalfAngle = std::abs(a.x*b.x+a.y*b.y+a.z*b.z+a.w*b.w);
+    // A stationary desk headset can report valid inferred tracking. The gaze
+    // fixture only needs a stable valid pose in the submitted LOCAL space.
+    if(state!=XR_SESSION_STATE_FOCUSED ||
+       Gothic::inst().checkLoading()!=Gothic::LoadState::Idle || !Gothic::inst().player()) {
+      probeStableSince = 0;
+      }
+    else if(!probeStableSince || cosHalfAngle<0.999f || length(headPos-toV3(probeAnchor.position))>0.04f) {
+      probeStableSince = frame.predictedDisplayTime;
+      probeAnchor = head.pose;
+      }
+    else if(frame.predictedDisplayTime-probeStableSince>=500000000) {
+      const float requested = Gothic::settingsGetF("BENCHMARK","xrDistance");
+      const float distance = requested>0.f ? std::clamp(requested,0.3f,4.f) :
+                                             std::clamp(portalDistance(verticalFov),0.6f,3.f);
+      const float side = std::clamp(Gothic::settingsGetF("BENCHMARK","xrOffsetX"),-2.f,2.f);
+      windowPose = head.pose;
+      windowPose.position = toXr(headPos+rotate(head.pose.orientation,{side,0,-distance}));
+      probePlaced = placed = skipExtrapolation = true;
+      invalidateSurface();
+      Log::i("XR bench window placed on gaze, distance=",distance," side=",side," flags=",uint32_t(head.locationFlags),
+             " forward=",headForward.x,",",headForward.y,",",headForward.z);
+      }
+    }
   if(placed)
     return;
 

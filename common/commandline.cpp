@@ -148,6 +148,9 @@ CommandLine::CommandLine(int argc, const char** argv) {
     else if(arg=="-xrsmoke") {
       smokeTest = true;
       }
+    else if(arg=="-xrfaceview") {
+      faceView = true;
+      }
     else if(arg=="-xrforward") {
       walkForward = true;
       }

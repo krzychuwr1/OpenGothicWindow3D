@@ -60,6 +60,7 @@ class CommandLine {
     float               xrWindowWidth() const { return portalWidth; }
     float               xrWindowHeight() const { return portalHeight; }
     float               xrTurnRate() const { return turnRate; }
+    bool                xrFaceView() const { return faceView; }
     bool                xrSmokeTest() const { return smokeTest; }
     bool                xrWalkForward() const { return walkForward; }
     int                 xrCaptureBurst() const { return captureBurst; }
@@ -91,6 +92,7 @@ class CommandLine {
     float               portalWidth = 2.4f, portalHeight = 1.35f;
     bool                walkForward = false;
     bool                smokeTest = false;
+    bool                faceView = false;
     std::string         perfLevel;
     std::vector<SettingOverride> settingOverrides;
     bool                devmode      = false;

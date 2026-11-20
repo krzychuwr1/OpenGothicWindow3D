@@ -747,10 +747,25 @@ void MainWindow::paintEyeOverlay(const Camera& camera) {
      Gothic::inst().checkLoading()!=Gothic::LoadState::Idle)
     return;
   auto focus = world->validateFocus(player.focus());
-  if(!focus)
+  const bool showBounds = XrWindow::inst() && CommandLine::inst().debugShow("windowbounds");
+  if(!focus && !showBounds)
     return;
   PaintEvent e(eyeOverlay,atlas,w(),h());
   Painter    p(e);
+  if(showBounds) {
+    // Mark the submitted eye boundary without changing the scene depth or its motion vectors.
+    const int band = std::max(2, std::min(w(),h())/48);
+    p.setBrush(Color(1.f,0.f,1.f,1.f));
+    p.drawRect(0,0,w(),band);
+    p.setBrush(Color(0.f,1.f,1.f,1.f));
+    p.drawRect(0,h()-band,w(),band);
+    p.setBrush(Color(1.f,1.f,0.f,1.f));
+    p.drawRect(0,band,band,h()-2*band);
+    p.setBrush(Color(0.f,1.f,0.f,1.f));
+    p.drawRect(w()-band,band,band,h()-2*band);
+    }
+  if(!focus)
+    return;
   p.setBrush(Color(1.0));
   paintFocusMarkers(p,focus,camera.viewProj());
   }
