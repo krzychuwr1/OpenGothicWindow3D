@@ -181,8 +181,10 @@ Gothic::Gothic(GameModDescriptor desc) {
   if(!iniFile->has("INTERNAL", "vidResIndex")) {
     iniFile->set("INTERNAL", "vidResIndex", defaultResIndex);
     }
+  // -setting overrides apply for this run only and are never saved
+  overrideIni.reset(new IniFile());
   for(auto& o:CommandLine::inst().settingsOverrides())
-    iniFile->set(o.section, o.key, o.value);
+    overrideIni->set(o.section, o.key, o.value);
 #if defined(__ANDROID__)
   // The original Gothic.ini (copied with the game) enables desktop-cost effects;
   // start mobile installs without them. The video menu still changes these.
@@ -873,6 +875,8 @@ bool Gothic::settingsHasSection(std::string_view sec) {
 int Gothic::settingsGetI(std::string_view sec, std::string_view name) {
   if(name.empty())
     return 0;
+  if(instance->overrideIni!=nullptr && instance->overrideIni->has(sec,name))
+    return instance->overrideIni->getI(sec,name);
   if(instance->iniFile->has(sec,name))
     return instance->iniFile->getI(sec,name);
   if(instance->baseIniFile->has(sec,name))
@@ -890,6 +894,8 @@ void Gothic::settingsSetI(std::string_view sec, std::string_view name, int val) 
 std::string_view Gothic::settingsGetS(std::string_view sec, std::string_view name) {
   if(name.empty())
     return "";
+  if(instance->overrideIni!=nullptr && instance->overrideIni->has(sec,name))
+    return instance->overrideIni->getS(sec,name);
   if(instance->iniFile->has(sec,name))
     return instance->iniFile->getS(sec,name);
   if(instance->baseIniFile->has(sec,name))
@@ -907,6 +913,8 @@ void Gothic::settingsSetS(std::string_view sec, std::string_view name, std::stri
 float Gothic::settingsGetF(std::string_view sec, std::string_view name) {
   if(name.empty())
     return 0;
+  if(instance->overrideIni!=nullptr && instance->overrideIni->has(sec,name))
+    return instance->overrideIni->getF(sec,name);
   if(instance->iniFile->has(sec,name))
     return instance->iniFile->getF(sec,name);
   if(instance->baseIniFile->has(sec,name))

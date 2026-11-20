@@ -241,6 +241,7 @@ class Gothic final {
     std::unique_ptr<IniFile>                defaults;
     std::unique_ptr<IniFile>                baseIniFile;
     std::unique_ptr<IniFile>                iniFile;
+    std::unique_ptr<IniFile>                overrideIni;
     std::unique_ptr<IniFile>                modFile;
     std::unique_ptr<IniFile>                systemPackIniFile;
 
