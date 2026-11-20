@@ -31,7 +31,13 @@ vec4 diffuseTex() {
   const         uint tId = 0;
 #endif
 
+#if defined(DIFFUSE_GRAD_SCALE)
+  // Match the colour pass's material mip at the smaller motion raster's pixel centres.
+  vec4 tex = textureGrad(sampler2D(textureMain[tId], samplerMain),uv,
+                         dFdx(uv)*DIFFUSE_GRAD_SCALE.x,dFdy(uv)*DIFFUSE_GRAD_SCALE.y);
+#else
   vec4 tex = texture(sampler2D(textureMain[tId], samplerMain),uv);
+#endif
 
 #if !defined(SIMPLE_MAT)
   tex.a *= alphaWeight;

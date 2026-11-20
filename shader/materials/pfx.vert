@@ -22,6 +22,17 @@ layout(binding = L_Pfx, std430) readonly buffer PfxBuf {
   Particle pfx[];
   };
 
+#if defined(MOTION_VECTORS)
+layout(binding = 15, std430) readonly buffer PrevPfxBuf {
+  Particle pfxPrev[];
+  };
+layout(push_constant, std430) uniform Push {
+  mat4 prevView;
+  } push;
+layout(location = 4) out vec4 motionCur;
+layout(location = 5) out vec4 motionPrev;
+#endif
+
 out gl_PerVertex {
   vec4 gl_Position;
   };
@@ -42,15 +53,17 @@ struct Vertex {
   uint  bits0;
   vec3  dir;
   uint  color;
+  uint  colorB;
   };
 
-Vertex pullVertex(uint id) {
+Vertex pullVertex(Particle p) {
   Vertex ret;
-  ret.pos    = pfx[id].pos;
-  ret.color  = pfx[id].color;
-  ret.size   = pfx[id].size;
-  ret.bits0  = pfx[id].bits0;
-  ret.dir    = pfx[id].dir;
+  ret.pos    = p.pos;
+  ret.color  = p.color;
+  ret.colorB = p.colorB;
+  ret.size   = p.size;
+  ret.bits0  = p.bits0;
+  ret.dir    = p.dir;
   ret.uv     = vec2(0);
   ret.normal = vec3(0);
   return ret;
@@ -69,7 +82,8 @@ void rotate(out vec3 rx, out vec3 ry, float a, in vec3 x, in vec3 y) {
   ry.z = x.z*s + y.z*c;
   }
 
-vec4 processVertex(out Varyings shOut, in Vertex v, uint instanceId, uint vboOffset) {
+vec4 processVertex(out Varyings shOut, in Vertex v, uint vboOffset, mat4 m, mat4 vp,
+                   vec3 left, vec3 top, vec3 depth) {
   // Bilboards
   {
     const float U[6]   = { 0, 1, 0,  0, 1, 1};
@@ -87,12 +101,6 @@ vec4 processVertex(out Varyings shOut, in Vertex v, uint instanceId, uint vboOff
     const bool  isTrail          = bitfieldExtract(v.bits0, 3, 1)!=0;
     const uint  visOrientation   = bitfieldExtract(v.bits0, 4, 2);
 
-    //const mat4  m      = scene.viewProject;
-    const mat4  m      = scene.view;
-    vec3        left   = scene.pfxLeft;
-    vec3        top    = scene.pfxTop;
-    vec3        depth  = scene.pfxDepth;
-
     if(visYawAlign) {
       left = vec3(left.x, 0, left.z);
       top  = vec3(0, -1, 0);
@@ -102,7 +110,7 @@ vec4 processVertex(out Varyings shOut, in Vertex v, uint instanceId, uint vboOff
     v.normal = -depth;
 
     if(isTrail) {
-      const uint colorB = pfx[instanceId].colorB;
+      const uint colorB = v.colorB;
       v.normal = vec3(0,1,0);
 
       if(dyQ[vboOffset]>0)
@@ -168,14 +176,35 @@ vec4 processVertex(out Varyings shOut, in Vertex v, uint instanceId, uint vboOff
   shOut.color = unpackUnorm4x8(v.color);
 #endif
 
-  return scene.viewProject*vec4(v.pos,1.0);
+  return vp*vec4(v.pos,1.0);
   }
 
 void main() {
-  const Vertex vert = pullVertex(gl_InstanceIndex);
+  const Particle p = pfx[gl_InstanceIndex];
 
   Varyings var;
-  gl_Position = processVertex(var, vert, gl_InstanceIndex, gl_VertexIndex);
+  gl_Position = processVertex(var, pullVertex(p), gl_VertexIndex, scene.view, scene.viewProject,
+                              scene.pfxLeft, scene.pfxTop, scene.pfxDepth);
+#if defined(MOTION_VECTORS)
+  const bool trail = bitfieldExtract(p.bits0,3,1)!=0u;
+  Particle prev = p;
+  if(!trail) {
+    if(gl_InstanceIndex>=pfxPrev.length()) {
+      gl_Position = vec4(0,0,2,1);
+      return;
+      }
+    prev = pfxPrev[gl_InstanceIndex];
+    if(prev.colorB!=p.colorB || all(equal(prev.size,vec3(0)))) {
+      gl_Position = vec4(0,0,2,1);
+      return;
+      }
+    }
+  const mat3 basis = transpose(mat3(scene.prevViewProject));
+  Varyings unused;
+  motionCur = gl_Position;
+  motionPrev = processVertex(unused, pullVertex(prev), gl_VertexIndex, push.prevView, scene.prevViewProject,
+                             normalize(basis[0]), normalize(basis[1]), normalize(basis[2]));
+#endif
 #if defined(MAT_VARYINGS)
   bucketId = 0;
   shOut    = var;

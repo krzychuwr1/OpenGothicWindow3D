@@ -27,6 +27,7 @@ layout(push_constant, std430) uniform Push {
   int       meshletCount;
 #if defined(MOTION_VECTORS)
   uint      motionFrame;
+  uint      blendCoverage;
 #endif
   } push;
 #endif
@@ -215,7 +216,7 @@ void vertexShader(const uvec4 task) {
   const uint  meshletId  = task.y;
   const uint  bucketId   = task.z;
 
-#if defined(MOTION_VECTORS)
+#if defined(MOTION_VECTORS) && (MESH_TYPE!=T_LANDSCAPE)
   // A reused slot can contain another object's transform, bones or morph data.
   // The camera-only pass already wrote a valid vector for this new instance.
   if(instanceMem[instanceId*16+14]==push.motionFrame) {
@@ -246,7 +247,7 @@ void vertexShader(const uvec4 task) {
     bool moved = false;
     for(uint i=0; i<13; ++i)
       moved = moved || (instanceMem[o+i]!=instanceMemPrev[o+i]);
-    if(!moved) {
+    if(!moved && push.blendCoverage==0u) {
       gl_Position = vec4(uintBitsToFloat(0x7fc00000));
       return;
       }
@@ -266,10 +267,15 @@ void vertexShader(const uvec4 task) {
     const uint   vboOffset = meshletId * MaxVert + idx;
     const Vertex vert      = pullVertex(bucketId, vboOffset);
     motionCur  = pos;
+#if (MESH_TYPE==T_LANDSCAPE)
+    motionPrev = scene.prevViewProject*vec4(vert.pos, 1.0);
+#else
     motionPrev = scene.prevViewProject*vec4(processVertexPrev(vert, bucketId, instanceId, vboOffset), 1.0);
+#endif
     // The scene depth it is tested against is point-sampled at motion-vector resolution: pull the
     // surface 3% towards the camera (1-d scales with 1/distance) so it does not fail against itself
-    gl_Position.z = pos.w - (pos.w - pos.z)*1.03;
+    if(push.blendCoverage==0u)
+      gl_Position.z = pos.w - (pos.w - pos.z)*1.03;
   }
 #endif
 #if defined(MAT_VARYINGS)

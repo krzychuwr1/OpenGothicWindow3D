@@ -66,6 +66,11 @@ class PfxBucket {
     ImplEmitter&                get(size_t id) { return impl[id]; }
     void                        tick(uint64_t dt, const Tempest::Vec3& viewPos);
     void                        buildSsbo();
+#ifdef OPENGOTHIC_XR
+    void                        snapshotParticles();
+    void                        drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const SceneGlobals& scene, uint8_t fId,
+                                           const Tempest::Matrix4x4& prevView, Tempest::Size motionSize);
+#endif
 
   private:
     enum UboLinkpackage : uint8_t {
@@ -153,6 +158,12 @@ class PfxBucket {
 
     Draw                        item  [Resources::MaxFramesInFlight];
     std::vector<PfxState>       pfxCpu;
+#ifdef OPENGOTHIC_XR
+    uint32_t                    particleGeneration = 0;
+    std::vector<PfxState>       lastParticles, previousParticles;
+    Tempest::StorageBuffer      previousGpu[Resources::MaxFramesInFlight];
+    const Tempest::RenderPipeline* motionPipeline = nullptr;
+#endif
 
     Draw                        itemTrl[Resources::MaxFramesInFlight];
     std::vector<PfxState>       trlCpu;

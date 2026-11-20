@@ -182,7 +182,7 @@ uint16_t DrawCommands::commandId(const Material& m, Type type, uint32_t bucketId
   cx.pVsm        = pVsm;
   cx.pHiZ        = pHiZ;
 #if defined(OPENGOTHIC_XR)
-  if(type!=Static)
+  if(type!=Static || m.alpha==Material::Transparent || m.alpha==Material::AdditiveLight)
     cx.pMotion = Shaders::inst().materialPipeline(m, type, Shaders::T_Motion, bindless);
 #endif
   cx.bucketId    = bindless ? 0xFFFFFFFF : bucketId;
@@ -451,20 +451,23 @@ void DrawCommands::drawHiZ(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
     }
   }
 
-void DrawCommands::drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const Tempest::StorageBuffer& prevInstances, uint32_t motionFrame) {
-  struct Push { uint32_t firstMeshlet; uint32_t meshletCount; uint32_t motionFrame; } push = {};
+void DrawCommands::drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const Tempest::StorageBuffer& prevInstances, uint32_t motionFrame, Tempest::Size motionSize) {
+  struct Push {
+    uint32_t firstMeshlet, meshletCount, motionFrame, blendCoverage;
+    Vec2     motionSize;
+    } push = {};
   push.motionFrame = motionFrame;
+  push.motionSize = Vec2(float(motionSize.w), float(motionSize.h));
   auto& view = views[SceneGlobals::V_Main];
   for(auto* i:ord) {
     auto& cx = *i;
     if(cx.pMotion==nullptr || cx.maxPayload==0)
       continue;
-    if(cx.alpha!=Material::Solid && cx.alpha!=Material::AlphaTest)
-      continue;
     auto id  = size_t(std::distance(this->cmd.data(), &cx));
     push.firstMeshlet = cx.firstPayload;
     push.meshletCount = cx.maxPayload;
     setBindings(cmd, cx, SceneGlobals::V_Main);
+    push.blendCoverage = cx.alpha==Material::Transparent ? 1u : (cx.alpha==Material::AdditiveLight ? 2u : 0u);
     cmd.setBinding(15, prevInstances);
     cmd.setPushData(push);
     cmd.setPipeline(*cx.pMotion);

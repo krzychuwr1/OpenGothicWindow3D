@@ -1,6 +1,10 @@
 #include "pfxobjects.h"
 
 #include <Tempest/Log>
+#ifdef OPENGOTHIC_XR
+#include <Tempest/Application>
+#include <Tempest/Except>
+#endif
 #include <cstring>
 
 #include "graphics/sceneglobals.h"
@@ -53,7 +57,12 @@ bool PfxObjects::isInPfxRange(const Vec3& pos) const {
   return dp.quadLength()<viewRage*viewRage;
   }
 
-void PfxObjects::preFrameUpdate(uint8_t fId) {
+void PfxObjects::preFrameUpdate(uint8_t fId, bool secondView) {
+#ifdef OPENGOTHIC_XR
+  frameSlot = fId;
+  prevEyeView = lastEyeView[secondView];
+  lastEyeView[secondView] = scene.view;
+#endif
   for(auto i=bucket.begin(), end = bucket.end(); i!=end; ) {
     if(i->isEmpty()) {
       i = bucket.erase(i);
@@ -65,6 +74,47 @@ void PfxObjects::preFrameUpdate(uint8_t fId) {
   for(auto& i:bucket)
     i.preFrameUpdate(scene, fId);
   }
+
+#ifdef OPENGOTHIC_XR
+void PfxObjects::deferMotion() {
+  // A partially updated history cannot be paired with the next submitted view.
+  motionSnapshots = 0;
+  motionRetryAfter = Application::tickCount()+3000;
+  Log::e("SpaceWarp particle allocation failed, retrying in three seconds");
+  }
+
+void PfxObjects::snapshotParticles() {
+  if(motionRetryAfter!=0 && Application::tickCount()<motionRetryAfter)
+    return;
+  try {
+    for(auto& i:bucket)
+      i.snapshotParticles();
+    motionRetryAfter = 0;
+    if(motionSnapshots<2)
+      ++motionSnapshots;
+    }
+  catch(const std::bad_alloc&) {
+    deferMotion();
+    }
+  }
+
+void PfxObjects::drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd, Tempest::Size motionSize) {
+  if(motionSnapshots<2)
+    return;
+  try {
+    for(auto& i:bucket)
+      i.drawMotion(cmd, scene, frameSlot, prevEyeView, motionSize);
+    }
+  catch(const std::bad_alloc&) {
+    deferMotion();
+    }
+  catch(const std::system_error& e) {
+    if(e.code()!=GraphicsErrc::OutOfVideoMemory && e.code()!=GraphicsErrc::OutOfHostMemory)
+      throw;
+    deferMotion();
+    }
+  }
+#endif
 
 void PfxObjects::drawGBuffer(Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t fId) {
   for(auto& i:bucket)

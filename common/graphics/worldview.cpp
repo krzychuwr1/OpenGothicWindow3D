@@ -64,7 +64,7 @@ void WorldView::preFrameUpdate(const Camera& camera, uint64_t tickCount, uint8_t
   sGlobal.setSky(gSky);
   sGlobal.commitUbo(fId);
 
-  pfxGroup.preFrameUpdate(fId);
+  pfxGroup.preFrameUpdate(fId, secondView);
   if(!secondView)
     visuals.preFrameUpdate();
   }
@@ -157,12 +157,18 @@ void WorldView::dbgCountVisible() const {
   Tempest::Log::i(s);
   }
 
-void WorldView::drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
-  visuals.drawMotion(cmd);
+void WorldView::drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd, Tempest::Size motionSize) {
+  visuals.drawMotion(cmd, motionSize);
+#ifdef OPENGOTHIC_XR
+  pfxGroup.drawMotion(cmd, motionSize);
+#endif
   }
 
 void WorldView::snapshotPrevInstances(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
   visuals.snapshotPrevInstances(cmd);
+#ifdef OPENGOTHIC_XR
+  pfxGroup.snapshotParticles();
+#endif
   }
 
 void WorldView::visibilityPass(Tempest::Encoder<Tempest::CommandBuffer>& cmd, int pass, bool rasterShadows) {

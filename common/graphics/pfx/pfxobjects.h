@@ -27,7 +27,11 @@ class PfxObjects final {
     void       tick(uint64_t ticks);
     bool       isInPfxRange(const Tempest::Vec3& pos) const;
 
-    void       preFrameUpdate(uint8_t fId);
+    void       preFrameUpdate(uint8_t fId, bool secondView);
+#ifdef OPENGOTHIC_XR
+    void       snapshotParticles();
+    void       drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd, Tempest::Size motionSize);
+#endif
 
     void       drawGBuffer    (Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t fId);
     void       drawShadow     (Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t fId, int layer);
@@ -54,6 +58,14 @@ class PfxObjects final {
 
     Tempest::Vec3                 viewerPos={};
     uint64_t                      lastUpdate=0;
+#ifdef OPENGOTHIC_XR
+    Tempest::Matrix4x4            lastEyeView[2];
+    Tempest::Matrix4x4            prevEyeView;
+    uint8_t                       frameSlot = 0;
+    uint8_t                       motionSnapshots = 0;
+    uint64_t                      motionRetryAfter = 0;
+    void                          deferMotion();
+#endif
 
   friend class PfxEmitter;
   friend class TrlObjects;

@@ -62,7 +62,7 @@ class WorldView {
     void drawShadow     (Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t frameId, uint8_t layer);
     void drawShadowStatic (Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t layer);
     void dbgCountVisible() const;
-    void drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd);
+    void drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd, Tempest::Size motionSize);
     void snapshotPrevInstances(Tempest::Encoder<Tempest::CommandBuffer>& cmd);
     void setPrevViewProject(const Tempest::Matrix4x4& m) { sGlobal.setPrevViewProject(m); }
     void drawShadowDynamic(Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t frameId, uint8_t layer);

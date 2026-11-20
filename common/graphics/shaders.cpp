@@ -516,7 +516,7 @@ const RenderPipeline* Shaders::materialPipeline(const Material& mat, DrawCommand
     t = DrawCommands::Movable;
     }
 
-  if(pt!=PipelineType::T_Main && !mat.isSolid()) {
+  if(pt!=PipelineType::T_Main && pt!=PipelineType::T_Motion && !mat.isSolid()) {
     return nullptr;
     }
   if(pt!=PipelineType::T_Main && mat.alpha==Material::Water) {
@@ -530,9 +530,35 @@ const RenderPipeline* Shaders::materialPipeline(const Material& mat, DrawCommand
     // Moving objects: characters, animated meshes and movable objects (the shader drops movable
     // ones whose transform did not change, so only carried weapons, opening doors etc. remain);
     // cutouts use the same material alpha test as the G-buffer
-    if(t!=DrawCommands::Movable && t!=DrawCommands::Animated && t!=DrawCommands::Morph)
+#ifdef OPENGOTHIC_XR
+    if(t==DrawCommands::Pfx) {
+      // Coverage is selected per emitter. All supported blends share one pipeline.
+      for(auto& i:materials)
+        if(i.type==t && i.pipelineType==pt)
+          return &i.pipeline;
+      RenderState st;
+      st.setCullFaceMode(RenderState::CullMode::Front);
+      st.setZTestMode(RenderState::ZTestMode::LEqual);
+      st.setZWriteEnabled(true); // keep the depth paired with its winning motion sample
+      auto& device = Resources::device();
+      const auto vs = GothicShader::get("main_pfx_m.vert.sprv");
+      const auto fs = GothicShader::get("main_pfx_m.frag.sprv");
+      auto pipeline = device.pipeline(Triangles, st, device.shader(vs.data,vs.len), device.shader(fs.data,fs.len));
+      materials.emplace_front();
+      auto& b = materials.front();
+      b.alpha = alpha;
+      b.type = t;
+      b.pipelineType = pt;
+      b.bindless = false;
+      b.trivial = false;
+      b.pipeline = std::move(pipeline);
+      return &b.pipeline;
+      }
+#endif
+    const bool blended = alpha==Material::Transparent || alpha==Material::AdditiveLight;
+    if(t!=DrawCommands::Movable && t!=DrawCommands::Animated && t!=DrawCommands::Morph && !(t==DrawCommands::Landscape && blended))
       return nullptr;
-    if(alpha!=Material::Solid && alpha!=Material::AlphaTest)
+    if(alpha!=Material::Solid && alpha!=Material::AlphaTest && alpha!=Material::Ghost && !blended)
       return nullptr;
     for(auto& i:materials) {
       if(i.alpha==alpha && i.type==t && i.pipelineType==pt && i.bindless==bl)
@@ -541,8 +567,18 @@ const RenderPipeline* Shaders::materialPipeline(const Material& mat, DrawCommand
     RenderState st;
     st.setCullFaceMode(RenderState::CullMode::Front);
     st.setZTestMode   (RenderState::ZTestMode::LEqual);
-    st.setZWriteEnabled(false);
-    const char* tok = (t==DrawCommands::Animated ? "ani" : (t==DrawCommands::Morph ? "mph" : "obj"));
+    st.setZWriteEnabled(blended);
+    const char* tok = "obj";
+    if(t==DrawCommands::Animated)  tok = "ani";
+    if(t==DrawCommands::Morph)     tok = "mph";
+    if(t==DrawCommands::Landscape) tok = "lnd";
+    auto& device = Resources::device();
+    const bool cutout = alpha==Material::AlphaTest || blended;
+    const char* binding = bl ? "_bindless" : "_slot";
+    auto shVs = GothicShader::get(string_frm("main_", tok, cutout ? "_m_at" : "_m", binding, ".vert.sprv"));
+    auto shFs = cutout ? GothicShader::get(string_frm("main_motion_at", binding, ".frag.sprv"))
+                       : GothicShader::get("main_motion.frag.sprv");
+    auto pipeline = device.pipeline(Triangles, st, device.shader(shVs.data,shVs.len), device.shader(shFs.data,shFs.len));
     materials.emplace_front();
     auto& b = materials.front();
     b.alpha        = alpha;
@@ -550,13 +586,7 @@ const RenderPipeline* Shaders::materialPipeline(const Material& mat, DrawCommand
     b.pipelineType = pt;
     b.bindless     = bl;
     b.trivial      = false;
-    auto& device = Resources::device();
-    const bool cutout = alpha==Material::AlphaTest;
-    const char* binding = bl ? "_bindless" : "_slot";
-    auto shVs = GothicShader::get(string_frm("main_", tok, cutout ? "_m_at" : "_m", binding, ".vert.sprv"));
-    auto shFs = cutout ? GothicShader::get(string_frm("main_motion_at", binding, ".frag.sprv"))
-                       : GothicShader::get("main_motion.frag.sprv");
-    b.pipeline = device.pipeline(Triangles, st, device.shader(shVs.data,shVs.len), device.shader(shFs.data,shFs.len));
+    b.pipeline     = std::move(pipeline);
     return &b.pipeline;
     }
 

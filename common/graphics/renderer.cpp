@@ -2244,7 +2244,7 @@ void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
   // Moving objects (characters, animated meshes, props) with their own previous pose
   cmd.setDebugMarker("SpaceWarp objects");
   if(historyValid)
-    wview.drawMotion(cmd);
+    wview.drawMotion(cmd,motion.size());
   if(hasHud && hudReady) {
     cmd.setDebugMarker("SpaceWarp HUD");
     cmd.setBinding(0, hudTransmittance, Sampler::nearest());

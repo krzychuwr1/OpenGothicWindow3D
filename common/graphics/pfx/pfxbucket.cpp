@@ -201,6 +201,11 @@ float PfxBucket::randf(float base, float var) {
 
 void PfxBucket::init(PfxBucket::Block& block, ImplEmitter& emitter, size_t particle) {
   auto& p   = particles[particle];
+#ifdef OPENGOTHIC_XR
+  // Only trails use the second vertex colour. Give each billboard lifetime a
+  // generation so reuse of this slot cannot connect two distinct particles.
+  pfxCpu[particle].colorB = ++particleGeneration;
+#endif
 
   if(decl.ppsValue<0) {
     // decal
@@ -702,6 +707,70 @@ void PfxBucket::preFrameUpdate(const SceneGlobals& scene, uint8_t fId) {
       }
     }
   }
+
+#ifdef OPENGOTHIC_XR
+void PfxBucket::snapshotParticles() {
+  previousParticles.swap(lastParticles);
+  lastParticles = pfxCpu;
+  }
+
+void PfxBucket::drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const SceneGlobals& scene, uint8_t fId,
+                           const Tempest::Matrix4x4& prevView, Tempest::Size motionSize) {
+  auto& mat = decl.visMaterial;
+  if(item[fId].isEmpty() && itemTrl[fId].isEmpty())
+    return;
+  // Modulation has no independent luminous or opaque silhouette.
+  if(mat.alpha==Material::Multiply || mat.alpha==Material::Multiply2 || mat.alpha==Material::Water)
+    return;
+  if(motionPipeline==nullptr)
+    motionPipeline = Shaders::inst().materialPipeline(mat, DrawCommands::Pfx, Shaders::T_Motion, false);
+  if(motionPipeline==nullptr)
+    return;
+
+  struct Push {
+    Matrix4x4 prevView;
+    Vec2      motionSize;
+    uint32_t  coverage;
+    } push = {prevView, Vec2(float(motionSize.w), float(motionSize.h)), 0};
+  if(mat.alpha==Material::AlphaTest)      push.coverage = 1;
+  if(mat.alpha==Material::Transparent)    push.coverage = 2;
+  if(mat.alpha==Material::AdditiveLight)  push.coverage = 3;
+
+  cmd.setPipeline(*motionPipeline);
+  cmd.setPushData(push);
+  cmd.setBinding(L_Scene, scene.uboGlobal[SceneGlobals::V_Main]);
+  cmd.setBinding(L_Sampler, Sampler::anisotrophy());
+
+  auto& billboards = item[fId];
+  if(!billboards.isEmpty() && !previousParticles.empty() && mat.tex!=nullptr) {
+    // The previous geometry belongs to this submission's own fence slot. A
+    // following eye/frame may reuse the original upload while this draw runs.
+    auto& prev = previousGpu[fId];
+    if(prev.byteSize()!=previousParticles.size()*sizeof(PfxState))
+      prev = Resources::device().ssbo(BufferHeap::Upload, previousParticles);
+    else
+      prev.update(previousParticles);
+    auto* texture = mat.tex;
+    if(mat.hasFrameAnimation()) {
+      const auto frame = (billboards.timeShift+scene.tickCount)/mat.texAniFPSInv;
+      texture = mat.frames[frame%mat.frames.size()];
+      }
+    cmd.setBinding(L_Diffuse, *texture);
+    cmd.setBinding(L_Pfx, billboards.pfxGpu);
+    cmd.setBinding(15, prev);
+    cmd.draw(nullptr, 0, 6, 0, billboards.pfxGpu.byteSize()/sizeof(PfxState));
+    }
+  auto& trails = itemTrl[fId];
+  if(!trails.isEmpty() && decl.trlTexture!=nullptr) {
+    // Segments are anchored in world space as they are emitted. Their packed
+    // indices shift when the oldest segment expires.
+    cmd.setBinding(L_Diffuse, *decl.trlTexture);
+    cmd.setBinding(L_Pfx, trails.pfxGpu);
+    cmd.setBinding(15, trails.pfxGpu);
+    cmd.draw(nullptr, 0, 6, 0, trails.pfxGpu.byteSize()/sizeof(PfxState));
+    }
+  }
+#endif
 
 void PfxBucket::drawGBuffer(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const SceneGlobals& scene, uint8_t fId) {
   for(auto i:{Material::Solid, Material::AlphaTest}) {

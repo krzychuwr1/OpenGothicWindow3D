@@ -81,7 +81,7 @@ class VisualObjects final {
     void drawGBuffer    (Tempest::Encoder<Tempest::CommandBuffer>& cmd);
     void drawShadow     (Tempest::Encoder<Tempest::CommandBuffer>& cmd, int layer);
     void drawShadow     (Tempest::Encoder<Tempest::CommandBuffer>& cmd, int layer, bool staticCasters);
-    void drawMotion     (Tempest::Encoder<Tempest::CommandBuffer>& cmd);
+    void drawMotion     (Tempest::Encoder<Tempest::CommandBuffer>& cmd, Tempest::Size motionSize);
     void snapshotPrevInstances(Tempest::Encoder<Tempest::CommandBuffer>& cmd);
     void drawShadow     (Tempest::Encoder<Tempest::CommandBuffer>& cmd, int layer, DrawCommands::Casters casters);
     void drawVsm        (Tempest::Encoder<Tempest::CommandBuffer>& cmd);

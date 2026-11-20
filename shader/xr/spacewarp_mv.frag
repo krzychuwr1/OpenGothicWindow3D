@@ -29,10 +29,15 @@ void main() {
   const vec2  ndc = uv*2.0-1.0;
 
   vec4 pos = scene.viewProjectLwcInv*vec4(ndc, z, 1.0);
-  pos.xyz /= pos.w;
-  const vec3 world = pos.xyz + push.originLwc.xyz;
-
-  vec4 prev = push.prevViewProject*vec4(world, 1.0);
-  outMotion    = prev.w>1e-6 ? vec4(vec3(ndc, z) - prev.xyz/prev.w, 0.0) : vec4(0);
+  // The cleared depth belongs to the sky. Its direction follows camera rotation
+  // and the off-axis projection, while translating the eye leaves it unchanged.
+  vec4 prev;
+  if(z==1.0) {
+    prev = push.prevViewProject*vec4(pos.xyz, 0.0);
+    } else {
+    const vec3 world = pos.xyz/pos.w + push.originLwc.xyz;
+    prev = push.prevViewProject*vec4(world, 1.0);
+    }
+  outMotion = prev.w>1e-6 ? vec4(ndc-prev.xy/prev.w, z==1.0 ? 0.0 : z-prev.z/prev.w, 0.0) : vec4(0);
   gl_FragDepth = z;
   }
