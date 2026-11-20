@@ -450,3 +450,7 @@ Tempest’s Vulkan buffer update silently accepted a failed map or flush. On a r
 The instance upload worker now reports its exception at the render thread’s pre-submit join and marks the live data for retry. A failed full upload keeps the previous buffer. A failed patch allocation or command recording leaves its dirty blocks pending. Worker destruction drains pending work, including failures.
 
 A mock Vulkan test covered twelve map/cache/success cases: the old code failed eight checks and issued two misaligned initial maps. The fix passed all twelve. A threaded test used the production patch packer and worker with a reused slot. The old silent-failure path failed four checks; an injected thrown update also ended the old test process. Fixed code rejected the frame, restored both ranges on retry, preserved the prior full buffer on failed growth, and shut down with a failed upload pending. The 4,097-upload slot/shutdown regression and Android Release build also passed. No Vulkan memory fault was induced on Quest.
+
+### Distinguish the experiment branches from the audited build
+
+The experiment notes now identify which branches still use current-frame morph offsets and solid cutout silhouettes. The foveation notes link the implemented setting and the measured main-street and tavern savings. The controls reference includes the surroundings switch among the grip and pinch targets. The original experiment measurements remain available for the owner’s branch layout.

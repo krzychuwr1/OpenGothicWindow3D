@@ -59,7 +59,7 @@ Keyboard and mouse work as on the PC (default Gothic II keys).
 | Right stick press | Right stick press | Map | |
 | D-pad | | Move | Navigate |
 
-Grip and pinch are reserved for moving and resizing the window.
+Grip and pinch operate the handle, resize brackets and surroundings switch.
 
 ## Settings
 

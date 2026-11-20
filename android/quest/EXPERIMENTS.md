@@ -42,7 +42,7 @@ graphics-device choice, which has no use on the headset, is repurposed for it. I
    - Cost at the low test clocks in Khorinis: about 1.1 ms per eye (0.84 ms with characters only,
      1.7 ms if every movable prop were drawn).
 
-**Limitations**
+**Limitations on the experiment branches**
 
 - Morph meshes use this frame's morph offsets for both frames (their own deformation is not in the
   vectors, only their movement).
@@ -50,6 +50,11 @@ graphics-device choice, which has no use on the headset, is repurposed for it. I
 - Distant NPCs are posed every 2nd or 4th frame (animation level of detail), so their vectors are
   zero on frames without an update.
 - Particles carry no vectors.
+
+On `astra-audit`, the object pass samples previous morph descriptors and respects the visible
+material’s alpha cutoff. Newly allocated instances fall back to camera motion. Particles and the
+animation update cadence remain limitations. The Video menu labels the setting **SpaceWarp**.
+Shader readbacks and Quest checks are recorded in [ASTRA_LOG.md](ASTRA_LOG.md).
 
 **Checking the vectors:** `-show motion` paints each eye's motion vectors over the dimmed picture
 (right red, up green, left and down blue) and `bench-quest.ps1 -Scenario combat -EyeCaptures 2`
