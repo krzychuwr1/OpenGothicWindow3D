@@ -20,7 +20,8 @@
 param(
   [string]$Apk     = (Join-Path $PSScriptRoot 'OpenGothicWindow3D.apk'),
   [string]$GameDir = '',
-  [switch]$SkipGameFiles
+  [switch]$SkipGameFiles,
+  [switch]$GetQuestSerial
 )
 $ErrorActionPreference = 'Stop'
 $package = 'org.opengothic.window3d'
@@ -62,15 +63,25 @@ function Find-Gothic2 {
 }
 
 $adb = Find-Adb
-Write-Host "adb: $adb"
-
-$devices = & $adb devices | Select-Object -Skip 1 | Where-Object { $_ -match '\S' }
-if (-not $devices) { throw 'No headset found. Connect the Quest with a USB cable, put it on and allow USB debugging.' }
-if ($devices -match 'unauthorized') { throw 'The headset has not allowed USB debugging yet: put it on and accept the prompt.' }
+# Read the host inventory before sending any command to a device. An explicit
+# selection must still identify a Quest, including when another Android device is present.
+$selector = @()
+if ($env:ANDROID_SERIAL) { $selector = @('-s', $env:ANDROID_SERIAL) }
+$inventory = & $adb @selector devices -l
+if ($LASTEXITCODE) { throw 'Could not read the adb device inventory.' }
+$quests = @(foreach ($line in $inventory) {
+  if ($line -match '^(\S+)\s+device\s+.*\bmodel:(?:Meta_)?Quest(?:_\S+)?(?:\s|$)') {
+    if (!$env:ANDROID_SERIAL -or $Matches[1] -ceq $env:ANDROID_SERIAL) { $Matches[1] }
+  }
+})
+if ($quests.Count -ne 1) { throw 'Select one connected, USB-authorized Quest with ANDROID_SERIAL.' }
+$questSerial = $quests[0]
+if ($GetQuestSerial) { return $questSerial }
+Write-Host "Using Quest $questSerial"
 
 if (-not (Test-Path $Apk)) { throw "APK not found: $Apk" }
 Write-Host 'Installing the app...'
-& $adb install -r $Apk
+& $adb -s $questSerial install -r $Apk
 if ($LASTEXITCODE) { throw 'adb install failed' }
 
 if (-not $SkipGameFiles) {
@@ -83,15 +94,15 @@ if (-not $SkipGameFiles) {
   }
   Write-Host "Game files: $GameDir"
   $target = '/sdcard/OpenGothic/Gothic2'
-  & $adb shell mkdir -p $target
+  & $adb -s $questSerial shell mkdir -p $target
   foreach ($d in 'Data', '_work', 'System') {
     Write-Host "Copying $d (this can take a few minutes)..."
-    & $adb push --sync (Join-Path $GameDir $d) "$target/"
+    & $adb -s $questSerial push --sync (Join-Path $GameDir $d) "$target/"
     if ($LASTEXITCODE) { throw "Copying $d failed" }
   }
 }
 
 # The app reads the game files from the shared OpenGothic folder
-& $adb shell appops set $package MANAGE_EXTERNAL_STORAGE allow
+& $adb -s $questSerial shell appops set $package MANAGE_EXTERNAL_STORAGE allow
 Write-Host ''
 Write-Host 'Done. On the headset: Library > Unknown Sources > OpenGothic Window3D.'

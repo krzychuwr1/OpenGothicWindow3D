@@ -39,8 +39,9 @@ param(
 $ErrorActionPreference = 'Stop'
 # Check native exit codes explicitly, including the expected pidof/test misses.
 $PSNativeCommandUseErrorActionPreference = $false
+$questSerial = & (Join-Path $PSScriptRoot 'install-quest.ps1') -GetQuestSerial
 function Invoke-BenchAdb {
-  $output = & adb @args
+  $output = & adb -s $questSerial @args
   if ($LASTEXITCODE -ne 0) { throw "adb failed ($LASTEXITCODE): $($args -join ' ')" }
   $output
 }
@@ -93,7 +94,7 @@ function Copy-BenchCaptures {
     $info.FileName = 'adb'
     $info.UseShellExecute = $false
     $info.RedirectStandardOutput = $true
-    foreach ($arg in 'exec-out','run-as',$Package,'cat',"files/$f") { $info.ArgumentList.Add($arg) }
+    foreach ($arg in '-s',$questSerial,'exec-out','run-as',$Package,'cat',"files/$f") { $info.ArgumentList.Add($arg) }
     $proc = [Diagnostics.Process]::Start($info)
     try {
       $out = [IO.File]::Open($tmp, [IO.FileMode]::CreateNew)
@@ -155,9 +156,9 @@ try {
     throw 'Headset battery or temperature outside test limits. Allow at least 20 minutes to cool or charge.'
   }
   # pidof and test use exit code 1 for absence.
-  & adb shell pidof $Package | Out-Null
+  & adb -s $questSerial shell pidof $Package | Out-Null
   if ($LASTEXITCODE -ne 1) { throw 'Cannot start a benchmark while the app may already be running' }
-  & adb shell test -e $remoteArgs
+  & adb -s $questSerial shell test -e $remoteArgs
   if ($LASTEXITCODE -ne 1) { throw 'Existing developer arguments or device error; leaving args.txt alone' }
 
   if ($Apk) {
@@ -189,7 +190,7 @@ try {
   $launched = $true
   Invoke-BenchAdb shell am start -n "$Package/android.app.NativeActivity" | Out-Null
   for ($attempt = 0; $attempt -lt 25 -and -not $gamePid; ++$attempt) {
-    $gamePid = & adb shell pidof $Package
+    $gamePid = & adb -s $questSerial shell pidof $Package
     if (-not $gamePid) { Start-Sleep -Milliseconds 200 }
   }
   if (-not $gamePid) { throw 'Game process did not start' }
@@ -225,25 +226,25 @@ try {
   try {
     # A failing adb call must not prevent the remaining cleanup attempts.
     if ($launched) {
-      $currentPid = & adb shell pidof $Package
+      $currentPid = & adb -s $questSerial shell pidof $Package
       if (-not $gamePid -or $currentPid -eq $gamePid) {
-        & adb shell am force-stop $Package
+        & adb -s $questSerial shell am force-stop $Package
         $stoppedRun = $gamePid -and $currentPid -eq $gamePid -and $LASTEXITCODE -eq 0
       }
     }
-    if ($wakeRequested) { & adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable | Out-Null }
+    if ($wakeRequested) { & adb -s $questSerial shell am broadcast -a com.oculus.vrpowermanager.automation_disable | Out-Null }
     if ($forcedClocks) {
-      & adb shell setprop debug.oculus.cpuLevel "''"
-      & adb shell setprop debug.oculus.gpuLevel "''"
+      & adb -s $questSerial shell setprop debug.oculus.cpuLevel "''"
+      & adb -s $questSerial shell setprop debug.oculus.gpuLevel "''"
     }
-    if ($wroteArgs -and (((& adb shell cat $remoteArgs) -join "`n") -ceq $launchArgs)) {
-      & adb shell rm -f $remoteArgs
+    if ($wroteArgs -and (((& adb -s $questSerial shell cat $remoteArgs) -join "`n") -ceq $launchArgs)) {
+      & adb -s $questSerial shell rm -f $remoteArgs
     }
-    if ($argsFile) { & adb shell rm -f $remoteStaging }
+    if ($argsFile) { & adb -s $questSerial shell rm -f $remoteStaging }
     if ($argsFile) { Remove-Item -LiteralPath $argsFile }
     if ($capturesReady) {
       if ($EyeCaptures -gt 0) {
-        & adb shell pidof $Package | Out-Null
+        & adb -s $questSerial shell pidof $Package | Out-Null
         if (-not $stoppedRun -or $LASTEXITCODE -ne 1) { throw 'Cannot collect eye captures until the benchmark process has stopped' }
       }
       Copy-BenchCaptures

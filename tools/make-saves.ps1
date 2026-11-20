@@ -17,6 +17,7 @@ param(
   [int[]]$Only     = @()
 )
 $ErrorActionPreference = 'Stop'
+$questSerial = & (Join-Path $PSScriptRoot 'install-quest.ps1') -GetQuestSerial
 
 # slot, name, waypoint, time, extra console commands
 $places = @(
@@ -39,37 +40,37 @@ function Run-Place($p) {
   $exec += ";savegame $slot $name"
   $argsFile = [IO.Path]::GetTempFileName()
   "-nomenu -novideo -perf low -exec `"$exec`"" | Set-Content $argsFile -NoNewline -Encoding utf8
-  adb push $argsFile /sdcard/OpenGothic/args.txt | Out-Null
+  adb -s $questSerial push $argsFile /sdcard/OpenGothic/args.txt | Out-Null
   Remove-Item $argsFile
 
-  $before = (adb shell run-as $Package ls -l "files/save_slot_$slot.sav" 2>$null) -join ''
-  adb shell am force-stop $Package
-  adb shell input keyevent KEYCODE_WAKEUP
-  adb shell am broadcast -a com.oculus.vrpowermanager.prox_close | Out-Null
-  adb shell am start -n "$Package/android.app.NativeActivity" | Out-Null
+  $before = (adb -s $questSerial shell run-as $Package ls -l "files/save_slot_$slot.sav" 2>$null) -join ''
+  adb -s $questSerial shell am force-stop $Package
+  adb -s $questSerial shell input keyevent KEYCODE_WAKEUP
+  adb -s $questSerial shell am broadcast -a com.oculus.vrpowermanager.prox_close | Out-Null
+  adb -s $questSerial shell am start -n "$Package/android.app.NativeActivity" | Out-Null
 
   # Wait for the save file to change and stop growing (load ~60 s, save a few seconds later)
   $deadline = (Get-Date).AddSeconds(180)
   $last = $before; $stable = 0; $ok = $false
   while ((Get-Date) -lt $deadline) {
     Start-Sleep 3
-    $now = (adb shell run-as $Package ls -l "files/save_slot_$slot.sav" 2>$null) -join ''
+    $now = (adb -s $questSerial shell run-as $Package ls -l "files/save_slot_$slot.sav" 2>$null) -join ''
     if ($now -and $now -ne $before) {
       if ($now -eq $last) { $stable++ } else { $stable = 0 }
       if ($stable -ge 2) { $ok = $true; break }
     }
     $last = $now
   }
-  adb shell am force-stop $Package
-  $log = adb shell run-as $Package cat files/log.txt | Select-String 'startup command|startup save'
+  adb -s $questSerial shell am force-stop $Package
+  $log = adb -s $questSerial shell run-as $Package cat files/log.txt | Select-String 'startup command|startup save'
   $failed = $log | Select-String 'failed'
   if ($ok -and -not $failed) { "slot ${slot}: $name" }
   elseif ($ok) { "slot ${slot}: $name (saved, but: $($failed -join '; '))" }
   else { "slot ${slot}: $name FAILED (no save)" }
 }
 
-adb shell setprop debug.oculus.cpuLevel 1
-adb shell setprop debug.oculus.gpuLevel 0
+adb -s $questSerial shell setprop debug.oculus.cpuLevel 1
+adb -s $questSerial shell setprop debug.oculus.gpuLevel 0
 try {
   foreach ($p in $places) {
     if ($Only.Count -gt 0 -and $Only -notcontains $p[0]) { continue }
@@ -77,9 +78,9 @@ try {
   }
 }
 finally {
-  adb shell rm -f /sdcard/OpenGothic/args.txt
-  adb shell am force-stop $Package
-  adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable | Out-Null
-  adb shell setprop debug.oculus.cpuLevel "''"
-  adb shell setprop debug.oculus.gpuLevel "''"
+  adb -s $questSerial shell rm -f /sdcard/OpenGothic/args.txt
+  adb -s $questSerial shell am force-stop $Package
+  adb -s $questSerial shell am broadcast -a com.oculus.vrpowermanager.automation_disable | Out-Null
+  adb -s $questSerial shell setprop debug.oculus.cpuLevel "''"
+  adb -s $questSerial shell setprop debug.oculus.gpuLevel "''"
 }

@@ -78,15 +78,18 @@ if (-not (Test-Path $keystore)) { throw "Debug keystore not found: $keystore (cr
 if ($LASTEXITCODE) { throw 'apksigner failed' }
 Write-Host "APK: $apk"
 
+if ($Install -or $Launch) {
+  $questSerial = & (Join-Path $PSScriptRoot 'install-quest.ps1') -GetQuestSerial
+}
 if ($Install) {
-  adb install -r $apk
-  if ($LASTEXITCODE) { throw 'adb install failed' }
+  adb -s $questSerial install -r $apk
+  if ($LASTEXITCODE) { throw 'adb -s $questSerial install failed' }
   # Read access to the shared game folder (/sdcard/OpenGothic)
-  adb shell appops set $package MANAGE_EXTERNAL_STORAGE allow
+  adb -s $questSerial shell appops set $package MANAGE_EXTERNAL_STORAGE allow
 }
 if ($GameDir) {
   & "$PSScriptRoot\push-game-data.ps1" -GameDir $GameDir
 }
 if ($Launch) {
-  adb shell am start -n "$package/android.app.NativeActivity"
+  adb -s $questSerial shell am start -n "$package/android.app.NativeActivity"
 }

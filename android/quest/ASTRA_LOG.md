@@ -883,3 +883,5 @@ The available game log contained no XR or Vulkan errors. It retained the baselin
 ## Update 5 investigation
 
 Enabling the engine’s CMAA2 through Video exposed unchecked candidate and blend-list appends, a partial reservation that could expose unwritten workgroup memory, and a stale indirect draw after an empty pass. The compute shaders now bound those accesses, publish the counters before the last workgroup prepares indirect arguments, and clear an empty draw. All five Android CMAA2 SPIR-V modules passed the NDK Vulkan 1.0 validator.
+
+The Quest tools now resolve a USB-authorized Quest from the host inventory, respect an explicit ANDROID_SERIAL, and pass its serial to every device operation, including eye-image readback. A host fixture with a Quest and an unrelated phone selected only the Quest, refused an unrelated or unknown requested serial, and rejected ambiguous selection between two Quests. The physical run used the preselected Quest.
