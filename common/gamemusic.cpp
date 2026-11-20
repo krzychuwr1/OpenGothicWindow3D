@@ -43,7 +43,7 @@ struct GameMusic::MusicProvider : Tempest::SoundProducer {
 
     void playTheme(const zenkit::IMusicTheme &theme, GameMusic::Tags tags) {
       std::lock_guard<std::recursive_mutex> guard(pendingSync);
-      reloadTheme  = !pendingMusic || pendingMusic->file != theme.file;
+      reloadTheme |= !pendingMusic || pendingMusic->file != theme.file;
       pendingMusic = theme;
       pendingTags  = tags;
       hasPending   = true;
@@ -59,9 +59,8 @@ struct GameMusic::MusicProvider : Tempest::SoundProducer {
         reloadTheme = this->reloadTheme;
         theme       = this->pendingMusic.value();
         tags        = this->pendingTags;
+        this->reloadTheme = false;
         }
-
-      this->reloadTheme = false;
       return reloadTheme;
       }
 
@@ -392,34 +391,44 @@ void GameMusic::setMusic(const zenkit::IMusicTheme &theme, Tags tags) {
   impl->playTheme(currentMusic.theme, currentMusic.tags);
   }
 
+void GameMusic::setVideoActive(bool active) {
+  if(active==videoActive)
+    return;
+  videoActive = active;
+  if(active)
+    sound.pause();
+  else
+    sound.play();
+  }
+
 void GameMusic::stopMusic() {
   setEnabled(false);
   }
 
 void GameMusic::setupSettings() {
-  const int   musicEnabled  = Gothic::settingsGetI("SOUND",    "musicEnabled");
-  const float musicVolume   = Gothic::settingsGetF("SOUND",    "musicVolume");
+  const bool  musicEnabled  = Gothic::settingsGetI("SOUND", "musicEnabled")!=0;
+  const float musicVolume   = Gothic::settingsGetF("SOUND", "musicVolume");
   const int   providerIndex = Gothic::settingsGetI("INTERNAL", "soundProviderIndex");
 
-  if(providerIndex != provider || musicEnabled!=isEnabled()) {
-    Log::i("Switching music provider to ", providerIndex == PROVIDER_OPENGOTHIC ? "'OpenGothic'" : "'GothicKit'");
-    sound = SoundEffect();
-
-    std::unique_ptr<MusicProvider> p;
-    if(providerIndex == PROVIDER_OPENGOTHIC) {
-      p = std::make_unique<OpenGothicMusicProvider>(SAMPLE_RATE, 2);
-      } else {
-      p = std::make_unique<GothicKitMusicProvider>(SAMPLE_RATE, 2);
-      }
-
-    provider = providerIndex;
-    impl = p.get();
-    impl->playTheme(currentMusic.theme, currentMusic.tags);
-
-    sound = device.load(std::move(p));
-    sound.play();
+  if(impl!=nullptr && providerIndex==provider && musicEnabled==isEnabled()) {
+    sound.setVolume(musicVolume);
+    return;
     }
 
-  setEnabled(musicEnabled != 0);
+  Log::i("Switching music provider to ", providerIndex == PROVIDER_OPENGOTHIC ? "'OpenGothic'" : "'GothicKit'");
+  std::unique_ptr<MusicProvider> p;
+  if(providerIndex == PROVIDER_OPENGOTHIC)
+    p = std::make_unique<OpenGothicMusicProvider>(SAMPLE_RATE, 2);
+  else
+    p = std::make_unique<GothicKitMusicProvider>(SAMPLE_RATE, 2);
+
+  p->playTheme(currentMusic.theme, currentMusic.tags);
+  p->setEnabled(musicEnabled);
+  auto* next = p.get();
+  sound = device.load(std::move(p));
+  impl = next;
+  provider = providerIndex;
   sound.setVolume(musicVolume);
+  if(!videoActive)
+    sound.play();
   }

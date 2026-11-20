@@ -309,9 +309,8 @@ void VideoWidget::tick() {
   try {
     ctx.reset(new Context(std::move(read)));
     if(!active) {
-      active       = true;
-      restoreMusic = GameMusic::inst().isEnabled();
-      GameMusic::inst().setEnabled(false);
+      active = true;
+      GameMusic::inst().setVideoActive(true);
       }
     }
   catch(...){
@@ -342,8 +341,8 @@ void VideoWidget::mouseDownEvent(Tempest::MouseEvent& event) {
 void VideoWidget::stopVideo() {
   ctx.reset();
   if(!hasPendingVideo) {
-    if(restoreMusic && !GameMusic::inst().isEnabled())
-      GameMusic::inst().setEnabled(true);
+    if(active)
+      GameMusic::inst().setVideoActive(false);
     active = false;
     }
   update();
@@ -362,7 +361,7 @@ void VideoWidget::paint(Tempest::Device& device, uint8_t fId) {
     }
   catch(...) {
     Log::e("video decoding error. frame: ",ctx->vid.currentFrame());
-    ctx.reset();
+    stopVideo();
     }
   }
 

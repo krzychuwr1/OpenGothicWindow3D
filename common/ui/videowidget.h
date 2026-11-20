@@ -35,7 +35,6 @@ class VideoWidget : public Tempest::Widget {
     Tempest::Texture2d            tex[Resources::MaxFramesInFlight];
     Tempest::Texture2d*           frame  = nullptr;
     bool                          active = false;
-    bool                          restoreMusic = false;
 
     std::atomic_bool              hasPendingVideo{false};
     std::mutex                    syncVideo;

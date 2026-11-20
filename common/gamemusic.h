@@ -33,6 +33,7 @@ class GameMusic final {
     void      setMusic(Music m);
     void      setMusic(const zenkit::IMusicTheme &theme, Tags t);
     void      stopMusic();
+    void      setVideoActive(bool active);
 
   private:
     struct MusicProvider;
@@ -48,6 +49,7 @@ class GameMusic final {
       Tags                tags  = Tags::Std;
       } currentMusic;
 
+    bool                 videoActive = false;
     int                  provider = -1;
     Tempest::SoundDevice device;
     Tempest::SoundEffect sound;
