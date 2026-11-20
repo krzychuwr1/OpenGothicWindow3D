@@ -1060,6 +1060,8 @@ bool XrWindow::eyeView(uint8_t eye, float verticalFovDeg, Camera::EyeView& out) 
 
 void XrWindow::pollEvents() {
   impl->pollEvents();
+  if(!AndroidApi::activityResumed())
+    impl->cancelInput();
   }
 
 bool XrWindow::beginFrame() {
@@ -1632,11 +1634,12 @@ PadState XrWindow::pad() const {
   }
 
 bool XrWindow::isFocused() const {
-  return impl->state==XR_SESSION_STATE_FOCUSED;
+  return AndroidApi::activityResumed() && impl->state==XR_SESSION_STATE_FOCUSED;
   }
 
 bool XrWindow::isVisible() const {
-  return impl->running && (impl->state==XR_SESSION_STATE_VISIBLE || impl->state==XR_SESSION_STATE_FOCUSED);
+  return AndroidApi::activityResumed() && impl->running &&
+         (impl->state==XR_SESSION_STATE_VISIBLE || impl->state==XR_SESSION_STATE_FOCUSED);
   }
 
 #else
