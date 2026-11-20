@@ -157,6 +157,7 @@ struct XrWindow::Impl {
   // Window image, one swapchain per eye
   uint32_t                 width  = 1600;
   uint32_t                 height = 900;
+  uint32_t                 capacityW = 1600, capacityH = 900;
   XrSwapchain              swapchain[2] = {};
   Tempest::Device*         device = nullptr;
   // The game renders straight into the swapchain images through these
@@ -199,7 +200,7 @@ struct XrWindow::Impl {
 
   // Window placement (local space)
   XrPosef                  windowPose = {{0,0,0,1},{0,0,-1.5f}};
-  float                    windowWidth = 2.4f;
+  float                    windowWidth = 2.4f, physicalHeight = 1.35f;
   float                    verticalFov = 67.5f;
   bool                     placed      = false;
   std::vector<XrTime>      recenterTimes;
@@ -209,7 +210,7 @@ struct XrWindow::Impl {
   XrTime                   lastGrabTime = 0;
   V3                       grabLocal;          // grabbed point in the space of the holding pose
   V3                       grabWindow;         // same point in the window at the start of the grab
-  float                    grabScale   = 1;    // window width per corner reach at the start of a resize
+  Tempest::Vec2            grabExtent;
   V3                       headPos;
 
   // Input
@@ -259,7 +260,10 @@ struct XrWindow::Impl {
     XrPath value = XR_NULL_PATH;
     return ok(xrStringToPath(instance,name,&value),name) ? value : XR_NULL_PATH;
     }
-  float  windowHeight() const { return windowWidth*float(height)/float(width); }
+  float  windowHeight() const { return physicalHeight; }
+  static float portalDistance(float fov) {
+    return 0.675f/std::tan(fov*float(M_PI)/360.f); // half the reference window height, in metres
+    }
   };
 
 static XrWindow* instance = nullptr;
@@ -527,6 +531,8 @@ bool XrWindow::preInit() {
 void XrWindow::attach(Device& device) {
   impl->vk     = vulkanNativeContext(device);
   impl->device = &device;
+  impl->windowWidth = CommandLine::inst().xrWindowWidth();
+  impl->physicalHeight = CommandLine::inst().xrWindowHeight();
   impl->createSession();
   AndroidApi::setExternalPresentation(int(impl->width), int(impl->height), uiScale());
   }
@@ -620,22 +626,51 @@ void XrWindow::Impl::createSwapchains() {
     info.usageFlags |= XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT; // -capture reads the eye images back
   info.format      = format;
   info.sampleCount = 1;
-  info.width       = width;
-  info.height      = height;
   info.faceCount   = 1;
   info.arraySize   = 1;
   info.mipCount    = 1;
-  for(int eye=0; eye<2; ++eye) {
-    swapchain[eye] = makeSwapchain(session, info, "window swapchain");
-    if(swapchain[eye]==XR_NULL_HANDLE)
-      throw std::runtime_error("OpenXR swapchain");
-    auto img = swapchainImages(swapchain[eye]);
-    if(img.empty())
-      throw std::runtime_error("OpenXR window images");
-    for(auto& i:img) {
-      targets[eye].push_back(vulkanBorrowColorAttachment(*device, i.image, width, height));
-      }
+  XrSystemProperties props = {XR_TYPE_SYSTEM_PROPERTIES};
+  if(ok(xrGetSystemProperties(instance,system,&props),"system image limits")) {
+    capacityW = std::min(2048u,props.graphicsProperties.maxSwapchainImageWidth);
+    capacityH = std::min(1536u,props.graphicsProperties.maxSwapchainImageHeight);
     }
+  auto makeEyes = [&] {
+    info.width = capacityW;
+    info.height = capacityH;
+    for(int eye=0;eye<2;++eye) {
+      swapchain[eye] = makeSwapchain(session,info,"window swapchain");
+      if(swapchain[eye]==XR_NULL_HANDLE)
+        return false;
+      auto images = swapchainImages(swapchain[eye]);
+      if(images.empty())
+        return false;
+      for(auto& im:images)
+        targets[eye].push_back(vulkanBorrowColorAttachment(*device,im.image,capacityW,capacityH));
+      }
+    return true;
+    };
+  bool ready = false;
+  try { ready = makeEyes(); }
+  catch(const std::bad_alloc&) {}
+  catch(const std::system_error& e) {
+    if(e.code()!=GraphicsErrc::OutOfVideoMemory && e.code()!=GraphicsErrc::OutOfHostMemory)
+      throw;
+    }
+  if(!ready) {
+    for(int eye=0;eye<2;++eye) {
+      targets[eye].clear();
+      if(swapchain[eye]!=XR_NULL_HANDLE)
+        xrDestroySwapchain(std::exchange(swapchain[eye],XR_NULL_HANDLE));
+      }
+    if(capacityW<=width && capacityH<=height)
+      throw std::runtime_error("OpenXR window images");
+    capacityW=std::min(capacityW,width);
+    capacityH=std::min(capacityH,height);
+    if(!makeEyes())
+      throw std::runtime_error("OpenXR window images");
+    }
+  width = std::min(width,capacityW);
+  height = std::min(height,capacityH);
 
   info.createFlags = XR_SWAPCHAIN_CREATE_STATIC_IMAGE_BIT;
   info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
@@ -690,8 +725,8 @@ bool XrWindow::Impl::createSpaceWarpSwapchains() {
     info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
     info.format      = VK_FORMAT_R16G16B16A16_SFLOAT;
     info.sampleCount = 1;
-    info.width       = mvWidth;
-    info.height      = mvHeight;
+    info.width       = capacityW/4;
+    info.height      = capacityH/4;
     info.faceCount   = 1;
     info.arraySize   = 1;
     info.mipCount    = 1;
@@ -704,9 +739,9 @@ bool XrWindow::Impl::createSpaceWarpSwapchains() {
     if(depthSwapchain[eye]==XR_NULL_HANDLE)
       return false;
     for(auto& i:swapchainImages(mvSwapchain[eye]))
-      mvTargets[eye].push_back(vulkanBorrowColorAttachment(*device, i.image, mvWidth, mvHeight, TextureFormat::RGBA16F));
+      mvTargets[eye].push_back(vulkanBorrowColorAttachment(*device, i.image, info.width, info.height, TextureFormat::RGBA16F));
     for(auto& i:swapchainImages(depthSwapchain[eye]))
-      depthTargets[eye].push_back(vulkanBorrowDepthAttachment(*device, i.image, mvWidth, mvHeight, TextureFormat::Depth32F));
+      depthTargets[eye].push_back(vulkanBorrowDepthAttachment(*device, i.image, info.width, info.height, TextureFormat::Depth32F));
     if(mvTargets[eye].empty() || depthTargets[eye].empty())
       return false;
     }
@@ -1038,8 +1073,8 @@ void XrWindow::Impl::placeWindow() {
   fwd.y  = 0;
   fwd    = normalize(fwd);
   // The sweet spot: the window covers exactly the game's field of view, so nothing is cropped
-  const float distance = std::clamp(windowHeight()*0.5f/std::tan(verticalFov*0.5f*float(M_PI)/180.f), 0.6f, 3.f);
-  const V3    pos      = headPos + fwd*distance + V3{0,-0.1f,0};
+  const float distance = std::clamp(portalDistance(verticalFov), 0.6f, 3.f);
+  const V3    pos      = headPos + fwd*std::sqrt(distance*distance-0.1f*0.1f) + V3{0,-0.1f,0};
   windowPose.position    = toXr(pos);
   windowPose.orientation = facing(headPos - pos);
   placed = true;
@@ -1210,8 +1245,10 @@ void XrWindow::Impl::updateInput() {
         } else {
         // A corner follows the hand across the window plane; the centre stays put
         const V3    l     = toLocal(windowPose, point);
-        const float reach = std::max(std::abs(l.x), std::abs(l.y)*float(width)/float(height));
-        windowWidth = std::clamp(reach*grabScale, 0.6f, 6.f);
+        const float dx = (l.x-grabWindow.x)*(grabWindow.x<0.f ? -2.f : 2.f);
+        const float dy = (l.y-grabWindow.y)*(grabWindow.y<0.f ? -2.f : 2.f);
+        windowWidth    = std::clamp(grabExtent.x+dx, 0.6f, 6.f);
+        physicalHeight = std::clamp(grabExtent.y+dy, 0.3375f, 3.375f);
         }
       }
     else if(canManipulate && grabbedBy<0 && pressed && !h.grabHeld && h.hover!=Grip::None) {
@@ -1228,8 +1265,7 @@ void XrWindow::Impl::updateInput() {
           Gothic::flushSettings();
           }
         } else if(grabbed!=Grip::Handle) {
-        const float reach = std::max(std::max(std::abs(grabWindow.x), std::abs(grabWindow.y)*float(width)/float(height)), 0.05f);
-        grabScale = windowWidth/reach;
+        grabExtent = Tempest::Vec2(windowWidth,physicalHeight);
         }
       }
     h.grabHeld = pressed ? true : (released ? false : h.grabHeld);
@@ -1355,7 +1391,7 @@ bool XrWindow::eyeView(uint8_t eye, float verticalFovDeg, Camera::EyeView& out) 
   const float units = 100.f;
   const float halfW = s.windowWidth*0.5f*units;
   const float halfH = s.windowHeight()*0.5f*units;
-  const float plane = halfH/std::tan(verticalFovDeg*0.5f*float(M_PI)/180.f);
+  const float plane = Impl::portalDistance(verticalFovDeg)*units;
 
   V3 e = s.eyeInWindow[eye];
   e.z  = std::max(e.z, 0.05f);   // behind or inside the window: hold the eye just in front of it
@@ -1790,7 +1826,9 @@ Attachment* XrWindow::eyeTarget(uint8_t eye) {
     tSwapWait += xrUs()-t1;
     s.acquired[eye] = int32_t(index);
     }
-  return &s.targets[eye][size_t(s.acquired[eye])];
+  auto& target = s.targets[eye][size_t(s.acquired[eye])];
+  vulkanSetBorrowedExtent(target,s.width,s.height);
+  return &target;
   }
 
 bool XrWindow::isSpaceWarpSupported() const {
@@ -1822,7 +1860,9 @@ Attachment* XrWindow::motionTarget(uint8_t eye) {
       }
     s.mvAcquired[eye] = int32_t(index);
     }
-  return &s.mvTargets[eye][size_t(s.mvAcquired[eye])];
+  auto& target = s.mvTargets[eye][size_t(s.mvAcquired[eye])];
+  vulkanSetBorrowedExtent(target,s.mvWidth,s.mvHeight);
+  return &target;
   }
 
 ZBuffer* XrWindow::depthTarget(uint8_t eye) {
@@ -1844,7 +1884,9 @@ ZBuffer* XrWindow::depthTarget(uint8_t eye) {
       }
     s.depthAcquired[eye] = int32_t(index);
     }
-  return &s.depthTargets[eye][size_t(s.depthAcquired[eye])];
+  auto& target = s.depthTargets[eye][size_t(s.depthAcquired[eye])];
+  vulkanSetBorrowedExtent(target,s.mvWidth,s.mvHeight);
+  return &target;
   }
 
 bool XrWindow::Impl::releaseEyes() {
@@ -2038,6 +2080,45 @@ Size XrWindow::resolution() const {
   return Size(int(impl->width), int(impl->height));
   }
 
+Size XrWindow::desiredResolution() const {
+  const auto& s = *impl;
+  if(!s.eyesValid)
+    return resolution();
+  const float refHalf = s.verticalFov*float(M_PI)/360.f;
+  const float refX = 2.f*std::atan((16.f/9.f)*std::tan(refHalf));
+  float ppm = 0.f;
+  for(auto& f:s.eyeFov) {
+    ppm = std::max(ppm,1600.f*(f.angleRight-f.angleLeft)/(refX*s.windowWidth));
+    ppm = std::max(ppm,900.f*(f.angleUp-f.angleDown)/(2.f*refHalf*s.windowHeight()));
+    }
+  ppm = std::min({ppm,float(s.capacityW)/s.windowWidth,float(s.capacityH)/s.windowHeight()});
+  auto multiple = [](float x,int n) { return std::max(n,int(std::round(x/float(n)))*n); };
+  const int w = std::min(int(s.capacityW),multiple(s.windowWidth*ppm,32));
+  const int h = std::min(int(s.capacityH),multiple(float(w)*s.windowHeight()/s.windowWidth,4));
+  const float aspect = s.windowWidth/s.windowHeight();
+  if(std::abs(float(s.width)/float(s.height)/aspect-1.f)<0.02f &&
+     std::abs(float(w)/float(s.width)-1.f)<0.08f && std::abs(float(h)/float(s.height)-1.f)<0.08f)
+    return resolution();
+  return Size(w,h);
+  }
+
+void XrWindow::setResolution(Size size) {
+  auto& s = *impl;
+  s.width = uint32_t(size.w);
+  s.height = uint32_t(size.h);
+  s.mvWidth = std::max(s.width/4u,1u);
+  s.mvHeight = std::max(s.height/4u,1u);
+  }
+
+float XrWindow::densityUiScale() const {
+  const auto& s = *impl;
+  if(!s.eyesValid)
+    return uiScale();
+  const float z = std::max(0.05f,(s.eyeInWindow[0].z+s.eyeInWindow[1].z)*0.5f);
+  const float scale = uiScale()*(float(s.height)/900.f)*(1.35f/s.windowHeight())*(z/Impl::portalDistance(s.verticalFov));
+  return std::clamp(std::round(scale*8.f)/8.f,0.5f,3.f);
+  }
+
 std::string XrWindow::timingReport() {
   char buf[160];
   std::snprintf(buf, sizeof(buf), "acquire %.0f swap-wait %.0f release %.0f end %.0f (ms total)",
@@ -2080,6 +2161,9 @@ XrWindow* XrWindow::inst()     { return nullptr; }
 bool      XrWindow::pollInputFocus(bool) { return false; }
 void      XrWindow::attach(Tempest::Device&) {}
 Tempest::Size XrWindow::resolution() const { return Tempest::Size(0,0); }
+Tempest::Size XrWindow::desiredResolution() const { return resolution(); }
+void      XrWindow::setResolution(Tempest::Size) {}
+float     XrWindow::densityUiScale() const { return uiScale(); }
 bool      XrWindow::beginFrame() { return false; }
 int64_t   XrWindow::nominalFramePeriod() const { return 0; }
 int64_t   XrWindow::predictedDisplayTime() const { return 0; }

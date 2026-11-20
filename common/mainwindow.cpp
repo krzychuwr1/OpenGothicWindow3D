@@ -334,18 +334,19 @@ void MainWindow::paintEvent(PaintEvent& event) {
   }
 
 void MainWindow::resizeEvent(SizeEvent&) {
-  for(auto& i:fence)
-    i.wait();
-  if(swapchain)
+  if(swapchain) {
+    for(auto& i:fence)
+      i.wait();
     swapchain->reset();
+    }
   if(auto camera = Gothic::inst().camera())
     camera->setViewport(outW(),outH());
 
-  if(SystemApi::isFullscreen(hwnd())) {
+  if(!swapchain)
+    return;
+  if(SystemApi::isFullscreen(hwnd()))
     setCursorPosition(Point(w()/2,h()/2));
-    }
-
-  dMouse = Point();
+  dMouse = {};
   }
 
 void MainWindow::metricsEvent(DisplayMetricsEvent& event) {
@@ -420,8 +421,8 @@ void MainWindow::tickMouse(uint64_t dt) {
   const bool  camLookaroundInverse = Gothic::inst().settingsGetI("GAME","camLookaroundInverse");
   const float mouseSensitivity     = Gothic::inst().settingsGetF("GAME","mouseSensitivity")/MouseUtil::mouseSysSpeed();
   PointF dpScaled = PointF(float(dMouse.x)*mouseSensitivity,float(dMouse.y)*mouseSensitivity);
-  dpScaled.x/=float(w());
-  dpScaled.y/=float(h());
+  dpScaled.x/=XrWindow::inst() ? 1600.f : float(w());
+  dpScaled.y/=XrWindow::inst() ? 900.f : float(h());
   if(camLookaroundInverse)
     dpScaled.y *= -1.f;
 
@@ -1259,7 +1260,7 @@ void MainWindow::onWorldLoaded() {
     c = device.commandBuffer();
 
   if(auto c = Gothic::inst().camera())
-    c->setViewport(uint32_t(w()),uint32_t(h()));
+    c->setViewport(outW(),outH());
 
   eyeHistoryValid = false;
   renderer.onWorldChanged();
@@ -1599,6 +1600,28 @@ void MainWindow::renderFrame(bool xr) {
   if(!xr)
     updateFrame();
 
+#ifdef OPENGOTHIC_XR
+  if(xr) {
+    auto& window = *XrWindow::inst();
+    window.setVerticalFov(Gothic::options().cameraFov);
+    const auto active = renderer.prepareXrViewport(xrSize,window.desiredResolution(),lastXrFence);
+    if(active!=xrSize) {
+      xrSize = active;
+      window.setResolution(active);
+      if(auto* cam=Gothic::inst().camera())
+        cam->setViewport(outW(),outH());
+      Log::i("XR portal target ",active.w,"x",active.h," motion ",active.w/4,"x",active.h/4);
+      }
+    const float canvas = std::max({1.f,800.f/float(active.w),600.f/float(active.h)});
+    const Size logical(int(std::round(float(active.w)*canvas)),int(std::round(float(active.h)*canvas)));
+    const float scale = std::round(window.densityUiScale()*canvas*8.f)/8.f;
+    if(logical!=size() || std::abs(scale-xrUiScale)>0.125f) {
+      xrUiScale = scale;
+      AndroidApi::setExternalPresentation(logical.w,logical.h,scale);
+      update();
+      }
+    }
+#endif
   // XR draws the scene once per eye, each eye in its own frame slot; the interface is painted once
   const int views = xr ? 2 : 1;
   // Application SpaceWarp (Video settings) while a world is shown through the window
@@ -1632,6 +1655,9 @@ void MainWindow::renderFrame(bool xr) {
       // The runtime paces frames; never skip one that has already begun
       const uint64_t tw = nowUs();
       sync.wait();
+#ifdef OPENGOTHIC_XR
+      renderer.releaseXrViewport(sync);
+#endif
       timing.gpuWait += nowUs()-tw;
       }
     else if(!sync.wait(0)) {
@@ -1725,6 +1751,10 @@ void MainWindow::renderFrame(bool xr) {
     }
     const uint64_t tsub = nowUs();
     sync = device.submit(cmd);
+#ifdef OPENGOTHIC_XR
+    if(xr)
+      lastXrFence = &sync;
+#endif
     timing.submit += nowUs()-tsub;
     if(xr && view==0 && CommandLine::inst().xrCaptureInterval()>0) {
       const uint64_t now = Application::tickCount();

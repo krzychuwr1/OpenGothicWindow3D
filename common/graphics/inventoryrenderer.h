@@ -15,7 +15,7 @@ class InventoryRenderer {
 
     static Tempest::Vec3 itemRotation(const zenkit::IItem& itData);
 
-    void draw(Tempest::Encoder<Tempest::CommandBuffer>& cmd);
+    void draw(Tempest::Encoder<Tempest::CommandBuffer>& cmd, float scaleX, float scaleY);
 
     void reset(bool full=false);
     void drawItem(int x, int y, int w, int h, const Item &item);

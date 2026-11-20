@@ -134,6 +134,14 @@ CommandLine::CommandLine(int argc, const char** argv) {
       if(i<argc)
         skipPasses = argv[i];
       }
+    else if(arg=="-xrwindow" && i+2<argc) {
+      const float w = float(std::atof(argv[++i]));
+      const float h = float(std::atof(argv[++i]));
+      if(w>=0.6f && w<=6.f && h>=0.3375f && h<=3.375f) {
+        portalWidth = w;
+        portalHeight = h;
+        }
+      }
     else if(arg=="-xrturn" && i+1<argc) {
       turnRate = std::clamp(float(std::atof(argv[++i])), -360.f, 360.f);
       }

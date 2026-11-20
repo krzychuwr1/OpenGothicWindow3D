@@ -57,10 +57,12 @@ class CommandLine {
     bool                debugSkip(std::string_view pass) const { return skipPasses.find(pass)!=std::string::npos; }
     // -show motion: debug views drawn into the XR window instead of the picture
     bool                debugShow(std::string_view view) const { return showViews.find(view)!=std::string::npos; }
-    // -capture SECONDS: XR saves both eyes' images as PNG files in the app's files folder
+    float               xrWindowWidth() const { return portalWidth; }
+    float               xrWindowHeight() const { return portalHeight; }
     float               xrTurnRate() const { return turnRate; }
     bool                xrWalkForward() const { return walkForward; }
     int                 xrCaptureBurst() const { return captureBurst; }
+    // -capture SECONDS writes both rendered eyes to PNG files in the app's files folder.
     int                 xrCaptureInterval() const { return captureSec; }
     // XR CPU/GPU performance level request: "low" (testing, battery and heat), default high
     std::string_view    xrPerfLevel() const { return perfLevel; }
@@ -85,6 +87,7 @@ class CommandLine {
     std::string         showViews;
     int                 captureSec = 0, captureBurst = 0;
     float               turnRate = 0.f;
+    float               portalWidth = 2.4f, portalHeight = 1.35f;
     bool                walkForward = false;
     std::string         perfLevel;
     std::vector<SettingOverride> settingOverrides;

@@ -9,6 +9,9 @@
 #include <Tempest/VectorImage>
 
 #include <optional>
+#ifdef OPENGOTHIC_XR
+#include <future>
+#endif
 
 #include "worldview.h"
 #include "shaders.h"
@@ -28,6 +31,8 @@ class Renderer final {
     // The second view of a stereo frame reuses the first view's shadow maps
     void setSecondView(bool second) { secondView = second; }
 #ifdef OPENGOTHIC_XR
+    Tempest::Size prepareXrViewport(Tempest::Size current, Tempest::Size desired, Tempest::Fence* previous);
+    void releaseXrViewport(Tempest::Fence& completed);
     void setLightingEye(int eye) { lightingEye = eye; }
 #endif
     void setGizmo(bool enable, Tempest::Vec3 center, int mode);
@@ -269,10 +274,27 @@ class Renderer final {
       Tempest::StorageBuffer    indirectBuffer;
       } cmaa2;
 
-    struct {
+    struct HiZ {
       Tempest::StorageImage     hiZ;
       Tempest::StorageBuffer    counter;
       } hiz;
+
+    struct ViewportBuffers {
+      Tempest::Size       fullSize;
+      Tempest::Attachment linear, opaque, depth, diffuse, normal;
+      Tempest::ZBuffer    z, uiZ;
+      Cmaa2               aa;
+      HiZ                 hierarchy;
+      };
+    static ViewportBuffers makeViewport(Tempest::Size size, Tempest::Size fullSize, bool aa, Tempest::TextureFormat depthFormat);
+    void swapViewport(ViewportBuffers& buffers);
+#ifdef OPENGOTHIC_XR
+    std::future<ViewportBuffers>   pendingViewport;
+    std::optional<ViewportBuffers> retiredViewport;
+    Tempest::Fence*                retireAfter = nullptr;
+    Tempest::Size                  requestedViewport;
+    uint64_t                       viewportRetryAfter = 0;
+#endif
 
     struct {
       const uint32_t            atlasDim  = 256; // sqrt(maxProbes)

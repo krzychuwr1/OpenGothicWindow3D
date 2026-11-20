@@ -147,6 +147,10 @@ class MainWindow : public Tempest::Window {
     Tempest::Device&      device;
     std::optional<Tempest::Swapchain> swapchain;
     Tempest::Size         xrSize;
+#ifdef OPENGOTHIC_XR
+    Tempest::Fence*       lastXrFence = nullptr;
+    float                 xrUiScale = 1.25f;
+#endif
     Tempest::Matrix4x4    prevEyeViewProject[2];
     bool                  eyeHistoryValid = false;
     GamepadInput          pad;

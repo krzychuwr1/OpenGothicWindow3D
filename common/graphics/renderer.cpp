@@ -412,29 +412,29 @@ void Renderer::prepareUniforms(WorldView& wview) {
   wview.setWindEnabled(settings.zWindEnabled, settings.windPeriod);
   }
 
-void Renderer::resetViewport(Tempest::Size res, Tempest::Size fullRes) {
+Renderer::ViewportBuffers Renderer::makeViewport(Size res, Size fullRes, bool aa, TextureFormat depthFormat) {
   auto& device = Resources::device();
-  device.waitIdle();
-
+  ViewportBuffers out;
+  out.fullSize = fullRes;
   const uint32_t w = uint32_t(res.w);
   const uint32_t h = uint32_t(res.h);
 
-  sceneLinear = device.attachment(TextureFormat::R11G11B10UF,w,h);
+  out.linear = device.attachment(TextureFormat::R11G11B10UF,w,h);
 
-  if(settings.aaEnabled) {
-    cmaa2.workingEdges               = device.image2d(TextureFormat::R8, (w + 1) / 2, h);
-    cmaa2.shapeCandidates            = device.ssbo(Tempest::Uninitialized, w * h / 4 * sizeof(uint32_t));
-    cmaa2.deferredBlendLocationList  = device.ssbo(Tempest::Uninitialized, (w * h + 3) / 6 * sizeof(uint32_t));
-    cmaa2.deferredBlendItemList      = device.ssbo(Tempest::Uninitialized, w * h * sizeof(uint32_t));
-    cmaa2.deferredBlendItemListHeads = device.image2d(TextureFormat::R32U, (w + 1) / 2, (h + 1) / 2);
-    cmaa2.controlBuffer              = device.ssbo(nullptr, 5 * sizeof(uint32_t));
-    cmaa2.indirectBuffer             = device.ssbo(nullptr, sizeof(DispatchIndirectCommand) + sizeof(DrawIndirectCommand));
+  if(aa) {
+    out.aa.workingEdges               = device.image2d(TextureFormat::R8, (w + 1) / 2, h);
+    out.aa.shapeCandidates            = device.ssbo(Tempest::Uninitialized, w * h / 4 * sizeof(uint32_t));
+    out.aa.deferredBlendLocationList  = device.ssbo(Tempest::Uninitialized, (w * h + 3) / 6 * sizeof(uint32_t));
+    out.aa.deferredBlendItemList      = device.ssbo(Tempest::Uninitialized, w * h * sizeof(uint32_t));
+    out.aa.deferredBlendItemListHeads = device.image2d(TextureFormat::R32U, (w + 1) / 2, (h + 1) / 2);
+    out.aa.controlBuffer              = device.ssbo(nullptr, 5 * sizeof(uint32_t));
+    out.aa.indirectBuffer             = device.ssbo(nullptr, sizeof(DispatchIndirectCommand) + sizeof(DrawIndirectCommand));
     }
 
-  zbuffer = device.zbuffer(zBufferFormat,w,h);
+  out.z = device.zbuffer(depthFormat,w,h);
   if(res!=fullRes)
-    zbufferUi = device.zbuffer(zBufferFormat, fullRes); else
-    zbufferUi = ZBuffer();
+    out.uiZ = device.zbuffer(depthFormat, fullRes); else
+    out.uiZ = ZBuffer();
 
   uint32_t pw = nextPot(w);
   uint32_t ph = nextPot(h);
@@ -446,14 +446,81 @@ void Renderer::resetViewport(Tempest::Size res, Tempest::Size fullRes) {
     hh = std::max(1u, (hh+1)/2u);
     }
 
-  hiz.hiZ       = device.image2d(TextureFormat::R16,  hw, hh, true);
-  hiz.counter   = device.ssbo(nullptr, sizeof(uint32_t));
+  out.hierarchy.hiZ       = device.image2d(TextureFormat::R16,  hw, hh, true);
+  out.hierarchy.counter   = device.ssbo(nullptr, sizeof(uint32_t));
 
-  sceneOpaque   = device.attachment(TextureFormat::R11G11B10UF,w,h);
-  sceneDepth    = device.attachment(TextureFormat::R32F,       w,h);
+  out.opaque   = device.attachment(TextureFormat::R11G11B10UF,w,h);
+  out.depth    = device.attachment(TextureFormat::R32F,       w,h);
 
-  gbufDiffuse   = device.attachment(TextureFormat::RGBA8,w,h);
-  gbufNormal    = device.attachment(TextureFormat::R32U, w,h);
+  out.diffuse   = device.attachment(TextureFormat::RGBA8,w,h);
+  out.normal    = device.attachment(TextureFormat::R32U, w,h);
+
+  return out;
+  }
+
+void Renderer::swapViewport(ViewportBuffers& b) {
+  std::swap(sceneLinear,b.linear);
+  std::swap(sceneOpaque,b.opaque);
+  std::swap(sceneDepth,b.depth);
+  std::swap(gbufDiffuse,b.diffuse);
+  std::swap(gbufNormal,b.normal);
+  std::swap(zbuffer,b.z);
+  std::swap(zbufferUi,b.uiZ);
+  std::swap(cmaa2,b.aa);
+  std::swap(hiz,b.hierarchy);
+  pt.numFrames = 0;
+  }
+
+#ifdef OPENGOTHIC_XR
+Size Renderer::prepareXrViewport(Size current, Size desired, Fence* previous) {
+  if(retiredViewport && (retireAfter==nullptr || retireAfter->wait(0)))
+    retiredViewport.reset();
+  try {
+    if(pendingViewport.valid()) {
+      if(pendingViewport.wait_for(std::chrono::seconds(0))!=std::future_status::ready)
+        return current;
+      auto next = pendingViewport.get();
+      const bool hasAa = !next.aa.workingEdges.isEmpty();
+      if(desired!=current && next.z.size()==internalResolution(next.fullSize) &&
+         hasAa==settings.aaEnabled) {
+        const Size result = next.fullSize;
+        swapViewport(next);
+        retiredViewport.emplace(std::move(next));
+        retireAfter = previous;
+        return result;
+        }
+      }
+    if(desired==current || retiredViewport || Application::tickCount()<viewportRetryAfter)
+      return current;
+    requestedViewport = desired;
+    pendingViewport = std::async(std::launch::async,makeViewport,internalResolution(desired),desired,settings.aaEnabled,zBufferFormat);
+    return current;
+    }
+  catch(const std::bad_alloc&) {}
+  catch(const std::system_error& e) {
+    if(e.code()!=GraphicsErrc::OutOfVideoMemory && e.code()!=GraphicsErrc::OutOfHostMemory &&
+       e.code()!=std::errc::resource_unavailable_try_again)
+      throw;
+    }
+  Log::e("XR viewport allocation failed at ",requestedViewport.w,"x",requestedViewport.h);
+  viewportRetryAfter = Application::tickCount()+3000;
+  return current;
+  }
+
+void Renderer::releaseXrViewport(Fence& completed) {
+  // A frame slot replaces its fence after submitting again. Retire the old
+  // targets while this fence still refers to their last use on the queue.
+  if(retiredViewport && retireAfter==&completed)
+    retiredViewport.reset();
+  }
+#endif
+
+void Renderer::resetViewport(Size res, Size fullRes) {
+  Resources::device().waitIdle();
+  {
+    ViewportBuffers old;
+    swapViewport(old);
+  }
 
   ssao     = decltype(ssao)();
   epipolar = decltype(epipolar)();
@@ -469,6 +536,8 @@ void Renderer::resetViewport(Tempest::Size res, Tempest::Size fullRes) {
   // swrt
   swrt.outputImage = StorageImage();
 
+  auto next = makeViewport(res,fullRes,settings.aaEnabled,zBufferFormat);
+  swapViewport(next);
   resetSkyFog();
   }
 
@@ -627,7 +696,12 @@ void Renderer::draw(Attachment& result, Encoder<CommandBuffer>& cmd, uint8_t fId
     auto& zb = (zbufferUi.isEmpty() ? zbuffer : zbufferUi);
     cmd.setFramebuffer({{result, Tempest::Preserve, Tempest::Preserve}},{zb, 1.f, Tempest::Preserve});
     cmd.setDebugMarker("Inventory");
-    inventory.draw(cmd);
+#ifdef OPENGOTHIC_XR
+    if(XrWindow::inst())
+      inventory.draw(cmd,float(result.w())/float(std::max(1,inventory.w())),float(result.h())/float(std::max(1,inventory.h())));
+    else
+#endif
+      inventory.draw(cmd);
 
     cmd.setFramebuffer({{result, Tempest::Preserve, Tempest::Preserve}});
     cmd.setDebugMarker("Inventory-counters");

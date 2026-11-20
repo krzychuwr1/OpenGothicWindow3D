@@ -26,6 +26,9 @@ class XrWindow final {
 
     // Game image resolution of the window, in pixels.
     Tempest::Size     resolution() const;
+    Tempest::Size     desiredResolution() const;
+    void              setResolution(Tempest::Size size);
+    float             densityUiScale() const;
     float             uiScale() const { return 1.25f; }
     // Game camera field of view; places the window where it shows the whole view.
     void              setVerticalFov(float degrees);

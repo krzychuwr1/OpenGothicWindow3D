@@ -5,6 +5,8 @@
 
 #include "shaders.h"
 
+#include <cmath>
+
 using namespace Tempest;
 
 InventoryRenderer::InventoryRenderer()
@@ -79,14 +81,19 @@ Vec3 InventoryRenderer::itemRotation(const zenkit::IItem& itData) {
     }
   }
 
-void InventoryRenderer::draw(Tempest::Encoder<CommandBuffer>& cmd) {
+void InventoryRenderer::draw(Tempest::Encoder<CommandBuffer>& cmd, float scaleX, float scaleY) {
   Tempest::Matrix4x4 mv = Tempest::Matrix4x4::mkIdentity();
   mv.translate(0, 0, 0.5f);
   mv.scale(0.8f,1.f,1.f);
 
   auto& pso = Shaders::inst().inventory;
   for(auto& i:items) {
-    cmd.setViewport(i.x,i.y,i.w,i.h);
+    const int x = int(std::round(float(i.x)*scaleX)), y = int(std::round(float(i.y)*scaleY));
+    const int w = int(std::round(float(i.x+i.w)*scaleX))-x;
+    const int h = int(std::round(float(i.y+i.h)*scaleY))-y;
+    if(w<=0 || h<=0)
+      continue;
+    cmd.setViewport(x,y,w,h);
     for(size_t r=0;r<i.mesh.nodesCount();++r) {
       auto  n = i.mesh.node(r);
       auto& m = n.material();
