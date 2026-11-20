@@ -229,3 +229,11 @@ A desktop Vulkan readback used the production layout translator, dynamic renderi
 Tempest attached its host-read barrier to the flush immediately before an image-to-buffer copy. A fence wait and cache invalidation could then precede CPU access without a memory barrier after the transfer itself. The eye PNG tool uses this path. Tempest `4d94f7ea` accumulates the writing stages until command-buffer finalization and then publishes transfer, compute and graphics writes to host readers. A buffer without a tracked hazard ID is included.
 
 The committed command-order regression failed against the old tracker and passed against the new one in a standalone MSVC harness using the production tracker. It checks that the early flushes do not issue a host dependency, that all three writer stages appear in the final barrier and that the next empty recording inherits none of them. Android Release linked. Earlier Quest PNGs decoded correctly; they do not establish the memory ordering on all drivers.
+
+### Environment switch and saved choice on the compositor
+
+Tested both input paths in an instrumented APK. It supplied a synthetic near pose and pinch on the left hand, then a controller aim ray and held grip on the right hand in a separate launch. The production hit test, press/release logic, passthrough calls, INI flush, startup restore and layer submission ran on Quest. A smaller window placement kept both controls inside the screenshot. The test used a new app-private INI. The owner's INI had the same SHA-256 before and after; only the test INI was removed.
+
+The near pinch changed passthrough to dusk once and saved `xrEnvironment=1`. Meta capture `20261120-040437-863` shows the floating window, handle and window-shaped return button above both ridgelines with ordinary stereo quads. The next launch restored dusk, the right aim ray switched back once, and the INI contained 0. Meta capture `20261120-040624-950` shows the crescent below the handle with SpaceWarp enabled. Both post-run checks were 81% and 40.0 °C with the app stopped. These were synthetic poses on the real runtime; physical targeting and comfort need a wearer.
+
+The dusk screenshot also shows a faint, narrow dark line running through part of the panorama. The generator uses periodic mountain functions; its source has not been established from this screenshot.
