@@ -2095,8 +2095,9 @@ bool XrWindow::submit(bool rendered) {
       addLayer(sky1);
       }
     } else if(s.roomAvailable()) {
-      pt.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     pt.layerHandle = s.passthroughLayer;
+    if(s.dimUsesOpacity && s.passthroughDim>0.f)
+      pt.flags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     addLayer(pt);
     }
 

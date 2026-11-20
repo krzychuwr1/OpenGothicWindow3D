@@ -840,3 +840,5 @@ A subsequent clock review found an overload corner case: limiting positive corre
 ### Dim passthrough with a continuous slider
 
 Hover over the environment button below the grab handle. Point and hold the trigger or pinch the slider, then drag horizontally. It stays visible throughout capture and fades for 250 ms after 600 ms away. The runtime scales room lightness continuously from unchanged to near black. A runtime that rejects brightness/contrast styling can use passthrough opacity over black. The knob uses a static compositor texture. Dragging does not record a game graphics pass. Releasing the slider saves `INTERNAL/xrPassthroughDim`; recreating the passthrough layer restores it. The host fixture exercised 137 continuous positions per input mode, focus loss, hit testing, persistence and the style call.
+
+The combined compile caught a field-name error in the opacity fallback. The passthrough layer now sets its OpenXR `flags` only when the opacity fallback is active and the room is dimmed.
