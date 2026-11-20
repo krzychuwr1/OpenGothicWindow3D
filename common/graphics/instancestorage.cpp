@@ -24,10 +24,7 @@ static uint32_t alignAs(uint32_t sz, uint32_t alignment) {
   }
 
 static void bitSet(std::vector<uint32_t>& b, size_t id) {
-  static_assert(sizeof(std::atomic<uint32_t>)==sizeof(uint32_t));
-  auto& bits = b[id/32];
-  id %= 32;
-  reinterpret_cast<std::atomic<uint32_t>&>(bits).fetch_or(1u << id, std::memory_order_relaxed);
+  std::atomic_ref<uint32_t>(b[id/32]).fetch_or(1u << (id%32), std::memory_order_relaxed);
   }
 
 static bool bitAt(std::vector<uint32_t>& b, size_t id) {
@@ -262,6 +259,11 @@ InstanceStorage::Id InstanceStorage::alloc(const size_t size) {
 
   blockCnt = (dataCpu.size()+blockSz-1)/blockSz;
   durty.resize((blockCnt+32-1)/32, 0);
+  // The GPU buffer is page-rounded. Its unused tail has never received the new CPU zeros.
+  if(dataCpu.size()<=dataGpu.byteSize()) {
+    for(size_t block=r.begin/blockSz; block<blockCnt; ++block)
+      bitSet(durty,block);
+    }
   return Id(*this,r);
   }
 
