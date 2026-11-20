@@ -81,6 +81,7 @@ bool projectSphere(const vec3 c, float R, out vec4 aabb, out float depthMin, out
   float maxy = (vy * c.y + cr.z) / (vy * c.z - cr.y);
 
   aabb = vec4(minx * P00, miny * P11, maxx * P00, maxy * P11);
+  aabb += scene.project[2].xyxy; // off-axis NDC origin of this eye
   aabb = aabb*0.5 + vec4(0.5);
   return true;
   }
