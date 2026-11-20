@@ -90,7 +90,7 @@ static V3 toWorld(const XrPosef& pose, const V3& p) {
   }
 
 // Parts of the window frame a hand can grab
-enum class Grip : uint8_t { None, Handle, CornerLeft, CornerRight, Environment };
+enum class Grip : uint8_t { None, Handle, CornerLeft, CornerRight, Environment, Dim };
 
 struct Hand {
   XrPath         path        = XR_NULL_PATH;
@@ -101,6 +101,8 @@ struct Hand {
   XrPosef        aim         = {{0,0,0,1},{0,0,0}};
   XrPosef        nearPose    = {{0,0,0,1},{0,0,0}};
   std::optional<float> grab; // Only an active action can report a physical release.
+  std::optional<float> trigger;
+  bool           triggerHeld = true;
   bool           grabHeld    = true;
   Grip           hover       = Grip::None;
   bool           hoverNear   = false;
@@ -135,6 +137,8 @@ struct XrWindow::Impl {
   PFN_xrDestroyPassthroughFB            xrDestroyPassthrough        = nullptr;
   PFN_xrCreatePassthroughLayerFB        xrCreatePassthroughLayer    = nullptr;
   PFN_xrDestroyPassthroughLayerFB       xrDestroyPassthroughLayer   = nullptr;
+
+  PFN_xrPassthroughLayerSetStyleFB      xrSetPassthroughStyle      = nullptr;
 
   // Session
   VulkanNativeContext      vk;
@@ -185,6 +189,13 @@ struct XrWindow::Impl {
   XrSwapchain              cornerSwapchain = XR_NULL_HANDLE;
   XrSwapchain              panorama = XR_NULL_HANDLE;
   XrSwapchain              environmentButton = XR_NULL_HANDLE;
+  XrSwapchain              dimSlider = XR_NULL_HANDLE;
+  static constexpr int     RailW = 160, KnobW = 24, SliderRows = 16;
+  static constexpr float   DimLeft = 0.09f, DimTravel = 0.20f;
+  bool                     sliderReady = false, dimDirty = false;
+  bool                     dimStyleAvailable = false, dimUsesOpacity = false, grabTrigger = false;
+  float                    passthroughDim = 0.f;
+  XrTime                   lastDimHover = 0;
   static constexpr uint32_t SkyW = 2048, SkyH = SkyW/2, ButtonW = 128, ButtonH = 80;
   bool                     panoramaReady = false, buttonReady = false, immersive = false;
   bool                     staticImagesAttempted = false;
@@ -251,6 +262,10 @@ struct XrWindow::Impl {
   void fillCorners(VkCommandBuffer cmd, VkFence fence);
   void fillEnvironment(VkCommandBuffer cmd, VkFence fence);
   bool setEnvironment(bool useSky);
+  bool applyDim(float level);
+  void saveDim();
+  int sliderRow() const;
+  void fillSlider(VkCommandBuffer cmd, VkFence fence);
   V3   buttonCenter() const { return handleCenter() + V3{0,-0.10f,0}; }
   Grip targetAt(float x, float y) const;
   V3   handleCenter() const;
@@ -298,6 +313,8 @@ XrWindow::Impl::~Impl() {
   destroyPassthrough();
   if(panorama!=XR_NULL_HANDLE)
     xrDestroySwapchain(panorama);
+  if(dimSlider!=XR_NULL_HANDLE)
+    xrDestroySwapchain(dimSlider);
   if(environmentButton!=XR_NULL_HANDLE)
     xrDestroySwapchain(environmentButton);
   if(handleSwapchain!=XR_NULL_HANDLE)
@@ -434,6 +451,8 @@ bool XrWindow::Impl::createInstance() {
                      fn("xrDestroyPassthroughFB",      xrDestroyPassthrough)     &&
                      fn("xrCreatePassthroughLayerFB",  xrCreatePassthroughLayer) &&
                      fn("xrDestroyPassthroughLayerFB", xrDestroyPassthroughLayer);
+    if(hasPassthrough)
+      fn("xrPassthroughLayerSetStyleFB", xrSetPassthroughStyle);
     }
 
   // Required before the device is created
@@ -704,6 +723,12 @@ void XrWindow::Impl::createSwapchains() {
       info.height = ButtonH;
       info.arraySize = 4; // room / sky icons, each idle or hovered
       environmentButton = makeSwapchain(session, info, "environment button swapchain");
+      if(environmentButton && xrSetPassthroughStyle) {
+        info.width = RailW+KnobW;
+        info.height = KnobW*SliderRows;
+        info.arraySize = 1;
+        dimSlider = makeSwapchain(session, info, "dimming slider swapchain");
+        }
       }
     }
   }
@@ -798,6 +823,59 @@ void XrWindow::Impl::createPassthrough() {
     }
   passthrough = feature;
   passthroughLayer = room;
+  dimStyleAvailable = xrSetPassthroughStyle!=nullptr;
+  dimUsesOpacity = false;
+  if(sliderReady && passthroughDim>0.f)
+    applyDim(passthroughDim);
+  }
+
+bool XrWindow::Impl::applyDim(float level) {
+  if(!dimStyleAvailable || passthroughLayer==XR_NULL_HANDLE)
+    return false;
+  // The two CIELAB lightness adjustments together give Lout = scale * Lin.
+  const float scale = 1.f-0.94f*level;
+  XrPassthroughBrightnessContrastSaturationFB color = {XR_TYPE_PASSTHROUGH_BRIGHTNESS_CONTRAST_SATURATION_FB};
+  color.brightness = 50.f*(scale-1.f);
+  color.contrast = scale;
+  color.saturation = scale;
+  XrPassthroughStyleFB style = {XR_TYPE_PASSTHROUGH_STYLE_FB};
+  style.textureOpacityFactor = dimUsesOpacity ? scale : 1.f;
+  style.next = level>0.f && !dimUsesOpacity ? &color : nullptr;
+  auto result = xrSetPassthroughStyle(passthroughLayer,&style);
+  if(style.next!=nullptr && (result==XR_ERROR_FEATURE_UNSUPPORTED || result==XR_ERROR_VALIDATION_FAILURE)) {
+    // Older passthrough runtimes can still fade the bottom layer against black.
+    style.next = nullptr;
+    style.textureOpacityFactor = scale;
+    result = xrSetPassthroughStyle(passthroughLayer,&style);
+    if(XR_SUCCEEDED(result)) {
+      dimUsesOpacity = true;
+      Log::i("OpenXR: using passthrough opacity for room dimming");
+      }
+    }
+  if(!ok(result, "style passthrough")) {
+    dimStyleAvailable = false;
+    return false;
+    }
+  passthroughDim = level;
+  return true;
+  }
+
+void XrWindow::Impl::saveDim() {
+  if(std::exchange(dimDirty,false)) {
+    Gothic::settingsSetF("INTERNAL","xrPassthroughDim",passthroughDim);
+    Gothic::flushSettings();
+    }
+  }
+
+int XrWindow::Impl::sliderRow() const {
+  if(!sliderReady || !dimStyleAvailable || !roomAvailable() || lastDimHover==0)
+    return -1;
+  // Keep the slider within reach when a ray crosses the gap beside the button.
+  const XrDuration age = frame.predictedDisplayTime-lastDimHover;
+  const auto fade = std::max<XrDuration>(0,age-600'000'000);
+  if(fade>=250'000'000)
+    return -1;
+  return SliderRows-1-int(fade*SliderRows/250'000'000);
   }
 
 void XrWindow::Impl::destroyPassthrough() {
@@ -1081,6 +1159,8 @@ void XrWindow::Impl::placeWindow() {
   }
 
 void XrWindow::Impl::cancelInput() {
+  saveDim();
+  lastDimHover = 0;
   padInterrupted = true;
   blockedControls.set();
   releasePad = {};
@@ -1089,7 +1169,7 @@ void XrWindow::Impl::cancelInput() {
   grabbed = Grip::None;
   for(auto& h:hands) {
     h.hover = Grip::None;
-    h.grabHeld = true; // require release before a new grab
+    h.triggerHeld = h.grabHeld = true; // require release before a new grab
     }
   }
 
@@ -1145,6 +1225,17 @@ void XrWindow::Impl::updateInput() {
   // The game image itself is never a grab target, so playing never moves the window by accident.
   const bool canManipulate = frame.shouldRender && placed && headValid;
   const V3 wNormal = rotate(windowPose.orientation, V3{0,0,1});
+  auto rayHit = [&](const XrPosef& aim) -> std::optional<V3> {
+    const V3 origin = toV3(aim.position);
+    const V3 dir = rotate(aim.orientation,V3{0,0,-1});
+    const float denom = dot(dir,wNormal);
+    if(denom>=-1e-4f)
+      return {};
+    const float t = dot(toV3(windowPose.position)-origin,wNormal)/denom;
+    if(t<=0.f)
+      return {};
+    return origin+dir*t;
+    };
 
   for(size_t i=0; i<hands.size(); ++i) {
     auto& h = hands[i];
@@ -1161,6 +1252,7 @@ void XrWindow::Impl::updateInput() {
     h.aimValid  = locate(h.aimSpace,  h.aim);
     h.nearValid = locate(h.nearSpace, h.nearPose);
     h.grab      = getF(aGrab, h.path);
+    h.trigger   = getF(aTrigger,h.path);
     h.hover     = Grip::None;
     h.hoverNear = false;
 
@@ -1180,41 +1272,60 @@ void XrWindow::Impl::updateInput() {
     // Then pointing: the aim ray against the window plane
     if(!h.aimValid)
       continue;
-    const V3    origin = toV3(h.aim.position);
-    const V3    dir    = rotate(h.aim.orientation, V3{0,0,-1});
-    const float denom  = dot(dir, wNormal);
-    if(denom>-1e-4f)
+    const auto p = rayHit(h.aim);
+    if(!p)
       continue;
-    const float t = dot(toV3(windowPose.position)-origin, wNormal)/denom;
-    if(t<=0)
-      continue;
-    const V3 p = origin + dir*t;
-    const V3 l = toLocal(windowPose, p);
+    const V3 l = toLocal(windowPose, *p);
     const Grip g = targetAt(l.x, l.y);
     if(g!=Grip::None) {
       h.hover = g;
-      h.hit   = p;
+      h.hit   = *p;
       }
     }
 
   for(size_t i=0; i<hands.size(); ++i) {
     auto& h = hands[i];
-    if(!h.grab) {
-      if(grabbedBy==int(i)) {
-        grabbedBy = -1;
-        grabbed = Grip::None;
-        }
-      h.grabHeld = true;
-      continue;
-      }
-    const bool pressed  = *h.grab>0.75f;
-    const bool released = *h.grab<0.35f;
+    // Track each physical control even when the other one owns the drag. An
+    // inactive action or a held trigger on entry cannot synthesize a new press.
+    auto freshPress = [](const std::optional<float>& action,bool& held) {
+      const bool pressed = action && *action>0.75f;
+      const bool fresh = pressed && !held;
+      if(!action || pressed)
+        held = true;
+      else if(*action<0.35f)
+        held = false;
+      return fresh;
+      };
+    const bool gripDown = freshPress(h.grab,h.grabHeld);
+    const bool triggerDown = freshPress(h.trigger,h.triggerHeld);
+    const bool startTrigger = h.hover==Grip::Dim && triggerDown;
+    auto moveDim = [&](const V3& worldPoint) {
+      const float x = toLocal(windowPose,worldPoint).x;
+      const float level = std::clamp((x-buttonCenter().x-DimLeft)/DimTravel,0.f,1.f);
+      if(level!=passthroughDim && applyDim(level))
+        dimDirty = true;
+      };
+    if(canManipulate && (h.hover==Grip::Dim || h.hover==Grip::Environment))
+      lastDimHover = frame.predictedDisplayTime;
     if(grabbedBy==int(i)) {
       const bool tracked = grabNear ? h.nearValid : h.aimValid;
-      if(released || !tracked || (grabbed==Grip::Environment && !roomAvailable())) {
-        grabbedBy  = -1;
-        grabbed    = Grip::None;
-        h.grabHeld = !released;
+      const auto& action = grabTrigger ? h.trigger : h.grab;
+      if(!action || *action<0.35f || !tracked ||
+         ((grabbed==Grip::Environment || grabbed==Grip::Dim) && !roomAvailable()) ||
+         (grabbed==Grip::Dim && !dimStyleAvailable)) {
+        saveDim();
+        grabbedBy = -1;
+        grabbed = Grip::None;
+        continue;
+        }
+      if(grabbed==Grip::Dim) {
+        lastDimHover = frame.predictedDisplayTime;
+        if(canManipulate) {
+          if(grabNear)
+            moveDim(toV3(h.nearPose.position));
+          else if(auto hit = rayHit(h.aim))
+            moveDim(*hit);
+          }
         continue;
         }
       if(!canManipulate || grabbed==Grip::Environment) {
@@ -1251,14 +1362,17 @@ void XrWindow::Impl::updateInput() {
         physicalHeight = std::clamp(grabExtent.y+dy, 0.3375f, 3.375f);
         }
       }
-    else if(canManipulate && grabbedBy<0 && pressed && !h.grabHeld && h.hover!=Grip::None) {
+    else if(canManipulate && grabbedBy<0 && h.hover!=Grip::None && (gripDown || startTrigger)) {
+      grabTrigger = startTrigger;
       grabbedBy = int(i);
       grabbed   = h.hover;
       grabNear  = h.hoverNear;
       lastGrabTime = frame.predictedDisplayTime;
       grabLocal = toLocal(grabNear ? h.nearPose : h.aim, h.hit);
       grabWindow = toLocal(windowPose, h.hit);
-      if(grabbed==Grip::Environment) {
+      if(grabbed==Grip::Dim) {
+        moveDim(h.hit);
+        } else if(grabbed==Grip::Environment) {
         if(setEnvironment(!immersive)) {
           restoreSky = false;
           Gothic::settingsSetI("INTERNAL", "xrEnvironment", immersive ? 1 : 0);
@@ -1268,7 +1382,6 @@ void XrWindow::Impl::updateInput() {
         grabExtent = Tempest::Vec2(windowWidth,physicalHeight);
         }
       }
-    h.grabHeld = pressed ? true : (released ? false : h.grabHeld);
     }
 
   // Losing an action or taking the window interrupts gameplay. Only an active,
@@ -1313,15 +1426,14 @@ void XrWindow::Impl::updateInput() {
   stick(StickLeft, sticks[0],padState.lx,padState.ly,releasePad.lx,releasePad.ly);
   stick(StickRight,sticks[1],padState.rx,padState.ry,releasePad.rx,releasePad.ry);
 
-  auto trigger = [&](size_t id,XrPath path,float& dst,float& old) {
-    const auto value = getF(aTrigger,path);
+  auto trigger = [&](size_t id,const std::optional<float>& value,float& dst,float& old) {
     if(admit(id,value.has_value(),value.value_or(0.f)>0.35f,old>0.35f))
       dst = *value;
     else
       old = 0.f;
     };
-  trigger(TriggerLeft, hands[0].path,padState.lt,releasePad.lt);
-  trigger(TriggerRight,hands[1].path,padState.rt,releasePad.rt);
+  trigger(TriggerLeft, hands[0].trigger,padState.lt,releasePad.lt);
+  trigger(TriggerRight,hands[1].trigger,padState.rt,releasePad.rt);
   }
 
 V3 XrWindow::Impl::handleCenter() const {
@@ -1345,6 +1457,8 @@ Grip XrWindow::Impl::targetAt(float x, float y) const {
   const V3 button = buttonCenter();
   if(buttonReady && roomAvailable() && std::abs(x-button.x)<0.065f && std::abs(y-button.y)<0.04f)
     return Grip::Environment;
+  if(sliderRow()>=0 && x>=button.x+DimLeft-0.025f && x<=button.x+DimLeft+DimTravel+0.025f && std::abs(y-button.y)<0.032f)
+    return Grip::Dim;
   return Grip::None;
   }
 
@@ -1664,6 +1778,7 @@ bool XrWindow::Impl::setEnvironment(bool useSky) {
      !ok(useSky ? xrPausePassthrough(passthrough) : xrStartPassthrough(passthrough), "switch passthrough"))
     return false;
   immersive = useSky;
+  lastDimHover = 0;
   Log::i("OpenXR: environment ", immersive ? "dusk panorama" : "passthrough");
   return true;
   }
@@ -1711,7 +1826,7 @@ void XrWindow::Impl::fillStaticImages() {
   resources.fence = fence;
 
   // All artwork uploads are synchronous and share these resources for this frame only.
-  for(auto fill : {&Impl::fillHandle, &Impl::fillCorners, &Impl::fillEnvironment}) {
+  for(auto fill : {&Impl::fillHandle, &Impl::fillCorners, &Impl::fillEnvironment, &Impl::fillSlider}) {
     try {
       (this->*fill)(cmd,fence);
       }
@@ -1753,6 +1868,36 @@ void XrWindow::Impl::fillEnvironment(VkCommandBuffer cmd, VkFence fence) {
   // never strand a wearer in VR when passthrough is available.
   if(buttonReady && Gothic::settingsGetI("INTERNAL","xrEnvironment")==1)
     restoreSky = !setEnvironment(true);
+  }
+
+void XrWindow::Impl::fillSlider(VkCommandBuffer cmd, VkFence fence) {
+  // Settings become available on the first rendered frame. A replacement
+  // passthrough layer receives the same style from createPassthrough().
+  const float saved = Gothic::settingsGetF("INTERNAL","xrPassthroughDim");
+  passthroughDim = std::isfinite(saved) ? std::clamp(saved,0.f,1.f) : 0.f;
+  if(!buttonReady || dimSlider==XR_NULL_HANDLE)
+    return;
+
+  constexpr int width = RailW+KnobW, height = SliderRows*KnobW;
+  std::vector<uint32_t> px(size_t(width)*height);
+  for(int y=0; y<height; ++y) {
+    const float fade = float(y/KnobW+1)/float(SliderRows);
+    const float dy = float(y%KnobW)+0.5f-float(KnobW)/2.f;
+    for(int x=0; x<width; ++x) {
+      const bool knob = x>=RailW;
+      const float dx = knob ? float(x-RailW)+0.5f-float(KnobW)*0.5f :
+                              std::max(std::abs(float(x)+0.5f-float(RailW)*0.5f)-73.f,0.f);
+      const float radius = knob ? 9.f : 5.f;
+      const float d = std::hypot(dx,dy);
+      const float ink = knob ? std::clamp(radius-2.f-d,0.f,1.f) :
+                               std::clamp(1.35f-std::abs(d-radius+1.f),0.f,1.f)*0.45f;
+      px[size_t(y)*width+size_t(x)] = pixel(0.12f+0.83f*ink,0.15f+0.82f*ink,0.2f+0.8f*ink,
+                                    fade*(knob ? 0.96f : 0.82f),radius-d+0.5f);
+      }
+    }
+  sliderReady = uploadStatic(vk,cmd,fence,dimSlider,width,height,1,px);
+  if(sliderReady && passthroughDim>0.f)
+    applyDim(passthroughDim);
   }
 
 void XrWindow::Impl::fillHandle(VkCommandBuffer cmd, VkFence fence) {
@@ -1919,8 +2064,8 @@ bool XrWindow::submit(bool rendered) {
     SystemApi::exit();
     }
 
-  // One background, two eyes, a button, a handle and two corner brackets.
-  std::array<const XrCompositionLayerBaseHeader*,7> layers;
+  // Background, eyes, button, slider rail and thumb, handle and corner brackets.
+  std::array<const XrCompositionLayerBaseHeader*,9> layers;
   uint32_t layerCount = 0;
   auto addLayer = [&](const auto& layer) {
     layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer);
@@ -1950,6 +2095,7 @@ bool XrWindow::submit(bool rendered) {
       addLayer(sky1);
       }
     } else if(s.roomAvailable()) {
+      pt.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     pt.layerHandle = s.passthroughLayer;
     addLayer(pt);
     }
@@ -2019,6 +2165,26 @@ bool XrWindow::submit(bool rendered) {
     button.pose.position = toXr(toWorld(s.windowPose, s.buttonCenter()));
     button.size = {0.104f,0.065f};
     addLayer(button);
+    }
+  XrCompositionLayerQuad slider[2] = {{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
+  const int row = s.sliderRow();
+  if(hasImage && row>=0) {
+    const auto center = s.buttonCenter();
+    for(unsigned part=0; part<2; ++part) {
+      const bool knob = part==1;
+      auto& q = slider[part];
+      q.layerFlags = chromeFlags;
+      q.space = s.localSpace;
+      q.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+      q.subImage.swapchain = s.dimSlider;
+      q.subImage.imageRect = {{knob ? Impl::RailW : 0,row*Impl::KnobW},
+                              {knob ? Impl::KnobW : Impl::RailW,Impl::KnobW}};
+      q.pose = s.windowPose;
+      const float x = Impl::DimLeft+Impl::DimTravel*(knob ? s.passthroughDim : 0.5f);
+      q.pose.position = toXr(toWorld(s.windowPose,center+V3{x,0.f,0.f}));
+      q.size = knob ? XrExtent2Df{0.034f,0.034f} : XrExtent2Df{0.22f,0.033f};
+      addLayer(q);
+      }
     }
   XrCompositionLayerQuad handle = {XR_TYPE_COMPOSITION_LAYER_QUAD};
   std::array<XrCompositionLayerQuad,2> corners;
