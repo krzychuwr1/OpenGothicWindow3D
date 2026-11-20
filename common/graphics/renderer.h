@@ -8,6 +8,8 @@
 #include <Tempest/UniformBuffer>
 #include <Tempest/VectorImage>
 
+#include <optional>
+
 #include "worldview.h"
 #include "shaders.h"
 #include "xr/layeredtargets.h"
@@ -50,8 +52,11 @@ class Renderer final {
       }
     // -show motion: the eye's motion vectors painted over its picture (debugging)
     void drawSpaceWarpDebug(Tempest::Encoder<Tempest::CommandBuffer>& cmd, Tempest::Attachment& motion, Tempest::Attachment& result);
+#ifdef OPENGOTHIC_XR
     void drawSpaceWarp(Tempest::Encoder<Tempest::CommandBuffer>& cmd, WorldView& wview,
-                       Tempest::Attachment& motion, Tempest::ZBuffer& depth, Tempest::Attachment* debugOutput);
+                       Tempest::Attachment& motion, Tempest::ZBuffer& depth, const Tempest::VectorImage::Mesh& ui,
+                       const Tempest::VectorImage::Mesh* counters, bool& hudReady, Tempest::Attachment* debugOutput);
+#endif
 
     Tempest::Attachment screenshoot(uint8_t frameId, Tempest::Size size);
 
@@ -59,6 +64,11 @@ class Renderer final {
     Tempest::Attachment debugMotion;
 #ifdef OPENGOTHIC_XR
     int lightingEye = -1;
+    bool ensureHudMask(Tempest::Size size);
+    uint64_t hudRetryAfter = 0;
+    Tempest::Attachment hudTransmittance;
+    Tempest::RenderPipeline hudMotion;
+    std::optional<Tempest::Builtin::Transmittance> hudBlend;
 #endif
     bool secondView = false;
     bool motionVectors = false, historyValid = false;

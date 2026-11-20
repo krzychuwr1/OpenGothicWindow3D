@@ -2,6 +2,8 @@
 
 #if defined(__ANDROID__) && defined(OPENGOTHIC_XR)
 #include <Tempest/VulkanInterop>
+#include <Tempest/Except>
+#include "shader.h"
 #include "xr/xrwindow.h"
 #endif
 
@@ -2165,8 +2167,46 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
   return true;
   }
 
+#ifdef OPENGOTHIC_XR
+bool Renderer::ensureHudMask(Size size) {
+  if(hudTransmittance.size()==size && hudBlend && !hudMotion.isEmpty())
+    return true;
+  const auto now = Application::tickCount();
+  if(now<hudRetryAfter)
+    return false;
+  auto& device = Resources::device();
+  try {
+    if(!hudBlend)
+      hudBlend.emplace(device);
+    if(hudMotion.isEmpty()) {
+      const auto vs = GothicShader::get("triangle.vert.sprv");
+      const auto fs = GothicShader::get("spacewarp_hud.frag.sprv");
+      RenderState st;
+      st.setZTestMode(RenderState::ZTestMode::Always);
+      st.setZWriteEnabled(true);
+      hudMotion = device.pipeline(Triangles,st,device.shader(vs.data,vs.len),device.shader(fs.data,fs.len));
+      }
+    const auto& caps = device.properties();
+    const auto fmt = caps.hasAttachFormat(TextureFormat::R8) && caps.hasSamplerFormat(TextureFormat::R8)
+                   ? TextureFormat::R8 : TextureFormat::RGBA8;
+    auto mask = device.attachment(fmt,size);
+    Resources::recycle(std::move(hudTransmittance));
+    hudTransmittance = std::move(mask);
+    return true;
+    }
+  catch(const std::bad_alloc&) {}
+  catch(const std::system_error& e) {
+    if(e.code()!=GraphicsErrc::OutOfVideoMemory && e.code()!=GraphicsErrc::OutOfHostMemory)
+      throw;
+    }
+  Log::e("SpaceWarp HUD mask allocation failed, retrying in three seconds");
+  hudRetryAfter = now+3000;
+  return false;
+  }
+
 void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
-                             Attachment& motion, ZBuffer& depth, Attachment* debugOutput) {
+                             Attachment& motion, ZBuffer& depth, const VectorImage::Mesh& ui,
+                             const VectorImage::Mesh* counters, bool& hudReady, Attachment* debugOutput) {
   struct Push {
     Matrix4x4 prevViewProject;
     Vec4      originLwc;
@@ -2176,6 +2216,19 @@ void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
   push.prevViewProject = prevEye;
   push.originLwc       = Vec4(scene.originLwc.x, scene.originLwc.y, scene.originLwc.z, 0);
   push.invSize         = Vec2(1.f/float(motion.w()), 1.f/float(motion.h()));
+
+  const bool inventoryOpen = counters!=nullptr;
+  const bool hasHud = !ui.isEmpty() || inventoryOpen;
+  if(hasHud && (!hudReady || hudTransmittance.size()!=motion.size())) {
+    hudReady = ensureHudMask(motion.size());
+    if(hudReady) {
+      cmd.setDebugMarker("SpaceWarp HUD coverage");
+      cmd.setFramebuffer({{hudTransmittance, Vec4(1,1,1,1), Tempest::Preserve}});
+      ui.draw(cmd, &*hudBlend);
+      if(counters!=nullptr)
+        counters->draw(cmd, &*hudBlend);
+      }
+    }
 
   // Imported images rest in attachment layout for OpenXR. Sample a regular
   // attachment for the optional debug overlay and copy its signed values out.
@@ -2192,6 +2245,18 @@ void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
   cmd.setDebugMarker("SpaceWarp objects");
   if(historyValid)
     wview.drawMotion(cmd);
+  if(hasHud && hudReady) {
+    cmd.setDebugMarker("SpaceWarp HUD");
+    cmd.setBinding(0, hudTransmittance, Sampler::nearest());
+    if(inventoryOpen)
+      cmd.setBinding(1, zbufferUi, Sampler::nearest());
+    else
+      cmd.setBinding(1, hudTransmittance, Sampler::nearest());
+    uint32_t hasItems = inventoryOpen ? 1u : 0u;
+    cmd.setPushData(&hasItems, sizeof(hasItems));
+    cmd.setPipeline(hudMotion);
+    cmd.draw(nullptr, 0, 3);
+    }
   if(debugOutput) {
     cmd.setFramebuffer({{motion, Tempest::Discard, Tempest::Preserve}});
     cmd.setBinding(0, target, Sampler::nearest());
@@ -2200,6 +2265,8 @@ void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
     drawSpaceWarpDebug(cmd, target, *debugOutput);
     }
   }
+
+#endif
 
 void Renderer::drawSpaceWarpDebug(Encoder<CommandBuffer>& cmd, Attachment& motion, Attachment& result) {
   struct Push { Vec2 invSize; } push;

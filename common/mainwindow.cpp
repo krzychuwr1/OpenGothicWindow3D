@@ -1541,6 +1541,7 @@ void MainWindow::renderFrame(bool xr) {
   const bool warp = xr && XrWindow::inst()->isSpaceWarpSupported() && Gothic::settingsGetI("INTERNAL","xrSpaceWarp")!=0 &&
                     Gothic::inst().camera()!=nullptr && Gothic::inst().worldView()!=nullptr && !video.isActive();
 #if defined(OPENGOTHIC_XR)
+  bool hudReady = false;
   const bool foveate = xr && XrWindow::inst()->isFoveationSupported() && Gothic::settingsGetI("INTERNAL","xrFoveation")!=0;
   if(warp && Gothic::inst().camera()->takeCameraCut())
     eyeHistoryValid = false;
@@ -1629,14 +1630,17 @@ void MainWindow::renderFrame(bool xr) {
     auto enc = cmd.startEncoding(device);
     timing.encStart += nowUs()-ts;
     renderer.draw(backbuf,enc,cmdId,uiMesh[cmdId],numMesh[cmdId],camera!=nullptr ? &eyeMesh[cmdId] : nullptr,inventory,video);
+#ifdef OPENGOTHIC_XR
     if(stereo) {
       auto* motion = XrWindow::inst()->motionTarget(uint8_t(view));
       auto* depth  = XrWindow::inst()->depthTarget (uint8_t(view));
       if(motion!=nullptr && depth!=nullptr) {
-        renderer.drawSpaceWarp(enc, *Gothic::inst().worldView(), *motion, *depth,
+        const auto* counters = inventory.isOpen()!=InventoryMenu::State::Closed ? &numMesh[cmdId] : nullptr;
+        renderer.drawSpaceWarp(enc, *Gothic::inst().worldView(), *motion, *depth, uiMesh[cmdId], counters, hudReady,
                                CommandLine::inst().debugShow("motion") ? &backbuf : nullptr);
         }
       }
+#endif
     const uint64_t te = nowUs();
     timing.drawCall += te-ts;
     }
