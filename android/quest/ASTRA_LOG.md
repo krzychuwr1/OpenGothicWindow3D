@@ -689,7 +689,7 @@ On Quest a diagnostic build rejected only the near-touch action at startup. The 
 
 Quest reported a three-worker limit but still created sixteen threads and woke the full pool when dispatching jobs. The Android XR pool now starts three. Its job partitioning and the desktop pool size are unchanged. A host fixture running the production worker code counted sixteen versus three OS threads and passed all 656 job and shutdown checks on each build, including explicit tasks outnumbering the pool.
 
-City main street, ordinary stereo, CPU 1 / GPU 0, 14 VrApi samples and the last four complete CPU/GPU reports per run.
+City main street, ordinary stereo, CPU 1 / GPU 0. The first three runs recorded 14 VrApi samples and the final control recorded 15. CPU/GPU means use the last four complete reports per run.
 
 | Run | Update ms | Animation ms | Game tick ms | Stereo record ms | GPU ms/eye | FPS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -699,3 +699,11 @@ City main street, ordinary stereo, CPU 1 / GPU 0, 14 VrApi samples and the last 
 | Control 2 | 4.761 | 1.576 | 3.114 | 5.520 | 8.003 | 60.7 |
 
 Mean CPU update fell by 0.201 ms/frame, including 0.162 ms in animation. Mean recording rose by 0.005 ms. Both trials beat both controls on update time. This comparison covers the city at low clocks. The final control ended stopped and released to sleep at 95% and 42.0 °C.
+
+### Recover ordinary stereo when optional SpaceWarp targets run out of memory
+
+Session startup prepared the optional motion and depth swapchains even when the player had SpaceWarp off. A host allocation failure or a Vulkan image-view allocation failure could escape startup after the required color targets were already ready. Session setup now releases borrowed views before destroying their swapchains, disables SpaceWarp for that session, and proceeds with ordinary stereo. It also checks both format enumeration calls and retains only successfully created handles. Device loss and unrelated errors still propagate.
+
+A host runtime injected failures in enumeration, swapchain creation and all twelve motion/depth view positions. It also wrote unusable handles on failed creation. The original failed 132 of 332 checks and the fix passed all 332. The uninstrumented Android Release linked.
+
+A Quest diagnostic injected a GPU allocation error after wrapping the first right-eye depth image, with SpaceWarp and the VR environment requested. Six sampled frames successfully submitted five compositor layers in ordinary stereo with zero retained motion handles or depth views. The 1440 × 1440 compositor capture showed the city under the dusk sky. VrApi reported 67.5 fps over six low-clock samples. This exercised recovery from an injected allocation error. Actual system memory exhaustion and a wearer's stereo perception were not tested. The uninstrumented APK was restored and its installed SHA-256 matched `cd65aef42168d7796ed937c7e49ebfc6c384374b3d9efa7d24a84e149af2b29b`. The game was stopped, sleep released and owner INI hash unchanged at 96% and 39.0 °C.

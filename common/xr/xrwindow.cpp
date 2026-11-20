@@ -172,7 +172,7 @@ struct XrWindow::Impl {
   XrPosef                  eyePose[2] = {};
   XrFovf                   eyeFov [2] = {};
   float                    eyeNear[2] = {};
-  void createSpaceWarpSwapchains();
+  bool createSpaceWarpSwapchains();
   void destroySpaceWarpSwapchains();
   bool releaseSpaceWarp();
   VkCommandPool            pool = VK_NULL_HANDLE;
@@ -563,7 +563,21 @@ void XrWindow::Impl::createSession() {
     }
 
   createSwapchains();
-  createSpaceWarpSwapchains();
+  if(hasSpaceWarp) {
+    bool ready = false;
+    try {
+      ready = createSpaceWarpSwapchains();
+      }
+    catch(const std::bad_alloc&) {}
+    catch(const std::system_error& e) {
+      if(e.code()!=GraphicsErrc::OutOfVideoMemory && e.code()!=GraphicsErrc::OutOfHostMemory)
+        throw;
+      }
+    if(!ready) {
+      destroySpaceWarpSwapchains();
+      Log::e("OpenXR: SpaceWarp targets unavailable, using ordinary stereo");
+      }
+    }
   createPassthrough();
   createActions();
   }
@@ -650,22 +664,22 @@ void XrWindow::Impl::createSwapchains() {
     }
   }
 
-void XrWindow::Impl::createSpaceWarpSwapchains() {
-  if(!hasSpaceWarp)
-    return;
+bool XrWindow::Impl::createSpaceWarpSwapchains() {
   // Motion vectors at a quarter of the window resolution (the runtime upsamples them)
   mvWidth  = std::max(width/4u,  16u);
   mvHeight = std::max(height/4u, 16u);
 
   uint32_t count = 0;
-  xrEnumerateSwapchainFormats(session, 0, &count, nullptr);
+  if(!ok(xrEnumerateSwapchainFormats(session,0,&count,nullptr),"count SpaceWarp formats") || count==0)
+    return false;
   std::vector<int64_t> formats(count);
-  xrEnumerateSwapchainFormats(session, count, &count, formats.data());
+  if(!ok(xrEnumerateSwapchainFormats(session,count,&count,formats.data()),"enumerate SpaceWarp formats"))
+    return false;
+  formats.resize(count);
   auto supported = [&](int64_t f) { return std::find(formats.begin(), formats.end(), f)!=formats.end(); };
   if(!supported(VK_FORMAT_R16G16B16A16_SFLOAT) || !supported(VK_FORMAT_D32_SFLOAT)) {
     Log::e("OpenXR: SpaceWarp needs RGBA16F and D32F swapchains");
-    hasSpaceWarp = false;
-    return;
+    return false;
     }
 
   for(int eye=0; eye<2; ++eye) {
@@ -678,26 +692,25 @@ void XrWindow::Impl::createSpaceWarpSwapchains() {
     info.faceCount   = 1;
     info.arraySize   = 1;
     info.mipCount    = 1;
-    if(!ok(xrCreateSwapchain(session, &info, &mvSwapchain[eye]), "motion vector swapchain")) {
-      destroySpaceWarpSwapchains();
-      return;
-      }
+    XrSwapchain motion = XR_NULL_HANDLE;
+    if(!ok(xrCreateSwapchain(session, &info, &motion), "motion vector swapchain"))
+      return false;
+    mvSwapchain[eye] = motion;
     info.usageFlags  = XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
     info.format      = VK_FORMAT_D32_SFLOAT;
-    if(!ok(xrCreateSwapchain(session, &info, &depthSwapchain[eye]), "depth swapchain")) {
-      destroySpaceWarpSwapchains();
-      return;
-      }
+    XrSwapchain depth = XR_NULL_HANDLE;
+    if(!ok(xrCreateSwapchain(session, &info, &depth), "depth swapchain"))
+      return false;
+    depthSwapchain[eye] = depth;
     for(auto& i:swapchainImages(mvSwapchain[eye]))
       mvTargets[eye].push_back(vulkanBorrowColorAttachment(*device, i.image, mvWidth, mvHeight, TextureFormat::RGBA16F));
     for(auto& i:swapchainImages(depthSwapchain[eye]))
       depthTargets[eye].push_back(vulkanBorrowDepthAttachment(*device, i.image, mvWidth, mvHeight, TextureFormat::Depth32F));
-    if(mvTargets[eye].empty() || depthTargets[eye].empty()) {
-      destroySpaceWarpSwapchains();
-      return;
-      }
+    if(mvTargets[eye].empty() || depthTargets[eye].empty())
+      return false;
     }
   Log::i("OpenXR: SpaceWarp available, motion vectors ", mvWidth, "x", mvHeight);
+  return true;
   }
 
 void XrWindow::Impl::destroySpaceWarpSwapchains() {
