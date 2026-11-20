@@ -22,6 +22,7 @@ class Shaders {
       T_Shadow,
       T_Vsm,
       T_Main,
+      T_Motion,
       };
 
     struct Options {

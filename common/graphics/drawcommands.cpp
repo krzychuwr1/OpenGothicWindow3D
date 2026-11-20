@@ -150,6 +150,7 @@ uint16_t DrawCommands::commandId(const Material& m, Type type, uint32_t bucketId
   auto pShadow  = Shaders::inst().materialPipeline(m, type, Shaders::T_Shadow, bindless);
   auto pVsm     = Shaders::inst().materialPipeline(m, type, Shaders::T_Vsm,    bindless);
   auto pHiZ     = Shaders::inst().materialPipeline(m, type, Shaders::T_Depth,  bindless);
+  auto pMotion  = Shaders::inst().materialPipeline(m, type, Shaders::T_Motion, bindless);
   if(pMain==nullptr && pShadow==nullptr && pHiZ==nullptr)
     return uint16_t(-1);
 
@@ -168,6 +169,7 @@ uint16_t DrawCommands::commandId(const Material& m, Type type, uint32_t bucketId
   cx.pShadow     = pShadow;
   cx.pVsm        = pVsm;
   cx.pHiZ        = pHiZ;
+  cx.pMotion     = pMotion;
   cx.bucketId    = bindless ? 0xFFFFFFFF : bucketId;
   cx.type        = type;
   cx.alpha       = m.alpha;
@@ -427,6 +429,26 @@ void DrawCommands::drawHiZ(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
     if(cx.isMeshShader())
       cmd.dispatchMeshIndirect(view.indirectCmd, sizeof(IndirectCmd)*id + sizeof(uint32_t)); else
       cmd.drawIndirect(view.indirectCmd, sizeof(IndirectCmd)*id);
+    }
+  }
+
+void DrawCommands::drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const Tempest::StorageBuffer& prevInstances) {
+  struct Push { uint32_t firstMeshlet; uint32_t meshletCount; } push = {};
+  auto& view = views[SceneGlobals::V_Main];
+  for(auto* i:ord) {
+    auto& cx = *i;
+    if(cx.pMotion==nullptr || cx.maxPayload==0)
+      continue;
+    if(cx.alpha!=Material::Solid && cx.alpha!=Material::AlphaTest)
+      continue;
+    auto id  = size_t(std::distance(this->cmd.data(), &cx));
+    push.firstMeshlet = cx.firstPayload;
+    push.meshletCount = cx.maxPayload;
+    setBindings(cmd, cx, SceneGlobals::V_Main);
+    cmd.setBinding(15, prevInstances);
+    cmd.setPushData(push);
+    cmd.setPipeline(*cx.pMotion);
+    cmd.drawIndirect(view.indirectCmd, sizeof(IndirectCmd)*id);
     }
   }
 

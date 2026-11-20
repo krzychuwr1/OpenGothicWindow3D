@@ -95,6 +95,7 @@ class SceneGlobals final {
       Tempest::Matrix4x4              viewProject2VirtualShadow;
       Tempest::Vec4                   vsmDdx, vsmDdy;
       Tempest::Matrix4x4              view, project, projectInv;
+      Tempest::Matrix4x4              prevViewProject;
       Tempest::Vec3                   sunDir        = {0,0,1};
       float                           waveAnim      = 0;
       Tempest::Vec3                   lightAmb      = {1,1,1};
@@ -132,6 +133,8 @@ class SceneGlobals final {
     uint64_t                          windPeriod = 6000;
 
     RtScene                           rtScene;
+
+    void                              setPrevViewProject(const Tempest::Matrix4x4& m) { uboGlobalCpu.prevViewProject = m; }
 
   private:
     UboGlobal                         uboGlobalCpu;

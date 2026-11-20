@@ -52,6 +52,9 @@ class InstanceStorage {
     Id   alloc(const size_t size);
     bool realloc(Id& id, const size_t size);
     auto ssbo () const -> const Tempest::StorageBuffer&;
+    // Previous frame's instance and bone data (SpaceWarp motion vectors): copy before commit()
+    void snapshotPrev(Tempest::Encoder<Tempest::CommandBuffer>& cmd);
+    auto prevSsbo() const -> const Tempest::StorageBuffer& { return prevGpu.isEmpty() ? dataGpu : prevGpu; }
     bool commit(Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t fId);
     void join();
 
@@ -74,6 +77,7 @@ class InstanceStorage {
     std::vector<Path>       patchBlock;
 
     Tempest::StorageBuffer  dataGpu;
+    Tempest::StorageBuffer  prevGpu;
     std::vector<uint8_t>    dataCpu;
 
     std::thread             uploadTh;

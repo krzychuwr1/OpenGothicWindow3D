@@ -121,6 +121,20 @@ InstanceStorage::~InstanceStorage() {
   uploadTh.join();
   }
 
+void InstanceStorage::snapshotPrev(Encoder<CommandBuffer>& cmd) {
+  if(dataGpu.isEmpty())
+    return;
+  if(prevGpu.byteSize()!=dataGpu.byteSize()) {
+    Resources::recycle(std::move(prevGpu));
+    prevGpu = Resources::device().ssbo(BufferHeap::Device, Tempest::Uninitialized, dataGpu.byteSize());
+    }
+  cmd.setFramebuffer({});
+  cmd.setBinding(0, prevGpu);
+  cmd.setBinding(1, dataGpu);
+  cmd.setPipeline(Shaders::inst().copyBuf);
+  cmd.dispatchThreads(dataGpu.byteSize()/sizeof(uint32_t));
+  }
+
 bool InstanceStorage::commit(Encoder<CommandBuffer>& cmd, uint8_t fId) {
   auto& device = Resources::device();
 

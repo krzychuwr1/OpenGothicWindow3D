@@ -52,6 +52,11 @@ layout(location = 0) out flat uint bucketIdOut[]; //TODO: per-primitive
 layout(location = 1) out Varyings  shOut[];
 #endif
 
+#if defined(GL_VERTEX_SHADER) && defined(MOTION_VECTORS)
+layout(location = 4) out vec4 motionCur;
+layout(location = 5) out vec4 motionPrev;
+#endif
+
 #if defined(GL_VERTEX_SHADER) && defined(VIRTUAL_SHADOW)
 layout(location = 3) out flat uint vsmMipIdOut;
 #elif defined(VIRTUAL_SHADOW)
@@ -217,10 +222,32 @@ void vertexShader(const uvec4 task) {
   bucketIdOut = bucketId;
 #endif
 
+#if defined(MOTION_VECTORS) && (MESH_TYPE==T_OBJ)
+  {
+    // Movable objects that did not move are covered by the camera-only vectors
+    const uint o = instanceId*16;
+    bool moved = false;
+    for(uint i=0; i<12; ++i)
+      moved = moved || (instanceMem[o+i]!=instanceMemPrev[o+i]);
+    if(!moved) {
+      gl_Position = vec4(uintBitsToFloat(0x7fc00000));
+      return;
+      }
+  }
+#endif
+
   Varyings var;
   uint idx = processPrimitive(meshletId, bucketId, laneID)[gl_VertexIndex%3];
   vec4 pos = processVertex(var, instanceId, meshletId, bucketId, idx);
   gl_Position = pos;
+#if defined(MOTION_VECTORS)
+  {
+    const uint   vboOffset = meshletId * MaxVert + idx;
+    const Vertex vert      = pullVertex(bucketId, vboOffset);
+    motionCur  = pos;
+    motionPrev = scene.prevViewProject*vec4(processVertexPrev(vert, bucketId, instanceId, vboOffset), 1.0);
+  }
+#endif
 #if defined(MAT_VARYINGS)
   shOut       = var;
 #endif

@@ -702,8 +702,11 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
   cpuPhases.mark("setup");
   prepareUniforms(wview);
   cpuPhases.mark("uniforms");
+  wview.setPrevViewProject(camera.eyeViewProjectFrom(motionVectors && prevBaseValid ? prevBase : camera.baseView()));
   wview.preFrameUpdate(camera, tickCount, fId, secondView);
   cpuPhases.mark("preFrameUpdate");
+  if(motionVectors && !secondView)
+    wview.snapshotPrevInstances(cmd); // before this frame's instance data lands
   wview.prepareGlobals(cmd,fId);
   cpuPhases.mark("prepareGlobals");
 
@@ -2104,7 +2107,7 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
   return true;
   }
 
-void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, const WorldView& wview,
+void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
                              Attachment& motion, ZBuffer& depth, const Matrix4x4& prevViewProject) {
   struct Push {
     Matrix4x4 prevViewProject;
@@ -2123,6 +2126,10 @@ void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, const WorldView& wview
   cmd.setPushData(&push, sizeof(push));
   cmd.setPipeline(shaders.spaceWarpMv);
   cmd.draw(nullptr, 0, 3);
+
+  // Moving objects (characters, animated meshes, props) with their own previous pose
+  cmd.setDebugMarker("SpaceWarp objects");
+  wview.drawMotion(cmd);
   }
 
 void Renderer::drawSky(Encoder<CommandBuffer>& cmd, const WorldView& wview) {

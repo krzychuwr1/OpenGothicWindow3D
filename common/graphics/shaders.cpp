@@ -516,6 +516,37 @@ const RenderPipeline* Shaders::materialPipeline(const Material& mat, DrawCommand
   const auto alpha   = (mat.isGhost ? Material::Ghost : mat.alpha);
   const bool trivial = (!mat.hasUvAnimation() && alpha==Material::Solid && t==DrawCommands::Landscape);
 
+  if(pt==PipelineType::T_Motion) {
+    // Moving objects: characters, animated meshes and movable objects (the shader drops movable
+    // ones whose transform did not change, so only carried weapons, opening doors etc. remain);
+    // alpha-tested surfaces are drawn as solid
+    if(t!=DrawCommands::Movable && t!=DrawCommands::Animated && t!=DrawCommands::Morph)
+      return nullptr;
+    if(alpha!=Material::Solid && alpha!=Material::AlphaTest)
+      return nullptr;
+    for(auto& i:materials) {
+      if(i.type==t && i.pipelineType==pt && i.bindless==bl)
+        return &i.pipeline;
+      }
+    RenderState st;
+    st.setCullFaceMode(RenderState::CullMode::Front);
+    st.setZTestMode   (RenderState::ZTestMode::LEqual);
+    st.setZWriteEnabled(false);
+    const char* tok = (t==DrawCommands::Animated ? "ani" : (t==DrawCommands::Morph ? "mph" : "obj"));
+    materials.emplace_front();
+    auto& b = materials.front();
+    b.alpha        = Material::Solid;
+    b.type         = t;
+    b.pipelineType = pt;
+    b.bindless     = bl;
+    b.trivial      = false;
+    auto& device = Resources::device();
+    auto  shVs   = GothicShader::get(string_frm("main_", tok, "_m", bl ? "_bindless" : "_slot", ".vert.sprv"));
+    auto  shFs   = GothicShader::get("main_motion.frag.sprv");
+    b.pipeline = device.pipeline(Triangles, st, device.shader(shVs.data,shVs.len), device.shader(shFs.data,shFs.len));
+    return &b.pipeline;
+    }
+
   for(auto& i:materials) {
     if(i.alpha==alpha && i.type==t && i.pipelineType==pt && i.bindless==bl && i.trivial==trivial)
       return &i.pipeline;
@@ -646,6 +677,8 @@ const RenderPipeline* Shaders::materialPipeline(const Material& mat, DrawCommand
   const char* typeVs = "";
   const char* typeFs = "";
   switch(pt) {
+    case T_Motion:
+      return nullptr;
     case T_Shadow:
     case T_Depth:
       typeVs = typeVsD;

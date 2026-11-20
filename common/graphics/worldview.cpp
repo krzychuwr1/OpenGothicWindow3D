@@ -157,6 +157,14 @@ void WorldView::dbgCountVisible() const {
   Tempest::Log::i(s);
   }
 
+void WorldView::drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
+  visuals.drawMotion(cmd);
+  }
+
+void WorldView::snapshotPrevInstances(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
+  visuals.snapshotPrevInstances(cmd);
+  }
+
 void WorldView::visibilityPass(Tempest::Encoder<Tempest::CommandBuffer>& cmd, int pass) {
   cmd.setDebugMarker("Visibility");
   visuals.visibilityPass(cmd, pass);

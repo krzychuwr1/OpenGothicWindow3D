@@ -36,13 +36,19 @@ class Renderer final {
     void dbgDraw(Tempest::Painter& painter);
 
     // Application SpaceWarp: motion vectors and depth of the last drawn view (XR)
-    void drawSpaceWarp(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const WorldView& wview,
+    // Motion vectors for this frame: previous base camera view (SpaceWarp)
+    void setMotionVectors(bool enable, const Tempest::Matrix4x4& prevBaseView, bool prevValid) {
+      motionVectors = enable; prevBase = prevBaseView; prevBaseValid = prevValid;
+      }
+    void drawSpaceWarp(Tempest::Encoder<Tempest::CommandBuffer>& cmd, WorldView& wview,
                        Tempest::Attachment& motion, Tempest::ZBuffer& depth, const Tempest::Matrix4x4& prevViewProject);
 
     Tempest::Attachment screenshoot(uint8_t frameId, Tempest::Size size);
 
   private:
     bool secondView = false;
+    bool motionVectors = false, prevBaseValid = false;
+    Tempest::Matrix4x4 prevBase;
 
     enum Quality : uint8_t {
       None,

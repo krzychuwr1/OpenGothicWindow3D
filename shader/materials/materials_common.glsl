@@ -115,6 +115,10 @@ layout(binding = L_Scene,    std140) uniform UboScene     { SceneDesc scene;    
 
 #if (MESH_TYPE!=T_PFX)
 layout(binding = L_Instance, std430) readonly buffer Mem  { uint    instanceMem[]; };
+#if defined(MOTION_VECTORS)
+// Instance and bone data of the previous frame (same layout as instanceMem)
+layout(binding = 15, std430) readonly buffer MemPrev { uint instanceMemPrev[]; };
+#endif
 layout(binding = L_Payload,  std430) readonly buffer Pbo  { uvec4   payload[];     };
 layout(binding = L_Bucket,   std140) readonly buffer Bbo  { Bucket  bucket[];      };
 #endif

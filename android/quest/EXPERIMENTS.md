@@ -24,15 +24,32 @@ graphics-device choice, which has no use on the headset, is repurposed for it. I
 - The runtime then runs the game at half the display rate (36 of 72 Hz) and synthesises the
   other frames from the vectors and depth (VrApi: `FPS=36/72`, `VSnc=2`, `Stale=0`).
 
-**Cost:** the vector pass is a full-screen pass at 400x225 per eye that reconstructs each pixel's
-world position from the scene depth and projects it with the previous frame's game camera seen
-through the current eye: about 0.1 ms per eye.
+**Motion vectors**
 
-**Limitation:** vectors describe game-camera motion only. Moving characters, weapons and other
-animated objects are treated as static, so in synthesised frames they keep their previous pose
-(they effectively update at 36 fps). Per-object vectors need the G-buffer pass to output each
-vertex's previous position, including skinned meshes with last frame's bone matrices; expected
-cost roughly 0.5-1.5 ms per eye plus keeping previous skeletons.
+1. Camera pass: a full-screen pass at 400x225 per eye reconstructs each pixel's world position
+   from the scene depth and projects it with the previous frame's game camera seen through the
+   current eye (`Renderer::drawSpaceWarp`). About 0.1 ms per eye: one depth read and two matrix
+   products per pixel, no geometry. It also writes the depth image.
+2. Object pass: moving objects are drawn again into the same images, depth-tested against that
+   depth, with a material shader variant (`MOTION_VECTORS` in `materials/main.vert`,
+   `materials/motion.frag`) that skins and transforms every vertex twice: with this frame's and
+   with the previous frame's instance and bone matrices. The previous ones come from a copy of
+   the instance buffer taken each frame before the new data lands (`InstanceStorage::snapshotPrev`).
+   - Characters and animated meshes are always drawn.
+   - Movable objects are drawn only if their transform changed since the previous frame (checked
+     at the start of the vertex shader), so carried weapons, shields, torches and opening doors
+     get vectors while the hundreds of props in a town are skipped.
+   - Cost at the low test clocks in Khorinis: about 1.1 ms per eye (0.84 ms with characters only,
+     1.7 ms if every movable prop were drawn).
+
+**Limitations**
+
+- Morph meshes use this frame's morph offsets for both frames (their own deformation is not in the
+  vectors, only their movement).
+- Alpha-tested surfaces of moving objects are drawn as solid.
+- Distant NPCs are posed every 2nd or 4th frame (animation level of detail), so their vectors are
+  zero on frames without an update.
+- Particles carry no vectors.
 
 ## Multiview
 

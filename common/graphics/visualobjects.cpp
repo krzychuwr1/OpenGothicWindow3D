@@ -596,6 +596,14 @@ void VisualObjects::drawShadow(Tempest::Encoder<Tempest::CommandBuffer>& cmd, in
   drawCmd.drawCommon(cmd, view, Material::AlphaTest, casters);
   }
 
+void VisualObjects::drawMotion(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
+  drawCmd.drawMotion(cmd, instanceMem.prevSsbo());
+  }
+
+void VisualObjects::snapshotPrevInstances(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
+  instanceMem.snapshotPrev(cmd);
+  }
+
 void VisualObjects::drawVsm(Tempest::Encoder<Tempest::CommandBuffer>& cmd) {
   drawCmd.drawVsm(cmd);
   }

@@ -1449,6 +1449,7 @@ void MainWindow::renderFrame(bool xr) {
     const bool warp = Gothic::settingsGetI("INTERNAL","xrSpaceWarp")!=0 &&
                       Gothic::inst().camera()!=nullptr && Gothic::inst().worldView()!=nullptr && !video.isActive();
     XrWindow::inst()->setSpaceWarp(warp);
+    renderer.setMotionVectors(warp, prevBaseView, prevBaseValid);
     }
   for(int view=0; view<views; ++view) {
     auto& sync = fence[cmdId];

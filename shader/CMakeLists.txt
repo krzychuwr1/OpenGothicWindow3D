@@ -156,6 +156,15 @@ add_geom_shader(main_mph_d_at  "-DMESH_TYPE=3" -DDEPTH_ONLY -DATEST)
 add_geom_shader(main_mph_v     "-DMESH_TYPE=3" -DDEPTH_ONLY -DVIRTUAL_SHADOW)
 add_geom_shader(main_mph_v_at  "-DMESH_TYPE=3" -DDEPTH_ONLY -DVIRTUAL_SHADOW -DATEST)
 
+# Application SpaceWarp: motion vectors of moving objects
+add_shader(main_obj_m_slot.vert      materials/main.vert -S vert "-DMESH_TYPE=1" -DDEPTH_ONLY -DMOTION_VECTORS)
+add_shader(main_ani_m_slot.vert      materials/main.vert -S vert "-DMESH_TYPE=2" -DDEPTH_ONLY -DMOTION_VECTORS)
+add_shader(main_mph_m_slot.vert      materials/main.vert -S vert "-DMESH_TYPE=3" -DDEPTH_ONLY -DMOTION_VECTORS)
+add_shader(main_obj_m_bindless.vert  materials/main.vert -S vert "-DMESH_TYPE=1" -DDEPTH_ONLY -DMOTION_VECTORS -DBINDLESS)
+add_shader(main_ani_m_bindless.vert  materials/main.vert -S vert "-DMESH_TYPE=2" -DDEPTH_ONLY -DMOTION_VECTORS -DBINDLESS)
+add_shader(main_mph_m_bindless.vert  materials/main.vert -S vert "-DMESH_TYPE=3" -DDEPTH_ONLY -DMOTION_VECTORS -DBINDLESS)
+add_shader(main_motion.frag          materials/motion.frag)
+
 # tesselation
 add_shader(main_lnd_f_slot.tesc      materials/main.tesc  "-DMESH_TYPE=0" -DWATER)
 add_shader(main_lnd_f_slot.tese      materials/main.tese  "-DMESH_TYPE=0" -DWATER)

@@ -161,6 +161,45 @@ vec3 processVertexCommon(out Varyings shOut, in Vertex v, uint bucketId, uint in
   // return scene.viewProject*vec4(pos,1.0);
   }
 
+#if defined(MOTION_VECTORS)
+mat4 pullMatrixPrev(uint i) {
+  i *= 16;
+  mat4 ret;
+  for(int c=0; c<4; ++c)
+    for(int r=0; r<4; ++r)
+      ret[c][r] = uintBitsToFloat(instanceMemPrev[i+uint(c*4+r)]);
+  return ret;
+  }
+
+// Previous-frame world position of the vertex: same as processVertexCommon, previous matrices
+vec3 processVertexPrev(in Vertex v, uint bucketId, uint instanceId, uint vboOffset) {
+  const uint o = instanceId*16;
+  mat4x3 objMat;
+  for(int c=0; c<4; ++c)
+    for(int r=0; r<3; ++r)
+      objMat[c][r] = uintBitsToFloat(instanceMemPrev[o+uint(c*3+r)]);
+  const float fatness = uintBitsToFloat(instanceMemPrev[o+12]);
+  const uint  animPtr = instanceMemPrev[o+13];
+
+#if (MESH_TYPE==T_MORPH)
+  // morph targets follow absolute time; the current offsets are used for both frames
+  for(int i=0; i<MAX_MORPH_LAYERS; ++i)
+    v.pos += morphOffset(bucketId, animPtr+i, vboOffset);
+#endif
+  const vec3 normal = objMat*vec4(v.normal,0);
+#if (MESH_TYPE==T_SKINING)
+  const uvec4 boneId = v.boneId + uvec4(animPtr);
+  const vec3  t0 = (pullMatrixPrev(boneId.x)*vec4(v.pos0,1.0)).xyz;
+  const vec3  t1 = (pullMatrixPrev(boneId.y)*vec4(v.pos1,1.0)).xyz;
+  const vec3  t2 = (pullMatrixPrev(boneId.z)*vec4(v.pos2,1.0)).xyz;
+  const vec3  t3 = (pullMatrixPrev(boneId.w)*vec4(v.pos3,1.0)).xyz;
+  return (t0*v.weight.x + t1*v.weight.y + t2*v.weight.z + t3*v.weight.w) + normal*fatness;
+#else
+  return objMat*vec4(v.pos,1.0) + normal*fatness;
+#endif
+  }
+#endif
+
 vec4 processVertex(out Varyings shOut, in Vertex v, uint bucketId, uint instanceId, uint vboOffset) {
   vec3 pos = processVertexCommon(shOut, v, bucketId, instanceId, vboOffset);
   return scene.viewProject*vec4(pos,1.0);
