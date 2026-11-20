@@ -124,7 +124,12 @@ struct XrWindow::Impl {
   bool                     hasPassthrough     = false;
   bool                     hasDepth = false, hasAlphaBlend = false;
   bool                     lightEnabled = false, probePending = true, depthReady = false;
+  bool                     surfaceCanProbe = false;
   bool                     permissionAsked = false, permissionGranted = false;
+  bool                     permissionHintShown = false;
+  bool                     traceSurface = CommandLine::inst().debugShow("surfacelight");
+  int                      tracedSurfaceSetting = -1;
+  unsigned                 tracedProbeGate = ~0u;
   XrTime                   nextPermissionCheck = 0;
   int64_t                  eyeColorFormat = VK_FORMAT_UNDEFINED;
   EnvironmentDepth         environmentDepth;
@@ -1661,11 +1666,17 @@ void XrWindow::Impl::invalidateSurface() {
   }
 
 void XrWindow::Impl::updateSurface() {
-  const bool enabled = hasDepth && Gothic::settingsGetI("INTERNAL","xrSurfaceLight")!=0;
+  surfaceCanProbe = false;
+  const int setting = Gothic::settingsGetI("INTERNAL","xrSurfaceLight");
+  if(traceSurface && tracedSurfaceSetting!=setting) {
+    tracedSurfaceSetting=setting;
+    Log::i("XR surface setting=",setting," depthSupported=",int(hasDepth)," additiveBlend=",int(hasAlphaBlend));
+    }
+  const bool enabled = hasDepth && setting!=0;
   if(!enabled) {
     if(lightEnabled) {
       invalidateSurface();
-      permissionAsked = permissionGranted = false;
+      permissionAsked = permissionGranted = permissionHintShown = false;
       nextPermissionCheck = 0;
       }
     lightEnabled = false;
@@ -1673,7 +1684,16 @@ void XrWindow::Impl::updateSurface() {
     }
   lightEnabled = true;
   const bool moving = grabbed==Grip::Handle || grabbed==Grip::CornerLeft || grabbed==Grip::CornerRight;
-  if(!placed || !headValid || moving || state!=XR_SESSION_STATE_FOCUSED || !AndroidApi::activityFocused()) {
+  const bool focused = state==XR_SESSION_STATE_FOCUSED && AndroidApi::activityFocused();
+  if(traceSurface) {
+    const unsigned gate = unsigned(placed) | (unsigned(headValid)<<1) | (unsigned(moving)<<2) | (unsigned(focused)<<3);
+    if(gate!=tracedProbeGate) {
+      tracedProbeGate=gate;
+      Log::i("XR surface probe gate placed=",int(placed)," tracking=",int(headValid)," moving=",int(moving),
+             " focused=",int(focused));
+      }
+    }
+  if(!placed || !headValid || moving || !focused || !frame.shouldRender) {
     invalidateSurface();
     return;
     }
@@ -1681,19 +1701,19 @@ void XrWindow::Impl::updateSurface() {
     if(frame.predictedDisplayTime<nextPermissionCheck)
       return;
     permissionGranted = xrSpatialPermission(!permissionAsked);
+    if(traceSurface)
+      Log::i("XR surface spatial permission=",permissionGranted ? "granted" : "missing",
+             " request=",int(!permissionAsked && !permissionGranted));
+    if(!permissionGranted && permissionAsked && !permissionHintShown) {
+      Gothic::inst().onPrint("Surface light needs Spatial Data permission. Allow it in the app permissions.");
+      permissionHintShown=true;
+      }
     permissionAsked = true;
     nextPermissionCheck = frame.predictedDisplayTime+2000000000;
     if(!permissionGranted)
       return;
     }
-  if(probePending) {
-    probePending = false;
-    depthReady = environmentDepth.initialize(instance,system,session,*device);
-    if(depthReady)
-      environmentDepth.request(windowPose,{windowWidth,windowHeight()});
-    }
-  if(depthReady)
-    environmentDepth.update(localSpace,frame.predictedDisplayTime);
+  surfaceCanProbe = true;
   }
 
 bool XrWindow::isSurfaceLightSupported() const {
@@ -1702,16 +1722,32 @@ bool XrWindow::isSurfaceLightSupported() const {
 
 void XrWindow::drawSurfaceLight(Renderer& renderer, Encoder<CommandBuffer>& cmd, bool sceneReady) {
   auto& s = *impl;
-  if(!s.lightEnabled || !s.environmentDepth.surface())
+  if(!s.surfaceCanProbe)
     return;
   if(!sceneReady) {
-    s.surfaceLight.invalidate();
+    s.invalidateSurface();
     return;
     }
+  // Like the Meta occlusion sample, acquire depth on a rendering frame after
+  // locating the eye views and successfully acquiring/waiting the colour image.
+  // This entry point runs exactly once, for the first eye.
+  if(s.probePending) {
+    s.probePending = false;
+    s.depthReady = s.environmentDepth.initialize(s.instance,s.system,s.session,*s.device);
+    if(s.traceSurface) Log::i("XR surface depth initialized=",int(s.depthReady));
+    if(s.depthReady)
+      s.environmentDepth.request(s.windowPose,{s.windowWidth,s.windowHeight()});
+    }
+  if(s.depthReady)
+    s.environmentDepth.update(s.localSpace,s.frame.predictedDisplayTime);
+  if(!s.environmentDepth.surface())
+    return;
   const auto& plane = *s.environmentDepth.surface();
   if(auto* target = s.surfaceLight.target(*s.device,s.session,s.eyeColorFormat,*s.vk.queueLock,s.frame.predictedDisplayTime)) {
-    s.surfaceLight.recorded(renderer.drawSurfaceLight(cmd,*target,{plane.uvOffset.x,plane.uvOffset.y},
-                            {plane.uvScale.x,plane.uvScale.y},s.passthroughDim,plane.drop,s.eyeColorFormat==VK_FORMAT_R8G8B8A8_SRGB));
+    const bool written = renderer.drawSurfaceLight(cmd,*target,{plane.uvOffset.x,plane.uvOffset.y},
+                            {plane.uvScale.x,plane.uvScale.y},s.passthroughDim,plane.drop,s.eyeColorFormat==VK_FORMAT_R8G8B8A8_SRGB);
+    s.surfaceLight.recorded(written);
+    if(s.traceSurface) Log::i("XR surface texture recorded=",int(written));
     }
   }
 
@@ -1745,6 +1781,8 @@ bool XrWindow::beginFrame() {
   s.frameBegun = true;
 
   if(isVisible()) {
+    const int style = Gothic::settingsGetI("INTERNAL","xrWindowEdges");
+    s.edgeStyle = (style==1 || style==2) ? style : 0;
     s.placeWindow();
     // A focused game keeps ticking even when the runtime requests zero layers.
     s.updateInput();
@@ -2267,10 +2305,12 @@ bool XrWindow::submit(bool rendered) {
     addLayer(pt);
     }
 
+  const XrCompositionLayerQuad* spill = nullptr;
   if(hasImage && s.lightEnabled && s.environmentDepth.surface()) {
     const auto& surface = *s.environmentDepth.surface();
-    if(auto* layer = s.surfaceLight.layer(s.localSpace,surface.pose,surface.size,s.hasAlphaBlend))
-      addLayer(*layer);
+    spill = s.surfaceLight.layer(s.localSpace,surface.pose,surface.size,s.hasAlphaBlend);
+    if(spill)
+      addLayer(*spill);
     }
   // The same rectangle in the room for both eyes, each showing its own view through it
   XrCompositionLayerQuad quad[2] = {{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
@@ -2410,6 +2450,13 @@ bool XrWindow::submit(bool rendered) {
   const uint64_t t0 = xrUs();
   const bool ended = s.sessionResult(xrEndFrame(s.session, &end), "xrEndFrame");
   tEndFrame += xrUs()-t0;
+  if(s.traceSurface && spill!=nullptr) {
+    const auto& p=spill->pose.position;
+    const auto& q=spill->pose.orientation;
+    Log::i("XR surface layer submitted=",int(ended && end.layerCount!=0)," time=",end.displayTime,
+           " position=",p.x,",",p.y,",",p.z," orientation=",q.x,",",q.y,",",q.z,",",q.w,
+           " size=",spill->size.width,"x",spill->size.height," blend=",s.hasAlphaBlend ? "ONE/ONE" : "premultiplied");
+    }
   return ended && warp;
   }
   }

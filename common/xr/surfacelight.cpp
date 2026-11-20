@@ -1,6 +1,7 @@
 #include "surfacelight.h"
 
 #if defined(__ANDROID__) && defined(OPENGOTHIC_XR)
+#include "commandline.h"
 #include <Tempest/Device>
 #include <Tempest/Except>
 #include <Tempest/Log>
@@ -25,8 +26,11 @@ bool SurfaceLight::create(Device& device, XrSession session, int64_t format) {
   info.height = Height;
   info.sampleCount = info.faceCount = info.arraySize = info.mipCount = 1;
   XrSwapchain candidate = XR_NULL_HANDLE;
-  if(XR_FAILED(xrCreateSwapchain(session,&info,&candidate)))
+  const auto result = xrCreateSwapchain(session,&info,&candidate);
+  if(XR_FAILED(result)) {
+    Log::e("XR surface could not create light swapchain, result=",int(result));
     return false;
+    }
   struct Guard {
     XrSwapchain chain;
     ~Guard() { if(chain!=XR_NULL_HANDLE) xrDestroySwapchain(chain); }
@@ -45,6 +49,8 @@ bool SurfaceLight::create(Device& device, XrSession session, int64_t format) {
     wrapped.push_back(vulkanBorrowColorAttachment(device,native[i].image,Width,Height));
   images = std::move(wrapped);
   chain = std::exchange(guard.chain,XR_NULL_HANDLE);
+  if(CommandLine::inst().debugShow("surfacelight"))
+    Log::i("XR surface created light swapchain ",Width,"x",Height," images=",count," format=",format);
   return true;
   }
 

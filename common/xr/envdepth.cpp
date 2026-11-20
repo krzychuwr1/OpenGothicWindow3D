@@ -3,6 +3,7 @@
 #if defined(__ANDROID__) && defined(OPENGOTHIC_XR)
 #include <Tempest/VulkanInterop>
 #include <Tempest/Log>
+#include "commandline.h"
 #include "shader.h"
 
 #define XR_USE_GRAPHICS_API_VULKAN
@@ -42,17 +43,25 @@ XrQuaternionf compose(XrQuaternionf a,XrQuaternionf b) {
 
 struct Sample {
   Point p;   // along the bottom edge, up, forwards towards the viewer, in metres
-  float a,b; // local tangent slopes dy/dx and dy/dz estimated from adjacent samples
   int   col,row;
   };
 
 struct Footprint { int l=0,r=0,t=0,b=0; };
 
-Footprint supportedFootprint(const std::vector<Sample>& samples,float a,float b,float c) {
+struct FitCounts {
+  size_t valid=0, footprint=0, hypotheses=0, inliers=0;
+  Point low={}, high={};
+  };
+
+Footprint supportedFootprint(const std::vector<Sample>& samples,float a,float b,float c,float cellWidth,float cellDepth) {
   std::array<std::bitset<columns>,rows> seen = {};
+  std::array<std::bitset<columns>,rows> raised = {};
   for(auto& s:samples) {
-    if(std::abs(s.p.y-(a*s.p.x+b*s.p.z+c))<0.035f)
+    const float residual=s.p.y-(a*s.p.x+b*s.p.z+c);
+    if(std::abs(residual)<0.025f)
       seen[size_t(s.row)].set(size_t(s.col));
+    else if(residual>0.065f)
+      raised[size_t(s.row)].set(size_t(s.col));
     }
   // Bridge a single missing sample cell only where measured support brackets it.
   auto covered = seen;
@@ -61,20 +70,27 @@ Footprint supportedFootprint(const std::vector<Sample>& samples,float a,float b,
     row |= (seen[size_t(y)]<<1)&(seen[size_t(y)]>>1);
     if(y>0 && y+1<rows)
       row |= seen[size_t(y-1)]&seen[size_t(y+1)];
+    // Leave a foreground object visibly unlit even if there is supporting
+    // tabletop around it. Never interpolate across a measured occluder.
+    row &= ~raised[size_t(y)];
     }
   Footprint best;
-  for(int top=0;top<3;++top) {
+  for(int top=0;top<rows;++top) {
     std::bitset<columns> strip;
     strip.set();
     for(int y=top;y<rows;++y) {
       strip &= covered[size_t(y)];
-      int l=columns/2,r=columns/2;
-      while(l>0 && strip.test(size_t(l-1))) --l;
-      while(r<columns && strip.test(size_t(r))) ++r;
-      if(l>=columns/2 || r<=columns/2)
+      if(strip.none())
         break;
-      if((r-l)*(y+1-top)>(best.r-best.l)*(best.b-best.t))
-        best = {l,r,top,y+1};
+      // A desk ending to one side of the window still catches its light.
+      for(int r=0;r<columns;) {
+        while(r<columns && !strip.test(size_t(r))) ++r;
+        const int l=r;
+        while(r<columns && strip.test(size_t(r))) ++r;
+        if(float(r-l)*cellWidth>=0.27f && float(y+1-top)*cellDepth>=0.19f &&
+           (r-l)*(y+1-top)>(best.r-best.l)*(best.b-best.t))
+          best = {l,r,top,y+1};
+        }
       }
     }
   return best;
@@ -82,7 +98,7 @@ Footprint supportedFootprint(const std::vector<Sample>& samples,float a,float b,
 
 std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32_t imageW, uint32_t imageH,
                                                      const XrEnvironmentDepthImageMETA& depth,
-                                                     const XrPosef& window,XrExtent2Df size) {
+                                                     const XrPosef& window,XrExtent2Df size,FitCounts* counts=nullptr) {
   // The depth texture is in Vulkan row order. The first row is the upper FOV tangent.
   const auto& view = depth.views[0];
   const float L=std::tan(view.fov.angleLeft),R=std::tan(view.fov.angleRight);
@@ -98,10 +114,13 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
   right = right*(1.f/std::sqrt(dot(right,right)));
   const Point up = {0,1,0}, front = cross(right,up);
   const Point foot = window.position+rotate(window.orientation,{0,-0.5f*size.height,0});
+  // The portal is free-standing and can extend into a real desk. Accept the
+  // portion of that desk below eye level even if it intersects the lower screen.
+  const float maxHeight = std::min(view.pose.position.y-foot.y-0.025f,0.5f*size.height+0.15f);
   const float halfW = std::clamp(0.46f*size.width,0.22f,1.2f);
   const float reach = std::clamp(0.35f+0.28f*size.width,0.55f,1.35f);
-  std::array<Point,gridW*gridH> points;
-  std::bitset<gridW*gridH> valid;
+  std::vector<Sample> cloud;
+  cloud.reserve(gridW*gridH);
   for(int y=0;y<gridH;++y) {
     for(int x=0;x<gridW;++x) {
       const size_t i = size_t(y*gridW+x);
@@ -117,46 +136,38 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
       const Point world = view.pose.position+rotate(view.pose.orientation,ray*distance)-foot;
       if(!std::isfinite(world.x) || !std::isfinite(world.y) || !std::isfinite(world.z))
         continue;
-      points[i] = {dot(world,right),world.y,dot(world,front)};
-      valid.set(i);
-      }
-    }
-  std::vector<Sample> horizontal;
-  for(size_t y=1;y+1<size_t(gridH);++y) {
-    for(size_t x=1;x+1<size_t(gridW);++x) {
-      const size_t i = y*size_t(gridW)+x;
-      if(!valid[i] || !valid[i-1] || !valid[i+1] || !valid[i-gridW] || !valid[i+gridW])
-        continue;
-      const Point p = points[i];
-      if(std::abs(p.x)>=halfW || p.z<0 || p.z>=reach || p.y>0.09f || p.y< -2.3f)
-        continue;
-      const Point dX = points[i+1]-points[i-1], dY = points[i+gridW]-points[i-gridW];
-      if(dot(dX,dX)>0.12f || dot(dY,dY)>0.16f)
-        continue;
-      const auto n = cross(dX,dY);
-      if(std::abs(n.y)<1e-6f || n.x*n.x+n.z*n.z>0.09f*n.y*n.y)
+      if(counts) ++counts->valid;
+      const Point p = {dot(world,right),world.y,dot(world,front)};
+      if(std::abs(p.x)>=halfW || p.z<0 || p.z>=reach || p.y>maxHeight || p.y< -2.3f)
         continue;
       const int col = std::min(columns-1,int((p.x+halfW)*float(columns)/(2.f*halfW)));
       const int row = std::min(rows-1,int(p.z*float(rows)/reach));
-      horizontal.push_back({p,-n.x/n.y,-n.z/n.y,col,row});
+      cloud.push_back({p,col,row});
+      if(counts) {
+        if(cloud.size()==1) {
+          counts->low=counts->high=p;
+          } else {
+          counts->low={std::min(counts->low.x,p.x),std::min(counts->low.y,p.y),std::min(counts->low.z,p.z)};
+          counts->high={std::max(counts->high.x,p.x),std::max(counts->high.y,p.y),std::max(counts->high.z,p.z)};
+          }
+        }
       }
     }
-  if(horizontal.size()<12)
+  if(counts) counts->footprint=cloud.size();
+  if(cloud.size()<12)
     return {};
 
   float bestScore = 0, a=0,b=0,c=0;
   Footprint bounds;
-  const size_t stride = (horizontal.size()+63)/64;
-  for(size_t i=0;i<horizontal.size();i+=stride) {
-    const auto& s = horizontal[i];
-    const float h = s.p.y-s.a*s.p.x-s.b*s.p.z;
-    if(h>0.09f || h< -2.3f)
-      continue;
-    auto block = supportedFootprint(horizontal,s.a,s.b,h);
+  auto consider = [&](float ax,float bz,float h) {
+    if(h>maxHeight || h< -2.3f)
+      return;
+    if(counts) ++counts->hypotheses;
+    auto block = supportedFootprint(cloud,ax,bz,h,2.f*halfW/float(columns),reach/float(rows));
     const float w = 2.f*halfW*float(block.r-block.l)/float(columns);
     const float d = reach*float(block.b-block.t)/float(rows);
     if(w<0.27f || d<0.19f)
-      continue;
+      return;
     // A tabletop touching the window intercepts its light before the larger
     // floor visible in front of the table. Weight measured area by distance
     // from the screen edge, with a finite radius for a surface in contact.
@@ -164,35 +175,58 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
     const float gap  = reach*float(block.t)/float(rows);
     const float score = w*d/(drop*drop+gap*gap);
     if(score>bestScore) {
-      a=s.a; b=s.b; c=h; bounds=block; bestScore=score;
+      a=ax; b=bz; c=h; bounds=block; bestScore=score;
       }
+    };
+  // At grazing angles adjacent rays can miss or land on opposite surfaces.
+  // Test height slices and well-separated sample triples across the footprint.
+  // A fixed seed gives identical results for identical depth maps.
+  const size_t stride=(cloud.size()+63)/64;
+  for(size_t i=0;i<cloud.size();i+=stride)
+    consider(0,0,cloud[i].p.y);
+  uint32_t seed=1698227261u;
+  auto pick = [&]() {
+    seed=1664525u*seed+1013904223u;
+    return cloud[(uint64_t(seed)*cloud.size())>>32].p;
+    };
+  for(int trial=0;trial<192;++trial) {
+    const Point p=pick(), q=pick(), r=pick();
+    const auto n=cross(q-p,r-p);
+    if(std::abs(n.y)<0.012f || n.x*n.x+n.z*n.z>0.09f*n.y*n.y)
+      continue;
+    const float ax=-n.x/n.y, bz=-n.z/n.y;
+    consider(ax,bz,p.y-ax*p.x-bz*p.z);
     }
   if(bestScore==0)
     return {};
 
   // Fit the selected tabletop or floor to all agreeing points inside its measured footprint.
   double sx=0,sz=0,sy=0,sxx=0,szz=0,sxz=0,sxy=0,szy=0,count=0;
-  for(auto& s:horizontal) {
+  for(auto& s:cloud) {
     const Point p = s.p;
     if(s.col<bounds.l || s.col>=bounds.r || s.row<bounds.t || s.row>=bounds.b ||
-       std::abs(p.y-(a*p.x+b*p.z+c))>=0.035f)
+       std::abs(p.y-(a*p.x+b*p.z+c))>=0.025f)
       continue;
     sx+=p.x; sz+=p.z; sy+=p.y;
     sxx+=double(p.x)*p.x; szz+=double(p.z)*p.z; sxz+=double(p.x)*p.z;
     sxy+=double(p.x)*p.y; szy+=double(p.z)*p.y;
     ++count;
     }
+  if(counts) counts->inliers=size_t(count);
   if(count<12)
     return {};
   sxx-=sx*sx/count; szz-=sz*sz/count; sxz-=sx*sz/count;
   sxy-=sx*sy/count; szy-=sz*sy/count;
   const double det = sxx*szz-sxz*sxz;
-  if(det<=1e-8)
+  // A strip of points on a wall or desk edge can span multiple grid cells.
+  // Demand at least 3.5 cm RMS support in the least-spread horizontal axis.
+  const double minVariance=(sxx+szz-std::hypot(sxx-szz,2*sxz))/(2*count);
+  if(det<=1e-8 || minVariance<0.035*0.035)
     return {};
   a=float((szz*sxy-sxz*szy)/det);
   b=float((sxx*szy-sxz*sxy)/det);
   c=float((sy-double(a)*sx-double(b)*sz)/count);
-  if(a*a+b*b>0.09f || c>0.09f || c< -2.3f)
+  if(a*a+b*b>0.09f || c>maxHeight || c< -2.3f)
     return {};
 
   const float x = halfW*(float(bounds.l+bounds.r)/float(columns)-1.f);
@@ -259,9 +293,12 @@ struct EnvironmentDepth::Impl {
   VkCommandBuffer cmd = VK_NULL_HANDLE;
   VkFence fence = VK_NULL_HANDLE;
   bool wanted = false, running = false, pending = false, acceptResult = false;
+  bool trace = CommandLine::inst().debugShow("surfacelight");
+  unsigned maps = 0;
+  bool waitingForStart = false;
   XrPosef window;
   XrExtent2Df size;
-  XrTime startedAt = 0;
+  XrTime startedAt = 0, nextMap = 0;
   XrEnvironmentDepthImageMETA frame = {XR_TYPE_ENVIRONMENT_DEPTH_IMAGE_META};
   };
 
@@ -314,6 +351,7 @@ bool EnvironmentDepth::Impl::initialize(XrInstance instance,XrSystemId system,Xr
   if(!xrOk(enumerate(chain,count,&count,reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data())),"enumerate images") ||
      count==0 || count>images.size()) return false;
   views.resize(count);
+  if(trace) Tempest::Log::i("XR surface depth swapchain ",imageW,"x",imageH,", images=",count);
   for(uint32_t i=0;i<count;++i) {
     VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vi.image=images[i].image;
@@ -443,6 +481,7 @@ bool EnvironmentDepth::Impl::stop() {
   if(result!=XR_ERROR_UNEXPECTED_STATE_PASSTHROUGH_FB && !xrOk(result,"stop provider"))
     return false;
   running=false;
+  if(trace) Tempest::Log::i("XR surface depth provider stopped");
   return true;
   }
 
@@ -496,6 +535,8 @@ void EnvironmentDepth::request(const XrPosef& window,XrExtent2Df size) {
     impl->window=window;
     impl->size=size;
     impl->wanted=true;
+    impl->maps=0;
+    impl->nextMap=0;
     }
   }
 
@@ -505,12 +546,6 @@ void EnvironmentDepth::update(XrSpace local,XrTime displayTime) {
   if(s.pending) {
     // The previous frame has released the acquired image. Only the app-owned
     // sample buffer is read below, after its compute dispatch completes.
-    if(!s.stop()) {
-      // Destroying the provider also stops depth generation.
-      impl.reset();
-      fitted.reset();
-      return;
-      }
     const auto status=vkGetFenceStatus(s.vk.device,s.fence);
     if(status==VK_NOT_READY) return;
     if(status!=VK_SUCCESS) {
@@ -518,6 +553,7 @@ void EnvironmentDepth::update(XrSpace local,XrTime displayTime) {
       s.acceptResult=false;
       s.wanted=false;
       vkOk(status,"poll sample fence");
+      if(!s.stop()) impl.reset();
       return;
       }
     s.pending=false;
@@ -526,38 +562,86 @@ void EnvironmentDepth::update(XrSpace local,XrTime displayTime) {
       range.memory=s.memory; range.size=VK_WHOLE_SIZE;
       if(s.coherent || vkOk(vkInvalidateMappedMemoryRanges(s.vk.device,1,&range),"invalidate samples")) {
         try {
-          fitted=fitSurface(static_cast<const float*>(s.mapped),s.imageW,s.imageH,s.frame,s.window,s.size);
+          FitCounts counts;
+          fitted=fitSurface(static_cast<const float*>(s.mapped),s.imageW,s.imageH,s.frame,s.window,s.size,
+                            s.trace ? &counts : nullptr);
+          if(s.trace)
+            Tempest::Log::i("XR surface samples valid=",counts.valid," footprint=",counts.footprint,
+                            " planeHypotheses=",counts.hypotheses," fitted=",counts.inliers);
+          if(s.trace && counts.footprint)
+            Tempest::Log::i("XR surface measured bounds relative to bottom edge, right/up/forward: min=",
+                            counts.low.x,",",counts.low.y,",",counts.low.z," max=",counts.high.x,",",counts.high.y,",",counts.high.z);
+          if(s.trace && fitted) {
+            const auto& f=*fitted;
+            const auto n=rotate(f.pose.orientation,{0,0,1});
+            Tempest::Log::i("XR surface fitted normal LOCAL=",n.x,",",n.y,",",n.z);
+            for(int y : {-1,1})
+              for(int x : {-1,1}) {
+                const auto p=f.pose.position+rotate(f.pose.orientation,{x*f.size.width*0.5f,y*f.size.height*0.5f,0});
+                Tempest::Log::i("XR surface fitted corner LOCAL=",p.x,",",p.y,",",p.z);
+                }
+            }
           } catch(const std::bad_alloc&) { fitted.reset(); }
         }
       if(fitted)
-        Tempest::Log::i("XR surface depth found ",fitted->size.width," x ",fitted->size.height," m, drop ",fitted->drop," m");
+        Tempest::Log::i("XR surface depth found ",fitted->size.width," x ",fitted->size.height," m, height ",
+                        fitted->pose.position.y," m LOCAL, drop ",fitted->drop," m");
+      else if(s.maps<4 && displayTime-s.startedAt<2500000000LL) {
+        // The first map after provider startup can have holes. Give tracking
+        // a short bounded acquisition burst, then sleep until the next placement.
+        s.wanted=true;
+        s.nextMap=displayTime+150000000;
+        }
       else
         Tempest::Log::i("XR surface depth found no supported plane under window");
       }
     s.acceptResult=false;
-    if(!s.wanted) return;
+    if(!s.wanted) {
+      if(!s.stop()) impl.reset();
+      return;
+      }
     }
   if(!s.running) {
     if(!xrOk(s.startProvider(s.provider),"start provider")) { s.wanted=false; return; }
     s.running=true;
     s.startedAt=displayTime;
+    s.waitingForStart=true;
+    if(s.trace) Tempest::Log::i("XR surface depth provider started; window centre ",
+                                s.window.position.x,",",s.window.position.y,",",s.window.position.z,
+                                ", size ",s.size.width,"x",s.size.height);
+    // Start takes effect at a frame boundary on Quest. Keep the provider
+    // running and acquire the first map in a subsequent render frame.
+    return;
     }
   if(displayTime-s.startedAt>2500000000LL) {
-    Tempest::Log::i("XR surface depth timed out before receiving a map");
+    Tempest::Log::i("XR surface depth probe timed out, maps=",s.maps);
     cancel();
     return;
     }
+  if(displayTime<s.nextMap) return;
   XrEnvironmentDepthImageAcquireInfoMETA info={XR_TYPE_ENVIRONMENT_DEPTH_IMAGE_ACQUIRE_INFO_META,nullptr,local,displayTime};
   s.frame={XR_TYPE_ENVIRONMENT_DEPTH_IMAGE_META};
   for(auto& v:s.frame.views) v={XR_TYPE_ENVIRONMENT_DEPTH_IMAGE_VIEW_META};
   {
     std::lock_guard<std::mutex> guard(*s.vk.queueLock);
     const auto result=s.acquire(s.provider,&info,&s.frame);
+    if(result==XR_ERROR_CALL_ORDER_INVALID && s.maps==0) {
+      if(s.waitingForStart) Tempest::Log::i("XR surface waiting for started provider to accept its first frame");
+      s.waitingForStart=false;
+      s.nextMap=displayTime+100000000;
+      return; // bounded by the probe timeout
+      }
     if(result==XR_ENVIRONMENT_DEPTH_NOT_AVAILABLE_META) return;
     s.wanted=false;
-    if(xrOk(result,"acquire map") && s.sample(s.frame.swapchainIndex)) {
-      s.acceptResult=true;
-      return;
+    if(xrOk(result,"acquire map")) {
+      ++s.maps;
+      if(s.trace) Tempest::Log::i("XR surface depth map ",s.maps," index=",s.frame.swapchainIndex,
+                                  " near=",s.frame.nearZ," far=",s.frame.farZ,
+                                  " eyeHeight=",s.frame.views[0].pose.position.y);
+      if(s.sample(s.frame.swapchainIndex)) {
+        s.acceptResult=true;
+        return;
+        }
       }
   }
   if(!s.stop())

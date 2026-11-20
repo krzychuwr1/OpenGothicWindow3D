@@ -2291,7 +2291,7 @@ bool Renderer::drawSurfaceLight(Encoder<CommandBuffer>& cmd, Attachment& target,
     Vec2 offset, scale;
     float strength;
     uint32_t srgb;
-    } push{uvOffset,uvScale,(0.08f+0.12f*dim)/(1.f+drop*drop),srgbSwapchain ? 1u : 0u};
+    } push{uvOffset,uvScale,(0.32f+0.22f*dim)/(1.f+drop*drop),srgbSwapchain ? 1u : 0u};
   cmd.setDebugMarker("XR surface light spill");
   cmd.setFramebuffer({{target,Tempest::Discard,Tempest::Preserve}});
   cmd.setBinding(0,surfacePalette,sampler);

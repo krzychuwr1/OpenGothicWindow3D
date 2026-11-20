@@ -26,8 +26,12 @@ void main() {
       vec2 cell = (vec2(x,y)+0.2+0.6*jitter)/vec2(6.0,8.0);
       vec2 sampleUv = vec2((band+cell.x)/8.0,cell.y);
       vec3 display = gameTonemap(textureLod(source,sampleUv,0.0).rgb,push.video);
-      float weight = mix(0.65,1.35,cell.y);
-      sum += pow(display,vec3(2.2))*weight;
+      vec3 linear = pow(display,vec3(2.2));
+      // Give small bright emitters (fire and spells) enough influence to
+      // change the broad spill, without copying their shapes onto the desk.
+      float peak = max(max(linear.r,linear.g),linear.b);
+      float weight = mix(0.65,1.35,cell.y)*(1.0+2.0*peak);
+      sum += linear*weight;
       weights += weight;
       }
     }
