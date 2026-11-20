@@ -48,12 +48,26 @@ function Invoke-BenchAdb {
 function Assert-HeadsetIdle {
   $power = (Invoke-BenchAdb shell dumpsys power) -join "`n"
   $windows = (Invoke-BenchAdb shell dumpsys window displays) -join "`n"
-  $activities = (Invoke-BenchAdb shell dumpsys activity activities) -join "`n"
-  if ($power -notmatch '(?m)^\s*mWakefulness=Asleep\s*$' -or
-      $windows -notmatch '(?m)^\s*mFocusedApp=null\s*$' -or
-      $windows -match '(?m)^\s*mFocusedApp=(?!null\s*$)\S' -or
-      $activities -match '(?m)^\s*(?:topResumedActivity|mResumedActivity)[:=]\s*ActivityRecord') {
-    throw 'Headset is awake, in use, or its foreground is unknown. Check again in ten minutes.'
+  $activities = (Invoke-BenchAdb shell dumpsys activity -a activities) -join "`n"
+  $focus = @([regex]::Matches($windows,'(?m)^\s*mFocusedApp=([^\r\n]+)') | ForEach-Object { $_.Groups[1].Value.Trim() })
+  $nonNull = @($focus | Where-Object { $_ -ne 'null' })
+  # The sleeping system launcher may retain an Android focus token. Its actual
+  # activity, and every other activity in the stack, must be stopped and hidden.
+  $stoppedHome = $nonNull.Count -eq 1 -and
+    $nonNull[0] -match '^ActivityRecord\{[0-9a-f]+ u\d+ com\.oculus\.vrshell/\.HomeActivity t\d+\}$' -and
+    $activities.Contains($nonNull[0]) -and
+    $activities -match '(?m)^\s*state=STOPPED\b' -and
+    $activities -notmatch '(?m)^\s*state=(?!STOPPED\b)\S' -and
+    $activities -match 'mVisibleRequested=false mVisible=false' -and
+    $activities -notmatch '\bm(?:VisibleRequested|Visible)=true\b'
+  if ($power -notmatch '(?m)^\s*mWakefulness=Asleep\s*$' -or $focus.Count -eq 0 -or
+      $windows -notmatch '(?m)^\s*mCurrentFocus=null\s*$' -or
+      $windows -match '(?m)^\s*mCurrentFocus=(?!null\s*$)\S' -or
+      ($nonNull.Count -ne 0 -and -not $stoppedHome) -or
+      $activities -notmatch 'ACTIVITY MANAGER ACTIVITIES' -or
+      $activities -match '(?m)^\s*(?:(?:topResumedActivity|mResumedActivity)[:=]\s*ActivityRecord|state=RESUMED\b)') {
+    $state = @($power -split "`n" | Where-Object { $_ -match 'mWakefulness=' }) -join ' '
+    throw "Headset busy or foreground unknown ($state $nonNull). Check again in ten minutes."
   }
 }
 function Copy-BenchCaptures {
