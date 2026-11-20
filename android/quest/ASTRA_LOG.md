@@ -533,3 +533,11 @@ Path tracing and irradiance caching could build their acceleration tree before p
 The sampled and streaming sound constructors could abandon an OpenAL buffer when its data or callback registration failed. They also returned a source after an unsuccessful attachment. Tempest `5e2c4c20` gives both constructors a common cleanup path, deletes a source before its attached buffer, and checks setup before playback. A null producer yields an empty effect.
 
 A host fixture ran the production constructors and destructor against a counting OpenAL adapter. It injected errors at buffer creation, sample/callback setup, source creation, attachment and reference-distance setup, and checked success and empty sample destruction. The old code failed six checks, the change passed them all and Android Release linked. No native audio initialization failure was induced on Quest.
+
+### Restore brush state and release stale UI resources
+
+A reused UI mesh block could keep and bind its former texture after switching to a solid brush, or retain a sprite allocation after switching to a direct texture. Painting consecutive blocks with the same texture but a different clamp mode or channel format also reused the wrong state. Tempest `1fe44360` releases the obsolete references when the frame slot is reused, includes the sampling properties in state comparisons, and derives textured pipeline selection from the actual brush. Restoring an unchanged saved state now also pops it.
+
+A host fixture ran the production brush state and mesh update methods with reference-counted texture/sprite handles. It covered texture and clamp changes, nested state restoration, an unchanged push/pop, and a sprite → direct texture → solid transition in one slot. The old code failed six checks and the new code passed all six. Android Release linked. No claim about headset memory consumption follows from this fixture.
+
+An independent source review also found an inherited issue in Tempest's rectangle allocator. Releasing a full-page CPU atlas allocation can dereference its null parent, and smaller freed rectangles may disappear from the searchable tree. The regular Gothic HUD and focus labels use direct game font textures. We found no full-page sprite allocation in their normal Quest paths. This allocator issue remains open.
