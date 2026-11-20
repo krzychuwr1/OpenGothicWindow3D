@@ -35,10 +35,12 @@ class GamepadInput final {
     // Camera rotation from the right stick, in mouse pixels for this frame.
     Tempest::PointF look(const PadState& pad, uint64_t dtMs) const;
 
+    // Stop mapping the current sample when its widget closes a modal dialog.
+    void interruptDispatch() { ++generation; }
     void releaseAll();
     void cancel();
-    // Drop only keys that lose their last source when the XR pad is interrupted.
-    void cancelMissing(const PadState& previous, bool previousMenu, const PadState& current, bool currentMenu);
+    // Returns false if a modal handler has already processed a newer sample.
+    bool cancelMissing(const PadState& previous, bool previousMenu, const PadState& current, bool currentMenu);
 
   private:
     enum Out : uint8_t {
@@ -55,7 +57,8 @@ class GamepadInput final {
 
     static Tempest::Event::KeyType keyOf(Out o);
 
-    KeySink sink;
+    KeySink  sink;
+    uint64_t generation = 0;
     bool    state[O_Count] = {};
     bool    cancelled[O_Count] = {};
   };

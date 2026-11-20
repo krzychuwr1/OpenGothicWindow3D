@@ -988,7 +988,7 @@ void XrWindow::Impl::cancelInput() {
 void XrWindow::Impl::updateInput() {
   releasePad = padState;
   padState = {};
-  if(state!=XR_SESSION_STATE_FOCUSED)
+  if(state!=XR_SESSION_STATE_FOCUSED || !AndroidApi::activityFocused())
     return;
 
   XrActiveActionSet active = {actionSet, XR_NULL_PATH};
@@ -1314,9 +1314,9 @@ void XrWindow::prepareLightingRate(Encoder<CommandBuffer>& cmd, uint8_t slot, ui
   vulkanSetNextShadingRate(cmd,map.rate);
   }
 
-bool XrWindow::pollInputFocus() {
+bool XrWindow::pollInputFocus(bool nativeFocusLost) {
   const bool interrupted = impl->pollEvents();
-  if(!AndroidApi::activityResumed())
+  if(nativeFocusLost || !AndroidApi::activityFocused())
     impl->cancelInput();
   return !interrupted && isFocused();
   }
@@ -1924,7 +1924,7 @@ bool XrWindow::takePadInterruption(PadState& releaseSources) {
   }
 
 bool XrWindow::isFocused() const {
-  return AndroidApi::activityResumed() && impl->state==XR_SESSION_STATE_FOCUSED;
+  return AndroidApi::activityFocused() && impl->state==XR_SESSION_STATE_FOCUSED;
   }
 
 bool XrWindow::isVisible() const {
@@ -1941,7 +1941,7 @@ XrWindow::~XrWindow() = default;
 
 bool      XrWindow::preInit()  { return false; }
 XrWindow* XrWindow::inst()     { return nullptr; }
-bool      XrWindow::pollInputFocus() { return false; }
+bool      XrWindow::pollInputFocus(bool) { return false; }
 void      XrWindow::attach(Tempest::Device&) {}
 Tempest::Size XrWindow::resolution() const { return Tempest::Size(0,0); }
 bool      XrWindow::beginFrame() { return false; }

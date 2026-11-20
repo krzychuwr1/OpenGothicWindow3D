@@ -110,6 +110,7 @@ class MainWindow : public Tempest::Window {
 
     uint64_t tick();
     void     tickPad(uint64_t dt);
+    void     cancelHeldInput();
     bool     padMenuContext() const;
     void     renderFrame(bool xr);
     void     updateFrame();
@@ -149,6 +150,7 @@ class MainWindow : public Tempest::Window {
     bool                  eyeHistoryValid = false;
     GamepadInput          pad;
 #if defined(__ANDROID__)
+    PadState              previousXrPad;
     bool                  previousPadMenu = false;
 #endif
     Tempest::PointF       padLook;

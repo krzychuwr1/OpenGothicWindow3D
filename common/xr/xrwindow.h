@@ -33,7 +33,7 @@ class XrWindow final {
     static std::string timingReport();
 
     // Poll session events. A focus interruption suppresses input for this update, even if focus returned.
-    bool              pollInputFocus();
+    bool              pollInputFocus(bool nativeFocusLost);
     // Waits for the next display frame.
     // Returns true when the application should render and then call submit().
     bool              beginFrame();

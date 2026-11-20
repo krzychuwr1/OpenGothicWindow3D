@@ -111,10 +111,15 @@ void GamepadInput::map(const PadState& p, bool menuContext, Emit emit) const {
   }
 
 void GamepadInput::tick(const PadState& p, bool menuContext) {
-  map(p,menuContext,[this](Out o,bool down){ set(o,down); });
+  const auto current = ++generation;
+  map(p,menuContext,[&](Out o,bool down) {
+    if(current==generation)
+      set(o,down);
+    });
   }
 
-void GamepadInput::cancelMissing(const PadState& previous, bool previousMenu, const PadState& current, bool currentMenu) {
+bool GamepadInput::cancelMissing(const PadState& previous, bool previousMenu, const PadState& current, bool currentMenu) {
+  const auto dispatch = ++generation;
   std::bitset<Event::K_Last> retained;
   auto keep = [&](Out o,bool down) {
     if(down)
@@ -134,11 +139,12 @@ void GamepadInput::cancelMissing(const PadState& previous, bool previousMenu, co
           }
       }
     });
-  for(int i=0; i<O_Count; ++i) {
+  for(int i=0; i<O_Count && generation==dispatch; ++i) {
     const auto o = Out(i);
     if(state[o] && !retained[keyOf(o)])
       set(o,false,true);
     }
+  return generation==dispatch;
   }
 
 PointF GamepadInput::look(const PadState& p, uint64_t dtMs) const {
@@ -156,12 +162,14 @@ PointF GamepadInput::look(const PadState& p, uint64_t dtMs) const {
   }
 
 void GamepadInput::releaseAll() {
-  for(int i=0; i<O_Count; ++i)
+  const auto dispatch = ++generation;
+  for(int i=0; i<O_Count && generation==dispatch; ++i)
     if(state[i])
       set(Out(i),false);
   }
 
 void GamepadInput::cancel() {
+  ++generation;
   for(int i=0; i<O_Count; ++i) {
     cancelled[i] |= state[i];
     state[i] = false;

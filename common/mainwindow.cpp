@@ -51,7 +51,10 @@ using namespace Tempest;
 MainWindow::MainWindow(Device& device)
   : Window(Maximized),device(device),
 #if defined(__ANDROID__)
-    pad([this](KeyEvent& e, bool) { AndroidApi::dispatchGamepadKey(*this,e); }),
+    pad([this](KeyEvent& e, bool) {
+      if(!AndroidApi::dispatchGamepadKey(*this,e))
+        pad.interruptDispatch();
+      }),
 #else
     pad([this](KeyEvent& e, bool down) { if(down) keyDownEvent(e); else keyUpEvent(e); }),
 #endif
@@ -143,9 +146,15 @@ MainWindow::MainWindow(Device& device)
 
   displayPos = Shortcut(*this,Event::M_Alt,Event::K_P);
   displayPos.onActivated.bind(this, &MainWindow::onMarvinKey<Event::K_P>);
+#if defined(__ANDROID__)
+  AndroidApi::setFrameInput(true);
+#endif
   }
 
 MainWindow::~MainWindow() {
+#if defined(__ANDROID__)
+  AndroidApi::setFrameInput(false);
+#endif
   GameMusic::inst().stopMusic();
   Gothic::inst().cancelLoading();
   device.waitIdle();
@@ -1324,37 +1333,61 @@ bool MainWindow::padMenuContext() const {
          video.isActive() || inventory.isActive();
   }
 
+#if defined(__ANDROID__)
+static PadState nativePad(const AndroidApi::GamepadState& g) {
+  PadState p;
+  p.connected = g.connected;
+  p.lx = g.lx; p.ly = g.ly; p.rx = g.rx; p.ry = g.ry; p.lt = g.lt; p.rt = g.rt;
+  static_assert(int(PadState::Count)==int(AndroidApi::GamepadState::Count));
+  std::copy_n(g.buttons,PadState::Count,p.buttons);
+  return p;
+  }
+#endif
+
+void MainWindow::cancelHeldInput() {
+  pad.cancel();
+#if defined(__ANDROID__)
+  previousXrPad = {};
+  inventory.cancelTaking();
+#endif
+  clearInput();
+  padLook = {};
+  dMouse = {};
+  padTime = 0;
+  }
+
 void MainWindow::tickPad(uint64_t dt) {
   PadState state;
-  const bool menu = padMenuContext();
 #if defined(__ANDROID__)
-  auto nativePad = [](const AndroidApi::GamepadState& g) {
-    PadState p;
-    p.connected = g.connected;
-    p.lx = g.lx; p.ly = g.ly; p.rx = g.rx; p.ry = g.ry; p.lt = g.lt; p.rt = g.rt;
-    static_assert(int(PadState::Count)==int(AndroidApi::GamepadState::Count));
-    std::copy_n(g.buttons,PadState::Count,p.buttons);
-    return p;
-    };
-  const auto native = AndroidApi::pollGamepad();
-  state = nativePad(native.state);
-  bool interrupted = native.interrupted;
-  PadState xrReleases;
-  if(auto xr = XrWindow::inst()) {
-    state = PadState::merge(state,xr->pad());
-    interrupted |= xr->takePadInterruption(xrReleases);
+  if(AndroidApi::takeInputFocusLoss()) {
+    cancelHeldInput();
+    dt = 0;
     }
-  if(interrupted)
-    pad.cancelMissing(PadState::merge(nativePad(native.releaseSources),xrReleases),previousPadMenu,state,menu);
-  previousPadMenu = menu;
-#endif
-  if(!state.connected) {
-    pad.releaseAll();
+  const bool completed = AndroidApi::dispatchFrameInput([&](const AndroidApi::GamepadSample& native) {
+    const bool menu = padMenuContext();
+    PadState xrState, xrReleases = previousXrPad;
+    bool interrupted = native.interrupted;
+    if(auto xr = XrWindow::inst()) {
+      xrState = xr->pad();
+      PadState releases;
+      if(xr->takePadInterruption(releases)) {
+        xrReleases = releases;
+        interrupted = true;
+        }
+      }
+    state = PadState::merge(nativePad(native.state),xrState);
+    previousXrPad = xrState;
+    const bool previousMenu = std::exchange(previousPadMenu,menu);
+    if(interrupted && !pad.cancelMissing(PadState::merge(nativePad(native.releaseSources),xrReleases),previousMenu,state,menu))
+      return;
+    pad.tick(state,menu);
+    });
+  if(!completed)
     return;
-    }
-
-  pad.tick(state, menu);
-  if(padMenuContext())
+#else
+  pad.releaseAll();
+#endif
+  if(!state.connected || padMenuContext())
     return;
   // Accumulate fractional stick motion as mouse-look pixels
   padLook += pad.look(state, dt);
@@ -1439,7 +1472,13 @@ void MainWindow::render(){
       // only recording the eyes waits for the runtime's frame timing.
       // The game holds still while the headset is off or a system menu has the focus.
       const uint64_t tu = nowUs();
-      const bool focused = xr->pollInputFocus();
+      bool inputLost = false;
+#if defined(__ANDROID__)
+      inputLost = AndroidApi::takeInputFocusLoss();
+      if(inputLost)
+        cancelHeldInput();
+#endif
+      const bool focused = xr->pollInputFocus(inputLost);
       video.setPaused(!focused);
 #if defined(__ANDROID__)
       AndroidApi::setExternalInputFocus(focused);
@@ -1447,16 +1486,8 @@ void MainWindow::render(){
       if(focused)
         updateFrame();
       else {
-        if(padTime!=0) {
-          pad.cancel();
-#if defined(__ANDROID__)
-          inventory.cancelTaking();
-#endif
-          clearInput();
-          padLook = {};
-          dMouse = {};
-          padTime = 0;
-          }
+        if(padTime!=0)
+          cancelHeldInput();
         eyeHistoryValid = false;
         lastTick = Application::tickCount();
         }
@@ -1496,8 +1527,8 @@ void MainWindow::render(){
 void MainWindow::updateFrame() {
   {
   const uint64_t now = Application::tickCount();
-  tickPad(padTime==0 ? 0 : std::min<uint64_t>(now-padTime, 50));
-  padTime = now;
+  const auto lastPadTime = std::exchange(padTime,now);
+  tickPad(lastPadTime==0 ? 0 : std::min<uint64_t>(now-lastPadTime, 50));
   }
 
   /*
