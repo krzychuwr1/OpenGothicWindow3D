@@ -87,7 +87,7 @@ The common renderer and frame timing code included native Vulkan headers even in
 
 The owner identified overlapping device work between 01:55 and 03:10. Treat earlier device timings as historical observations. The merged build starts its own baseline. The instance-slot history experiment was stashed before merging because its GPU readback check had failed.
 
-These tags describe where the owner can carry each original audit commit. Commits tagged `[all]` that also touch SpaceWarp need only their shared hunks on master. The environment feature is assigned to the combined audit branch. The owner�s earlier commits keep their original subjects.
+These tags describe where the owner can carry each original audit commit. Commits tagged `[all]` that also touch SpaceWarp need only their shared hunks on master. The environment feature is assigned to the combined audit branch. The owner’s earlier commits keep their original subjects.
 
 | OpenGothic commit | Tag | Subject |
 | --- | --- | --- |
@@ -715,3 +715,11 @@ Loading a DLS instrument bank in the GothicKit music provider allocated its samp
 A synthetic two-preset bank used the real converter, decoder, preset loader, renderer and destructor with tracked allocation callbacks. The original retained one block and used the wrong deallocator twice on a successful load. The fixed converter passed all 113 checks over nine successful render/close cycles and individual failure at all 17 creation allocations. Every successful run produced the same stereo sample hash as the original. Android and Windows Release linked.
 
 The uninstrumented Quest APK ran a low-clock city spell scenario with GothicKit, the dusk environment and SpaceWarp enabled. The app log recorded Gamestart, XT_DayStd, KH_DayStd, the intervening transitions and playback through measure five. VrApi reported 36.6 fps over eight samples. The game stopped and released sleep at 96% and 38.0 °C. Allocation accounting and sample equality were verified on the host. No listener assessed the physical audio output.
+
+### Keep newer music requests across an interrupted theme load
+
+A failed or empty theme cleared the shared pending theme, including a replacement queued while the audio callback was loading. The GothicKit stream could also consume a new theme then flush it when disable and re-enable landed between the separate stop and play checks. Both providers now leave replacements queued when a load fails and allow a same-file retry on the next request. GothicKit claims stop or play under the pending-theme lock, releases the lock before loading resources, and flushes a stop that arrived during the load. Failed stream stops are retried before consuming new music.
+
+A two-thread host fixture ran the production provider code with controlled loader and stream responses. It covered same-file and different-file replacements, disable/re-enable before and during a load, an empty theme, duplicate requests, and failed stop and PCM callbacks. The original failed 116 of 772 sample and queue checks. Both fixed providers passed all 772 checks. Windows and uninstrumented Android Release linked.
+
+A diagnostic Quest build queued a second `xt_daystd.sgt` request from another thread while substituting a missing segment for the first load. The app log showed the missing segment, the immediate same-file retry, actual XT_DayStd playback and a later successful transition to KH_DayStd. The SpaceWarp city spells run reported 36.6 fps at CPU 1 / GPU 0 and ended stopped and released to sleep at 96% and 37.0 °C. A listener did not assess the audio.

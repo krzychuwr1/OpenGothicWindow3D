@@ -17,23 +17,19 @@ struct GameMusic::MusicProvider : Tempest::SoundProducer {
   using Tempest::SoundProducer::SoundProducer;
 
   public:
-    virtual void stopTheme() {
-      std::lock_guard<std::recursive_mutex> guard(pendingSync);
-      pendingMusic.reset();
-      }
-
     void setEnabled(bool b) {
+      std::lock_guard<std::mutex> guard(pendingSync);
       if(enable == b)
         return;
 
-      std::lock_guard<std::recursive_mutex> guard(pendingSync);
       if(b) {
         hasPending = true;
         reloadTheme = true;
         enable.store(true);
         } else {
         enable.store(false);
-        stopTheme();
+        pendingMusic.reset();
+        stopPending = true;
         }
       }
 
@@ -42,7 +38,7 @@ struct GameMusic::MusicProvider : Tempest::SoundProducer {
       }
 
     void playTheme(const zenkit::IMusicTheme &theme, GameMusic::Tags tags) {
-      std::lock_guard<std::recursive_mutex> guard(pendingSync);
+      std::lock_guard<std::mutex> guard(pendingSync);
       reloadTheme |= !pendingMusic || pendingMusic->file != theme.file;
       pendingMusic = theme;
       pendingTags  = tags;
@@ -50,18 +46,38 @@ struct GameMusic::MusicProvider : Tempest::SoundProducer {
       }
 
   protected:
-    bool updateTheme(zenkit::IMusicTheme& theme, Tags& tags) {
-      bool reloadTheme = false;
+    enum class Request { None, Play, Stop };
+    enum class OnStop  { Mute, FlushStream };
 
-      std::lock_guard<std::recursive_mutex> guard(pendingSync);
-      if(hasPending && pendingMusic && enable.load()) {
-        hasPending  = false;
-        reloadTheme = this->reloadTheme;
-        theme       = this->pendingMusic.value();
-        tags        = this->pendingTags;
-        this->reloadTheme = false;
+    Request takeRequest(zenkit::IMusicTheme& theme, Tags& tags, OnStop onStop) {
+      std::lock_guard<std::mutex> guard(pendingSync);
+      if(stopPending) {
+        stopPending = false;
+        if(onStop==OnStop::FlushStream)
+          return Request::Stop;
         }
-      return reloadTheme;
+      if(!hasPending || !pendingMusic || !enable.load())
+        return Request::None;
+      hasPending = false;
+      if(!reloadTheme)
+        return Request::None;
+      theme = *pendingMusic;
+      tags  = pendingTags;
+      reloadTheme = false;
+      return Request::Play;
+      }
+
+    bool takeStopDuringLoad() {
+      std::lock_guard<std::mutex> guard(pendingSync);
+      bool stop = stopPending;
+      stopPending = false;
+      return stop;
+      }
+
+    void retryThemeOnRequest() {
+      std::lock_guard<std::mutex> guard(pendingSync);
+      // Another zone may already have queued a replacement while this theme loaded.
+      reloadTheme = true;
       }
 
     static zenkit::MusicTransitionEffect computeTransitionEffect(Tags nextTags, Tags currTags, zenkit::MusicTransitionEffect transtype) {
@@ -89,7 +105,8 @@ struct GameMusic::MusicProvider : Tempest::SoundProducer {
   private:
     std::atomic_bool     enable{true};
 
-    std::recursive_mutex pendingSync;
+    std::mutex           pendingSync;
+    bool                 stopPending = false;
     bool                 hasPending  = false;
     bool                 reloadTheme = false;
     Tags                 pendingTags = Tags::Day;
@@ -114,11 +131,11 @@ struct GameMusic::OpenGothicMusicProvider : GameMusic::MusicProvider {
   void updateTheme() {
     zenkit::IMusicTheme theme;
     Tags                tags;
-    if(!GameMusic::MusicProvider::updateTheme(theme, tags))
+    if(takeRequest(theme,tags,OnStop::Mute)!=Request::Play)
       return;
 
     if(theme.file.empty()) {
-      stopTheme();
+      retryThemeOnRequest();
       return;
       }
 
@@ -138,16 +155,12 @@ struct GameMusic::OpenGothicMusicProvider : GameMusic::MusicProvider {
       }
     catch (std::runtime_error &) {
       Log::e("unable to load sound: \"", theme.file, "\"");
-      stopTheme();
+      retryThemeOnRequest();
       }
     catch (std::bad_alloc &) {
       Log::e("out of memory for sound: \"", theme.file, "\"");
-      stopTheme();
+      retryThemeOnRequest();
       }
-    }
-
-  void stopTheme() override {
-    GameMusic::MusicProvider::stopTheme();
     }
 
   static Dx8::DMUS_EMBELLISHT_TYPES computeEmbellishment(zenkit::MusicTransitionEffect ef) {
@@ -239,15 +252,21 @@ struct GameMusic::GothicKitMusicProvider : GameMusic::MusicProvider {
   void renderSound(int16_t* out, size_t n) override {
     const auto format = DmRenderOptions(DmRender_SHORT | DmRender_STEREO);
     if(performance!=nullptr) {
-      if(isEnabled() && !stopRequested.load())
-        updateTheme();
+      zenkit::IMusicTheme theme;
+      Tags tags;
+      auto request = retryStop ? Request::Stop : takeRequest(theme,tags,OnStop::FlushStream);
+      if(request==Request::Play) {
+        bool played = startTheme(theme,tags);
+        if(!played)
+          retryThemeOnRequest();
+        if(takeStopDuringLoad() || !played)
+          request = Request::Stop;
+        }
 
-      if(stopRequested.exchange(false)) {
-        // Consume the queued stop before scheduling another theme on this stream.
+      if(request==Request::Stop) {
         const auto stop = DmPerformance_playSegment(performance, nullptr, DmTiming_INSTANT);
         const auto pcm  = DmPerformance_renderPcm(performance, out, n * 2, format);
-        if(stop!=DmResult_SUCCESS || pcm!=DmResult_SUCCESS)
-          stopRequested.store(true);
+        retryStop = stop!=DmResult_SUCCESS || pcm!=DmResult_SUCCESS;
         }
       else if(isEnabled() && DmPerformance_renderPcm(performance, out, n * 2, format)==DmResult_SUCCESS) {
         return;
@@ -256,35 +275,26 @@ struct GameMusic::GothicKitMusicProvider : GameMusic::MusicProvider {
     std::memset(out, 0, n * sizeof(out[0]) * 2);
     }
 
-  void updateTheme() {
-    zenkit::IMusicTheme theme;
-    Tags                tags;
-    if(!GameMusic::MusicProvider::updateTheme(theme, tags))
-      return;
-
-    if(theme.file.empty()) {
-      stopTheme();
-      return;
-      }
+  bool startTheme(const zenkit::IMusicTheme& theme, Tags tags) {
+    if(theme.file.empty())
+      return false;
 
     auto effect = computeTransitionEffect(tags, currentTags, theme.transtype);
     auto [timing, embellishment] = computeEmbellishmentAndTiming(effect, theme.transsubtype);
 
     DmSegment* sgt = Resources::loadMusicSegment(theme.file.c_str());
+    if(sgt==nullptr)
+      return false;
     DmResult rv = DmPerformance_playTransition(performance, sgt, embellishment, timing);
+    DmSegment_release(sgt);
     if(rv != DmResult_SUCCESS) {
       Log::e("Failed to play theme: ", theme.file);
-      stopTheme();
+      return false;
       }
 
     DmPerformance_setVolume(performance, theme.vol);
-    DmSegment_release(sgt);
     currentTags = tags;
-    }
-
-  void stopTheme() override {
-    GameMusic::MusicProvider::stopTheme();
-    stopRequested.store(true);
+    return true;
     }
 
   DmEmbellishmentType computeEmbellishment(Tags nextTags, Tags currTags, zenkit::MusicTransitionEffect transtype) const {
@@ -335,7 +345,7 @@ struct GameMusic::GothicKitMusicProvider : GameMusic::MusicProvider {
 
   private:
     DmPerformance*    performance = nullptr;
-    std::atomic_bool  stopRequested{false};
+    bool              retryStop = false;
   };
 
 static constexpr int PROVIDER_UNINITIALIZED = -1;
