@@ -187,8 +187,9 @@ struct XrWindow::Impl {
   XrSwapchain              environmentButton = XR_NULL_HANDLE;
   static constexpr uint32_t SkyW = 2048, SkyH = SkyW/2, ButtonW = 128, ButtonH = 80;
   bool                     panoramaReady = false, buttonReady = false, immersive = false;
-  bool                     chromeAttempted = false;
-  bool                     chromeReady     = false;
+  bool                     staticImagesAttempted = false;
+  bool                     handleReady = false, cornersReady = false;
+  bool                     restoreSky = false;
   static constexpr uint32_t HandleW = 256, HandleH = 32, CornerSize = 64;
 
   // Frame
@@ -243,7 +244,8 @@ struct XrWindow::Impl {
   void updateInput();
   void cancelInput();
   void placeWindow();
-  void fillChrome();
+  void fillHandle();
+  void fillCorners();
   void fillEnvironment();
   bool setEnvironment(bool useSky);
   V3   buttonCenter() const { return handleCenter() + V3{0,-0.10f,0}; }
@@ -773,6 +775,8 @@ void XrWindow::Impl::passthroughChanged(XrPassthroughStateChangedFlagsFB flags) 
   if(!restored && (flags & XR_PASSTHROUGH_STATE_CHANGED_RECOVERABLE_ERROR_BIT_FB)) {
     passthroughUnavailable = true;
     }
+  if((reinit || restored) && restoreSky && roomAvailable())
+    restoreSky = !setEnvironment(true);
   }
 
 void XrWindow::Impl::createActions() {
@@ -1091,7 +1095,7 @@ void XrWindow::Impl::updateInput() {
     const bool released = *h.grab<0.35f;
     if(grabbedBy==int(i)) {
       const bool tracked = grabNear ? h.nearValid : h.aimValid;
-      if(released || !tracked) {
+      if(released || !tracked || (grabbed==Grip::Environment && !roomAvailable())) {
         grabbedBy  = -1;
         grabbed    = Grip::None;
         h.grabHeld = !released;
@@ -1138,6 +1142,7 @@ void XrWindow::Impl::updateInput() {
       grabLocal = toLocal(grabNear ? h.nearPose : h.aim, h.hit);
       if(grabbed==Grip::Environment) {
         if(setEnvironment(!immersive)) {
+          restoreSky = false;
           Gothic::settingsSetI("INTERNAL", "xrEnvironment", immersive ? 1 : 0);
           Gothic::flushSettings();
           }
@@ -1212,14 +1217,14 @@ Grip XrWindow::Impl::targetAt(float x, float y) const {
   const float halfH = windowHeight()*0.5f;
   // Corners: a hand-sized zone around each bottom corner, mostly outside the image
   const float zone = 0.10f;
-  if(std::abs(y+halfH)<zone) {
+  if(cornersReady && std::abs(y+halfH)<zone) {
     if(std::abs(x-halfW)<zone)
       return Grip::CornerRight;
     if(std::abs(x+halfW)<zone)
       return Grip::CornerLeft;
     }
   const V3 hc = handleCenter();
-  if(std::abs(x-hc.x)<0.16f && std::abs(y-hc.y)<0.045f)
+  if(handleReady && std::abs(x-hc.x)<0.16f && std::abs(y-hc.y)<0.045f)
     return Grip::Handle;
   const V3 button = buttonCenter();
   if(buttonReady && roomAvailable() && std::abs(x-button.x)<0.065f && std::abs(y-button.y)<0.04f)
@@ -1567,16 +1572,13 @@ void XrWindow::Impl::fillEnvironment() {
     }
   // Settings exist by the first rendered frame. An incomplete button should
   // never strand a wearer in VR when passthrough is available.
-  setEnvironment(buttonReady && Gothic::settingsGetI("INTERNAL","xrEnvironment")==1);
+  if(buttonReady && Gothic::settingsGetI("INTERNAL","xrEnvironment")==1)
+    restoreSky = !setEnvironment(true);
   }
 
-void XrWindow::Impl::fillChrome() {
-  chromeAttempted = true;
-  if(handleSwapchain==XR_NULL_HANDLE || cornerSwapchain==XR_NULL_HANDLE)
-    return;
-
+void XrWindow::Impl::fillHandle() {
   // Handle: a capsule; idle, hover and held states
-  {
+  if(handleSwapchain!=XR_NULL_HANDLE) {
     const uint32_t w = HandleW, h = HandleH;
     std::vector<uint32_t> px(size_t(w)*h*3);
     const float r   = float(h)*0.5f - 2.f;
@@ -1591,12 +1593,13 @@ void XrWindow::Impl::fillChrome() {
           const float d  = std::sqrt(dx*dx + fy*fy);
           px[(size_t(l)*h + y)*w + x] = pixel(st[l].r, st[l].g, st[l].b, st[l].o, r - d + 0.5f);
           }
-    if(!uploadStatic(vk, cmd[0], fence[0], handleSwapchain, w, h, 3, px))
-      return;
+    handleReady = uploadStatic(vk, cmd[0], fence[0], handleSwapchain, w, h, 3, px);
+    }
   }
 
+void XrWindow::Impl::fillCorners() {
   // Corners: an L bracket around the bottom-right corner (layers 0,1) and its mirror (2,3)
-  {
+  if(cornerSwapchain!=XR_NULL_HANDLE) {
     const uint32_t n = CornerSize;
     std::vector<uint32_t> px(size_t(n)*n*4);
     const float t = 3.5f;                 // half thickness
@@ -1617,8 +1620,8 @@ void XrWindow::Impl::fillChrome() {
           const auto& s = st[l%2];
           px[(size_t(l)*n + y)*n + x] = pixel(s.r, s.g, s.b, s.o, t - std::min(d1,d2) + 0.5f);
           }
-    chromeReady = uploadStatic(vk, cmd[0], fence[0], cornerSwapchain, n, n, 4, px);
-  }
+    cornersReady = uploadStatic(vk, cmd[0], fence[0], cornerSwapchain, n, n, 4, px);
+    }
   }
 
 Attachment* XrWindow::eyeTarget(uint8_t eye) {
@@ -1717,14 +1720,15 @@ bool XrWindow::submit(bool rendered) {
   s.frameBegun = false;
 
   std::lock_guard<std::mutex> guard(*s.vk.queueLock);
-  if(rendered && !s.chromeAttempted) {
-    try {
-      s.fillChrome();
-      s.fillEnvironment();
-      }
-    catch(const std::bad_alloc&) {
-      // Keep the layers already uploaded and finish this frame with its acquired eyes.
-      Log::e("OpenXR: insufficient memory for optional window graphics");
+  if(rendered && !s.staticImagesAttempted) {
+    s.staticImagesAttempted = true;
+    for(auto fill : {&Impl::fillHandle, &Impl::fillCorners, &Impl::fillEnvironment}) {
+      try {
+        (s.*fill)();
+        }
+      catch(const std::bad_alloc&) {
+        Log::e("OpenXR: insufficient memory for optional window graphics");
+        }
       }
     }
   bool hasImage = rendered && s.acquired[0]>=0 && s.acquired[1]>=0;
@@ -1840,15 +1844,8 @@ bool XrWindow::submit(bool rendered) {
     }
   XrCompositionLayerQuad handle = {XR_TYPE_COMPOSITION_LAYER_QUAD};
   std::array<XrCompositionLayerQuad,2> corners;
-  if(s.chromeReady && hasImage) {
-    bool hoverHandle = false, cornerOn[2] = {}, cornerHeld[2] = {};
-    for(auto& h:s.hands) {
-      hoverHandle |= (h.hover==Grip::Handle);
-      if(h.hover==Grip::CornerLeft)  cornerOn[0] = true;
-      if(h.hover==Grip::CornerRight) cornerOn[1] = true;
-      }
-    if(s.grabbed==Grip::CornerLeft)  cornerHeld[0] = cornerOn[0] = true;
-    if(s.grabbed==Grip::CornerRight) cornerHeld[1] = cornerOn[1] = true;
+  if(s.handleReady && hasImage) {
+    const bool hoverHandle = s.hands[0].hover==Grip::Handle || s.hands[1].hover==Grip::Handle;
 
     handle.layerFlags                = chromeFlags;
     handle.space                     = s.localSpace;
@@ -1860,10 +1857,14 @@ bool XrWindow::submit(bool rendered) {
     handle.pose.position             = toXr(toWorld(s.windowPose, s.handleCenter()));
     handle.size                      = {0.22f, 0.0275f};
     addLayer(handle);
+    }
 
+  if(s.cornersReady && hasImage) {
     const float halfW = s.windowWidth*0.5f, halfH = s.windowHeight()*0.5f, sz = 0.10f;
     for(int c=0; c<2; ++c) {
-      if(!cornerOn[c])
+      const auto corner = c==0 ? Grip::CornerLeft : Grip::CornerRight;
+      const bool held = s.grabbed==corner;
+      if(!held && s.hands[0].hover!=corner && s.hands[1].hover!=corner)
         continue;
       // The bracket's inner corner sits just outside the window corner
       const float sx = c==0 ? -1.f : 1.f;
@@ -1876,7 +1877,7 @@ bool XrWindow::submit(bool rendered) {
       q.eyeVisibility            = XR_EYE_VISIBILITY_BOTH;
       q.subImage.swapchain       = s.cornerSwapchain;
       q.subImage.imageRect       = {{0,0},{int32_t(Impl::CornerSize),int32_t(Impl::CornerSize)}};
-      q.subImage.imageArrayIndex = uint32_t((c==0 ? 2 : 0) + (cornerHeld[c] ? 1 : 0));
+      q.subImage.imageArrayIndex = uint32_t((c==0 ? 2 : 0) + (held ? 1 : 0));
       q.pose.orientation         = s.windowPose.orientation;
       q.pose.position            = toXr(toWorld(s.windowPose, at));
       q.size                     = {sz, sz};
