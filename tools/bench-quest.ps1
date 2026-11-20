@@ -8,8 +8,15 @@
   per-second statistics (VrApi) and the game's own frame CPU breakdown.
   The headset must be awake (proximity sensor covered or disabled). args.txt is removed after the run.
 
+  -Scenario adds action to the scene (the hero is made invulnerable):
+    combat  wolves and an orc warrior attack (animation, weapon swings, blood)
+    spells  skeleton mages and a fire lizard attack (spell effects, particles, light)
+  -Captures N takes N headset screenshots (what the compositor shows) during sampling and
+  copies them to captures/ for checking the picture.
+
 .EXAMPLE
   ./tools/bench-quest.ps1 -Waypoint NW_CITY_MAINSTREET_02
+  ./tools/bench-quest.ps1 -Waypoint NW_TAVERNE -Scenario spells -Captures 3
 #>
 param(
   [string]$Waypoint = 'NW_CITY_MAINSTREET_02',
@@ -18,13 +25,21 @@ param(
   [int]$LoadSeconds = 50,
   [int]$Samples     = 12,
   [string]$Extra    = '',
+  [ValidateSet('none','combat','spells')]
+  [string]$Scenario = 'none',
+  [int]$Captures    = 0,
   # Test runs ask for low clocks: less heat and battery drain (compare runs at the same level)
   [ValidateSet('low','high')]
   [string]$Perf     = 'low'
 )
 $ErrorActionPreference = 'Stop'
+$exec = "goto waypoint $Waypoint;set time $Time"
+switch ($Scenario) {
+  'combat' { $exec += ';cheat god;insert WOLF;insert WOLF;insert WOLF;insert ORCWARRIOR_ROAM' }
+  'spells' { $exec += ';cheat god;insert SKELETONMAGE;insert SKELETONMAGE;insert FIREWARAN' }
+}
 $argsFile = [IO.Path]::GetTempFileName()
-"-nomenu -novideo -gpuprofile -perf $Perf $Extra -exec `"goto waypoint $Waypoint;set time $Time`"" | Set-Content $argsFile -NoNewline -Encoding ascii
+"-nomenu -novideo -gpuprofile -perf $Perf $Extra -exec `"$exec`"" | Set-Content $argsFile -NoNewline -Encoding ascii
 adb push $argsFile /sdcard/OpenGothic/args.txt | Out-Null
 Remove-Item $argsFile
 
@@ -43,6 +58,16 @@ adb logcat -c
 Start-Sleep ($Samples + 1)
 $vr  = adb logcat -d -s VrApi:* | Select-String 'App='
 $cpu = adb logcat -d -s app:* | Select-String 'Frame CPU ms|Point lights:|Update:|Draw CPU|eye 1|Per frame|XR submit|GPU ms per view|^.*app\s+:\s+[ A-Za-z#0-9&\-]+ [\d.]+;' | Select-Object -Last 8
+# Screenshots after sampling: the capture service's logging would push the statistics out of the log
+$shots = @()
+if ($Captures -gt 0) {
+  $before = @(adb shell ls /sdcard/Oculus/Screenshots 2>$null)
+  for ($i = 0; $i -lt $Captures; $i++) {
+    adb shell am startservice -n com.oculus.metacam/.capture.CaptureService -a TAKE_SCREENSHOT | Out-Null
+    Start-Sleep 4
+  }
+  $shots = @(adb shell ls /sdcard/Oculus/Screenshots) | Where-Object { $_ -and ($before -notcontains $_) }
+}
 adb shell rm -f /sdcard/OpenGothic/args.txt
 # Stop the game and let the headset sleep again between runs
 adb shell am force-stop $Package
@@ -62,3 +87,14 @@ if ($fps.Count -eq 0) { throw 'No VrApi samples: is the app in front and the hea
   ($cg | Measure-Object -Average).Average, $fps.Count
 if ($vr[-1] -match '(CPU4/GPU=[^,]+,[^,]+)') { "clocks: $($Matches[1])" }
 $cpu | ForEach-Object { ($_ -split 'app\s+:\s+')[-1] }
+if ($shots.Count -gt 0) {
+  $dir = Join-Path (Split-Path $PSScriptRoot) 'captures'
+  New-Item -ItemType Directory -Force $dir | Out-Null
+  $stamp = Get-Date -Format 'MMdd-HHmmss'
+  foreach ($f in $shots) {
+    $dst = Join-Path $dir "$stamp-$Waypoint-$Scenario-$f"
+    adb pull "/sdcard/Oculus/Screenshots/$f" $dst | Out-Null
+    adb shell rm -f "/sdcard/Oculus/Screenshots/$f"
+    "capture: $dst"
+  }
+}

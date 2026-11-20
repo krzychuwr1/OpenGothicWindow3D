@@ -605,6 +605,18 @@ void MainWindow::paintFocus(Painter& p, const Focus& focus, const Matrix4x4& vp)
   if(!focus || dialogs.isActive())
     return;
 
+  if(focus.npc!=nullptr && !focus.npc->isDead()) {
+    float hp = float(focus.npc->attribute(ATR_HITPOINTS))/float(focus.npc->attribute(ATR_HITPOINTSMAX));
+    drawBar(p,barHp, w()/2,std::max(10,margins().top), hp, AlignHCenter|AlignTop);
+    }
+
+  // In XR the name and the melee bracket belong to the object, not to the window: each eye
+  // paints them with its own projection (paintEyeOverlay), so they appear at the object's depth
+  if(XrWindow::inst()==nullptr)
+    paintFocusMarkers(p,focus,vp);
+  }
+
+void MainWindow::paintFocusMarkers(Painter& p, const Focus& focus, const Matrix4x4& vp) {
   const float scale = Gothic::interfaceScale(this);
   auto        world = Gothic::inst().world();
   auto        pl    = world==nullptr ? nullptr : world->player();
@@ -631,11 +643,6 @@ void MainWindow::paintFocus(Painter& p, const Focus& focus, const Matrix4x4& vp)
   if(iy>h())
     iy = h();
   fnt.drawText(p,ix,iy,focus.displayName());
-
-  if(focus.npc!=nullptr && !focus.npc->isDead()) {
-    float hp = float(focus.npc->attribute(ATR_HITPOINTS))/float(focus.npc->attribute(ATR_HITPOINTSMAX));
-    drawBar(p,barHp, w()/2,std::max(10,margins().top), hp, AlignHCenter|AlignTop);
-    }
 
   const int foc = Gothic::settingsGetI("GAME","highlightMeleeFocus");
   if(focus.npc!=nullptr  &&
@@ -679,6 +686,21 @@ void MainWindow::paintFocus(Painter& p, const Focus& focus, const Matrix4x4& vp)
   if(auto pl = focus.interactive){
     pl->marchInteractives(p,vp,w(),h());
     }*/
+  }
+
+void MainWindow::paintEyeOverlay(const Camera& camera) {
+  eyeOverlay.clear();
+  auto world = Gothic::inst().world();
+  if(world==nullptr || world->view()==nullptr || video.isActive() || dialogs.isActive() ||
+     Gothic::inst().checkLoading()!=Gothic::LoadState::Idle)
+    return;
+  auto focus = world->validateFocus(player.focus());
+  if(!focus)
+    return;
+  PaintEvent e(eyeOverlay,atlas,w(),h());
+  Painter    p(e);
+  p.setBrush(Color(1.0));
+  paintFocusMarkers(p,focus,camera.viewProj());
   }
 
 void MainWindow::paintFocus(Painter& p, Rect rect) {
@@ -1368,7 +1390,10 @@ void MainWindow::render(){
       if(xr->isFocused())
         updateFrame();
       if(!xr->isVisible()) {
-        xr->beginFrame();
+        // Keep the frame loop going (begin and end every frame): the runtime only makes the
+        // session visible after it sees finished frames
+        if(xr->beginFrame())
+          xr->submit(false);
         return;
         }
       const uint64_t t0 = nowUs();
@@ -1498,13 +1523,19 @@ void MainWindow::renderFrame(bool xr) {
     if(stereo)
       camera->setEyeView(&eye);
     renderer.setSecondView(stereo && view==1);
+    if(stereo) {
+      const uint64_t te = nowUs();
+      paintEyeOverlay(*camera);
+      eyeMesh[cmdId].update(device,eyeOverlay);
+      timing.uiMesh += nowUs()-te;
+      }
 
     CommandBuffer& cmd = commands[cmdId];
     {
     const uint64_t ts = nowUs();
     auto enc = cmd.startEncoding(device);
     timing.encStart += nowUs()-ts;
-    renderer.draw(backbuf,enc,cmdId,uiMesh[cmdId],numMesh[cmdId],inventory,video);
+    renderer.draw(backbuf,enc,cmdId,uiMesh[cmdId],numMesh[cmdId],stereo ? &eyeMesh[cmdId] : nullptr,inventory,video);
     const uint64_t te = nowUs();
     timing.drawCall += te-ts;
     }

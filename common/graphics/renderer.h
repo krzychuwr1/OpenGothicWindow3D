@@ -29,6 +29,7 @@ class Renderer final {
 
     void draw(Tempest::Attachment& result, Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t fId,
               Tempest::VectorImage::Mesh& uiLayer, Tempest::VectorImage::Mesh& numOverlay,
+              Tempest::VectorImage::Mesh* eyeLayer,
               InventoryMenu &inventory, VideoWidget& video);
     void draw(Tempest::Attachment& result, Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t fId,
               WorldView& view, const Camera& camera);

@@ -31,3 +31,4 @@ internal/
 
 # local toolchain shims
 toolchain/
+/captures/
