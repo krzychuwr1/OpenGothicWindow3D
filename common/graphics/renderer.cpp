@@ -2045,9 +2045,13 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
   const int32_t  h        = zbuffer.h();
   const uint32_t tilesX   = uint32_t((w+int32_t(tileSize)-1)/int32_t(tileSize));
   const uint32_t tilesY   = uint32_t((h+int32_t(tileSize)-1)/int32_t(tileSize));
-  const size_t   tiles    = size_t(tilesX)*tilesY;
+  const uint32_t sliceStride = tilesX*tilesY;
+  const size_t   tiles       = size_t(sliceStride)*4;
+  // NDC depths at approximately 4, 16 and 64 times the eye's near distance.
+  const float ends[3] = {0.75f, 0.9375f, 0.984375f};
+  auto slice = [&](float z) { return uint32_t(z>=ends[0]) + uint32_t(z>=ends[1]) + uint32_t(z>=ends[2]); };
 
-  struct Rect { uint32_t x0, y0, x1, y1, id; };
+  struct Rect { uint32_t x0, y0, x1, y1, z0, z1, id; };
   static std::vector<Rect> rects;
   rects.clear();
 
@@ -2068,10 +2072,17 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
       continue;
     float mnx = 1e9f, mny = 1e9f, mxx = -1e9f, mxy = -1e9f;
     auto extend = [&](float x, float y) { mnx = std::min(mnx,x); mny = std::min(mny,y); mxx = std::max(mxx,x); mxy = std::max(mxy,y); };
+    float minDepth = neg>0 ? 0.f : 1.f, maxDepth = 0.f;
     bool full = false;
     for(int i=0; i<8; ++i)
-      if(c[i][2]>=0)
-        extend(c[i][0]/c[i][3], c[i][1]/c[i][3]);
+      if(c[i][2]>=0) {
+        if(c[i][3]<=0.f) { full = true; break; }
+        const float invW = 1.f/c[i][3];
+        extend(c[i][0]*invW, c[i][1]*invW);
+        const float depth = c[i][2]*invW;
+        minDepth = std::min(minDepth, depth);
+        maxDepth = std::max(maxDepth, depth);
+        }
     if(neg>0) {
       for(auto& e:edges) {
         const float* a = c[e[0]];
@@ -2094,6 +2105,9 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
     r.x1 = uint32_t(std::clamp(int32_t((mxx*0.5f+0.5f)*float(w)), 0, w-1))/tileSize;
     r.y0 = uint32_t(std::clamp(int32_t((mny*0.5f+0.5f)*float(h)), 0, h-1))/tileSize;
     r.y1 = uint32_t(std::clamp(int32_t((mxy*0.5f+0.5f)*float(h)), 0, h-1))/tileSize;
+    // Round outward across slice boundaries, including depth quantization.
+    r.z0 = full ? 0 : slice(minDepth-0.0001f);
+    r.z1 = full ? 3 : slice(maxDepth+0.0001f);
     r.id = id;
     rects.push_back(r);
     }
@@ -2102,27 +2116,27 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
 
   // tile table: (offset, count), offsets past the table
   lightTiles.assign(tiles*2, 0);
-  size_t total = 0;
-  for(auto& r:rects)
-    for(uint32_t y=r.y0; y<=r.y1; ++y)
-      for(uint32_t x=r.x0; x<=r.x1; ++x) {
-        lightTiles[(y*tilesX+x)*2+1]++;
-        total++;
-        }
+  for(const auto& r:rects)
+    for(uint32_t z=r.z0; z<=r.z1; ++z)
+      for(uint32_t y=r.y0; y<=r.y1; ++y)
+        for(uint32_t x=r.x0; x<=r.x1; ++x)
+          lightTiles[(z*sliceStride+y*tilesX+x)*2+1]++;
+
   uint32_t at = uint32_t(tiles*2);
   for(size_t t=0; t<tiles; ++t) {
     lightTiles[t*2+0] = at;
     at += lightTiles[t*2+1];
     lightTiles[t*2+1] = 0;
     }
-  lightTiles.resize(tiles*2+total);
-  for(auto& r:rects)
-    for(uint32_t y=r.y0; y<=r.y1; ++y)
-      for(uint32_t x=r.x0; x<=r.x1; ++x) {
-        const size_t t = y*tilesX+x;
-        lightTiles[lightTiles[t*2+0] + lightTiles[t*2+1]] = r.id;
-        lightTiles[t*2+1]++;
-        }
+  lightTiles.resize(at);
+  for(const auto& r:rects)
+    for(uint32_t z=r.z0; z<=r.z1; ++z)
+      for(uint32_t y=r.y0; y<=r.y1; ++y)
+        for(uint32_t x=r.x0; x<=r.x1; ++x) {
+          const size_t t = z*sliceStride+y*tilesX+x;
+          lightTiles[lightTiles[t*2+0] + lightTiles[t*2+1]] = r.id;
+          lightTiles[t*2+1]++;
+          }
 
   auto& device = Resources::device();
   auto& list   = visibleLightsSsbo[lightSlot];
@@ -2133,10 +2147,16 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
   list.update(lightTiles.data(), 0, lightTiles.size()*sizeof(uint32_t));
 
   auto& scene = wview.sceneGlobals();
-  struct Push { Tempest::Vec3 origin; uint32_t tilesX; uint32_t tileSize; } push;
+  struct Push {
+    Tempest::Vec3 origin;
+    uint32_t tilesX, tileSize, sliceStride;
+    float ends[3];
+    } push;
   push.origin   = scene.originLwc;
   push.tilesX   = tilesX;
   push.tileSize = tileSize;
+  push.sliceStride = sliceStride;
+  std::copy_n(ends, 3, push.ends);
   cmd.setBinding(0, scene.uboGlobal[SceneGlobals::V_Main]);
   cmd.setBinding(1, gbufDiffuse, Sampler::nearest());
   cmd.setBinding(2, gbufNormal,  Sampler::nearest());

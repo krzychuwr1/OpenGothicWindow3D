@@ -202,3 +202,18 @@ A desktop Vulkan compute harness executed the actual `projectSphere` function wi
 ### Re-measurement of direct scene-global uploads
 
 Rebuilt the earlier experiment against the merged branch. Each frame slot supplied mapped storage buffers directly to the renderer, removing five GPU copies per eye. The city comparison used the same waypoint and noon, CPU 1 / GPU 0, no captures, A/B/B/A order. Both controls averaged 5.645 ms CPU recording. Candidate runs averaged 5.637 and 5.545 ms. GPU time was 8.150 and 8.173 ms/eye for controls versus 8.163 and 8.153 for the candidate. VrApi was 55.7 and 58.9 fps for controls versus 58.1 and 58.6. Battery was 79%, 41–42 °C after the runs. Reverted the candidate. The GPU timings overlapped and one candidate's CPU gain was only 0.008 ms/frame.
+
+### Depth slices for tiled point lights
+
+Each screen tile used to test every light overlapping its 2D rectangle, even when the surface was far outside a light's depth range. The tiled path now bins those same rectangles into four depth intervals. Slice boundaries are shared between CPU and shader; the bounds round outward across each boundary. Within a slice the light IDs remain in their original order and use the existing attenuation, normals, albedo and exposure. A host test compiled the actual list builder and checked 210,000 screen/depth samples spanning three off-axis projections, near-plane crossings and slice boundaries. All 106,553 in-range lights occurred in order.
+
+Low clock A/B/B/A comparisons, no captures, noon, same APK pair in both scenes. Each entry is two independent runs. Times average each run's last four app reports. Battery stayed at 79–81%; temperature reached 44.0 °C after the city runs.
+
+| Scene | Variant | GPU ms/eye | CPU record ms/frame | VrApi fps |
+| --- | --- | ---: | ---: | ---: |
+| Tavern | Original | 10.038 / 10.050 | 6.410 / 6.424 | 48.5 / 48.4 |
+| Tavern | Depth slices | 9.595 / 9.613 | 6.553 / 6.550 | 50.7 / 47.9 |
+| Main street | Original | 8.178 / 8.165 | 5.568 / 5.721 | 58.9 / 56.1 |
+| Main street | Depth slices | 8.045 / 8.065 | 5.580 / 5.677 | 58.3 / 58.6 |
+
+Kept the change for its GPU savings of about 0.88 ms per stereo frame in the tavern and 0.23 ms on the main street. The extra CPU list construction cost about 0.13 ms/frame in the tavern. Delivered fps varied across runs.

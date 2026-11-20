@@ -15,6 +15,8 @@ layout(push_constant, std430) uniform Pbo {
   vec3  origin; // lwc
   uint  tilesX;
   uint  tileSize;
+  uint  sliceStride;
+  float ends[3];
   } push;
 
 layout(binding = 0, std140) uniform UboScene {
@@ -40,7 +42,8 @@ void main() {
     discard;
 
   const uvec2 tile  = uvec2(fragCoord)/push.tileSize;
-  const uint  t     = tile.y*push.tilesX + tile.x;
+  const uint  slice = uint(z>=push.ends[0]) + uint(z>=push.ends[1]) + uint(z>=push.ends[2]);
+  const uint  t     = slice*push.sliceStride + tile.y*push.tilesX + tile.x;
   const uint  first = tileData[t*2+0];
   const uint  count = tileData[t*2+1];
   if(count==0)
