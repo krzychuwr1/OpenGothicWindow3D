@@ -54,6 +54,8 @@ class CommandLine {
     bool                isGpuProfile()     const { return gpuProfile; }
     // Profiling aid: -skip sun,ambient,lights,sky leaves those passes out
     bool                debugSkip(std::string_view pass) const { return skipPasses.find(pass)!=std::string::npos; }
+    // -capture SECONDS: XR saves both eyes' images as PNG files in the app's files folder
+    int                 xrCaptureInterval() const { return captureSec; }
     // XR CPU/GPU performance level request: "low" (testing, battery and heat), default high
     std::string_view    xrPerfLevel() const { return perfLevel; }
 
@@ -71,6 +73,7 @@ class CommandLine {
     bool                skipVideo    = false;
     bool                gpuProfile   = false;
     std::string         skipPasses;
+    int                 captureSec = 0;
     std::string         perfLevel;
     bool                devmode      = false;
     bool                noMenu       = false;

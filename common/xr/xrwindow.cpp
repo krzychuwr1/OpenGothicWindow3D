@@ -454,6 +454,8 @@ void XrWindow::Impl::createSwapchains() {
   // Mutable format: the game writes its gamma-encoded RGBA8 through a UNORM view of the sRGB image
   info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT |
                      XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT;
+  if(CommandLine::inst().xrCaptureInterval()>0)
+    info.usageFlags |= XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT; // -capture reads the eye images back
   info.format      = format;
   info.sampleCount = 1;
   info.width       = width;
