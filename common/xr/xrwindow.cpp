@@ -1351,8 +1351,24 @@ static bool uploadStatic(const VulkanNativeContext& vk, VkCommandBuffer cb, VkFe
   VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
   si.commandBufferCount = 1;
   si.pCommandBuffers    = &cb;
-  if(vkResetFences(vk.device, 1, &fence)!=VK_SUCCESS || vkQueueSubmit(vk.queue, 1, &si, fence)!=VK_SUCCESS ||
-     vkWaitForFences(vk.device, 1, &fence, VK_TRUE, UINT64_MAX)!=VK_SUCCESS)
+  if(vkResetFences(vk.device, 1, &fence)!=VK_SUCCESS)
+    return false;
+  const VkResult submitted = vkQueueSubmit(vk.queue, 1, &si, fence);
+  if(submitted!=VK_SUCCESS && submitted!=VK_ERROR_DEVICE_LOST)
+    return false;
+
+  // A wait can run out of memory even after the copy was accepted. Its staging
+  // buffer and command pool must survive until completion or terminal device loss.
+  VkResult waited = vkWaitForFences(vk.device, 1, &fence, VK_TRUE, UINT64_MAX);
+  if(waited==VK_ERROR_OUT_OF_HOST_MEMORY || waited==VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+    do {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      waited = vkGetFenceStatus(vk.device,fence);
+      } while(waited==VK_NOT_READY || waited==VK_ERROR_OUT_OF_HOST_MEMORY || waited==VK_ERROR_OUT_OF_DEVICE_MEMORY);
+    }
+  if(waited==VK_ERROR_DEVICE_LOST || submitted==VK_ERROR_DEVICE_LOST)
+    SystemApi::exit();
+  if(waited!=VK_SUCCESS || submitted!=VK_SUCCESS)
     return false;
 
   XrSwapchainImageReleaseInfo rel = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
