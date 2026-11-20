@@ -309,3 +309,14 @@ The original library failed a repeated segment-replacement reference-count check
 A failed segment, instrument bank or style parse could leave its caller with a pointer the loader had already released. Cache insertion failure could leak the parsed resource. A segment that failed partway through resolving styles was marked downloaded, so retrying could report success with a missing style.
 
 dmusic `0673d97` keeps each new resource local until parsing and cache insertion succeed, reuses styles already resolved by a previous partial attempt, and marks the segment downloaded only after completion. The host fixture observed the old loader return a stale bank pointer on a failed read. The repaired library passed failed reads for all three resource types, forced cache allocation failures, cached-reference reuse, two partial retries and a successful retry after the missing reference became available. Its counting allocator ended at zero. The Android release linked. These failure cases used synthetic host resources.
+
+### Lighting shading-rate upper bound, exclusive Quest runs
+
+Used one temporary APK, CPU level 1/GPU level 0, with normal shading (A) and uniform 2×2 fragment shading on the sun, ambient and tiled point lighting pipelines (B). Each run confirmed its active setting in the app log. The mean of the last four GPU samples per eye and VrApi FPS, in A/B/B/A order, were:
+
+| Scene | GPU ms/eye | FPS | Mean saving per stereo frame |
+|---|---|---|---|
+| NW_CITY_MAINSTREET_02 | 8.075 / 7.218 / 7.235 / 8.053 | 60.3 / 67.2 / 66.7 / 60.6 | 1.675 ms |
+| NW_TAVERNE | 9.608 / 7.430 / 7.475 / 9.595 | 51.2 / 65.9 / 65.7 / 51.5 | 4.298 ms |
+
+This exceeds the 1 ms threshold for investigating a full-rate centre and coarse periphery. Uniform 2×2 was removed from the source after the experiment. Shutdown and battery checks succeeded after all eight runs. The last ended at 84%, 45.0°C.
