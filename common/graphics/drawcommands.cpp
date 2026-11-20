@@ -150,11 +150,16 @@ uint16_t DrawCommands::commandId(const Material& m, Type type, uint32_t bucketId
   auto pShadow  = Shaders::inst().materialPipeline(m, type, Shaders::T_Shadow, bindless);
   auto pVsm     = Shaders::inst().materialPipeline(m, type, Shaders::T_Vsm,    bindless);
   auto pHiZ     = Shaders::inst().materialPipeline(m, type, Shaders::T_Depth,  bindless);
-  auto pMotion  = Shaders::inst().materialPipeline(m, type, Shaders::T_Motion, bindless);
   if(pMain==nullptr && pShadow==nullptr && pHiZ==nullptr)
     return uint16_t(-1);
 
   for(size_t i=0; i<cmd.size(); ++i) {
+#if defined(OPENGOTHIC_XR)
+    // Static and movable meshes can share shaders. Their shadow and motion
+    // passes classify the whole indirect command by type.
+    if(cmd[i].type!=type)
+      continue;
+#endif
     if(cmd[i].pMain!=pMain || cmd[i].pShadow!=pShadow || cmd[i].pHiZ!=pHiZ)
       continue;
     if(!bindless && cmd[i].bucketId!=bucketId)
@@ -169,7 +174,10 @@ uint16_t DrawCommands::commandId(const Material& m, Type type, uint32_t bucketId
   cx.pShadow     = pShadow;
   cx.pVsm        = pVsm;
   cx.pHiZ        = pHiZ;
-  cx.pMotion     = pMotion;
+#if defined(OPENGOTHIC_XR)
+  if(type!=Static)
+    cx.pMotion = Shaders::inst().materialPipeline(m, type, Shaders::T_Motion, bindless);
+#endif
   cx.bucketId    = bindless ? 0xFFFFFFFF : bucketId;
   cx.type        = type;
   cx.alpha       = m.alpha;
