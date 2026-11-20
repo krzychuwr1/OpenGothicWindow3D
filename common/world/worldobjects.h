@@ -173,8 +173,9 @@ class WorldObjects final {
     std::vector<EffectState>           effects;
 
     std::vector<std::unique_ptr<Npc>>  npcArr;
-    std::vector<uint64_t>              animDtAcc;   // animation time not yet applied (distant NPCs pose less often)
+#if defined(OPENGOTHIC_XR)
     uint64_t                           animFrame = 0;
+#endif
     std::vector<std::unique_ptr<Npc>>  npcInvalid; // dead or invalid TA
     std::vector<std::unique_ptr<Npc>>  npcRemoved; // removed, but may have a dangling references in game
     std::vector<Npc*>                  npcNear;

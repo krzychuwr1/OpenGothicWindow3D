@@ -136,6 +136,9 @@ class Npc final {
     auto       fightDistanceTo(const Npc& npc) const -> Tempest::Vec3;
 
     void       updateAnimation(uint64_t dt, bool force = false);
+#if defined(OPENGOTHIC_XR)
+    void       updateAnimationLod(uint64_t dt, const Tempest::Vec3& viewer, uint64_t frame);
+#endif
     void       updateTransform();
 
     std::string_view displayName() const;
@@ -630,6 +633,9 @@ class Npc final {
     MoveAlgo                       mvAlgo;
     FightAlgo                      fghAlgo;
     uint64_t                       lastEventTime=0;
+#if defined(OPENGOTHIC_XR)
+    uint64_t                       pendingPoseTime=0;
+#endif
 
     float                          angleY   = 0.f;
     float                          runAng   = 0.f;

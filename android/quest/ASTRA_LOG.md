@@ -24,6 +24,10 @@ Object vectors fall back to the camera pass when the instance buffer grows, and 
 
 Physical head-motion quality, HUD over moving geometry, morph deformation, recycled instance identities and alpha-tested moving silhouettes remain visual risks.
 
+## NPC animation
+
+The world stores NPCs in a vector which it sorts by handle and erases from during play. Its separate array of accumulated animation times stayed in the old order. A removal or sort could give one character another character's elapsed time. Quest now keeps the accumulator on the NPC itself and staggers distant updates by stable NPC handle. Non-XR builds use the original per-frame update. Save formats are unchanged.
+
 ## Focus and lifetime details
 
 - The old visibility check could begin a frame on the transition to visible and skip its end. Events now precede the focus decision, every successful begin has an end, and hidden frames submit zero layers.

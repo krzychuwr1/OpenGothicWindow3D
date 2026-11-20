@@ -432,34 +432,18 @@ void WorldObjects::updateAnimation(uint64_t dt) {
     return;
   if(dt==0)
     return;
-  // Poses follow absolute game time, so distant characters can be posed less often without drifting:
-  // every frame within 25 m of the camera, every 2nd frame within 60 m, every 4th beyond (staggered)
-  Tempest::Vec3 viewer;
-  bool          hasViewer = false;
+#if defined(OPENGOTHIC_XR)
   if(auto camera = Gothic::inst().camera()) {
-    viewer    = camera->originLwc();
-    hasViewer = true;
-    }
-  animFrame++;
-  animDtAcc.resize(npcArr.size(), 0);
-  const uint64_t frame = animFrame;
-  Workers::parallelTasks(npcArr,[this,dt,viewer,hasViewer,frame](std::unique_ptr<Npc>& ptr){
-    const size_t id  = size_t(&ptr - npcArr.data());
-    auto&        npc = *ptr;
-    animDtAcc[id] += dt;
-    uint64_t every = 1;
-    if(hasViewer && !npc.isPlayer()) {
-      const float d2 = (npc.position()-viewer).quadLength();
-      if(d2>6000.f*6000.f)
-        every = 4;
-      else if(d2>2500.f*2500.f)
-        every = 2;
-      }
-    if((frame+id)%every!=0)
-      return;
-    npc.updateAnimation(animDtAcc[id]);
-    animDtAcc[id] = 0;
-    });
+    const auto viewer = camera->originLwc();
+    const auto frame = ++animFrame;
+    Workers::parallelTasks(npcArr,[dt,viewer,frame](std::unique_ptr<Npc>& npc) {
+      npc->updateAnimationLod(dt,viewer,frame);
+      });
+    } else
+#endif
+    Workers::parallelTasks(npcArr,[dt](std::unique_ptr<Npc>& npc) {
+      npc->updateAnimation(dt);
+      });
   interactiveObj.parallelFor([dt](Interactive& i){
     i.updateAnimation(dt);
     });

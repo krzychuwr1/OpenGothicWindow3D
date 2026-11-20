@@ -4791,6 +4791,18 @@ void Npc::updateTransform() {
   updateAnimation(0, true);
   }
 
+#if defined(OPENGOTHIC_XR)
+void Npc::updateAnimationLod(uint64_t dt, const Vec3& viewer, uint64_t frame) {
+  const float distSq = (position()-viewer).quadLength();
+  const uint64_t every = isPlayer() || distSq<=2500.f*2500.f ? 1 : (distSq<=6000.f*6000.f ? 2 : 4);
+  pendingPoseTime += dt;
+  if((frame+uint32_t(handle().id))%every==0) {
+    updateAnimation(pendingPoseTime);
+    pendingPoseTime = 0;
+    }
+  }
+#endif
+
 void Npc::updateAnimation(uint64_t dt, bool force) {
   const auto camera = Gothic::inst().camera();
   if(isPlayer() && camera!=nullptr && camera->isFree())
