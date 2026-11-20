@@ -108,7 +108,13 @@ Renderer::Renderer() {
     state.setZTestMode(RenderState::ZTestMode::Always);
     motionTrial = dev.pipeline(Triangles,state,dev.shader(vs.data,vs.len),dev.shader(fs.data,fs.len));
     motionTrialGain = gains[trial-1];
-    Log::i("XR motion-vector trial ",trial);
+    if(trial==10) {
+      // Scale the scene for the comparison, keeping both known reference signals fixed.
+      const float gain = Gothic::settingsGetF("BENCHMARK","xrMotionGain");
+      if(gain>=0.5f && gain<=2.f)
+        motionTrialGain = Vec4(gain,gain,gain,1.f);
+      }
+    Log::i("XR motion-vector trial ",trial," scene gain=",motionTrialGain.x);
     }
 #endif
   auto& device = Resources::device();
