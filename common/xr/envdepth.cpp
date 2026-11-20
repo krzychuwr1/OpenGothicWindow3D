@@ -236,10 +236,15 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
     const XrQuaternionf facing = {0,std::sin(yaw),0,std::cos(yaw)};
     constexpr float k = 0.70710678f;
     out.pose.orientation = compose(facing,{-k,0,0,k});
-    out.pose.position = foot+front*(reach*0.5f)+up*(c+0.004f);
+    // The light reaches about h*sqrt(3) in front of a window h above the surface: size the
+    // footprint to the surface's distance below the window, not to a fixed reach
+    const float h = std::max(0.f,-c)+0.25f*size.height;
+    const float depthM = std::clamp(2.5f*h,0.4f,2.5f);
+    out.pose.position = foot+front*(depthM*0.5f)+up*(c+0.004f);
     out.uvOffset = {0.f,0.f};
     out.uvScale  = {1.f,1.f};
-    out.size     = {2.f*halfW,reach};
+    out.size     = {2.f*halfW,depthM};
+    out.fullSize = {2.f*halfW,depthM};
     out.drop     = std::max(0.f,-c);
     return out;
     };
@@ -334,6 +339,11 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
   out.uvScale = {float(bounds.r-bounds.l)/float(columns),float(bounds.b-bounds.t)/float(rows)};
   out.size = {2.f*halfW*out.uvScale.x*std::sqrt(1.f+a*a),reach*out.uvScale.y*std::sqrt(1.f+b*b)};
   out.drop = std::max(0.f,-c);
+  out.fullSize = {2.f*halfW,reach};
+  // Looking at the window, the floor in front can be measured where the table below it is not:
+  // when the horizontal surfaces under and behind the window include a higher one, prefer it
+  if(auto higher = fallback(); higher && higher->pose.position.y>out.pose.position.y+0.1f)
+    return higher;
   return out;
   }
 } // namespace

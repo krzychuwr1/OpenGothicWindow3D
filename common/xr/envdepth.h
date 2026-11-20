@@ -16,6 +16,7 @@ class EnvironmentDepth final {
       XrVector2f  uvOffset;        // clipped part of the full light footprint
       XrVector2f  uvScale;
       float       drop;            // metres below the bottom of the window
+      XrExtent2Df fullSize;        // the whole light footprint (width across, depth towards the viewer)
       };
 
     EnvironmentDepth();

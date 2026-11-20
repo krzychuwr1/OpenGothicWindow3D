@@ -281,7 +281,7 @@ struct XrWindow::Impl {
   struct Capsule { float a[4], b[4], tint[4]; };
   std::vector<Capsule>     handCapsules;
   std::array<Tempest::StorageBuffer,8> handsBuffer;
-  Tempest::RenderPipeline  handsPipeline;
+  Tempest::RenderPipeline  handsPipeline, handsFill;
   XrSwapchain              handsButton = XR_NULL_HANDLE;  // off / auto / always, idle or hovered
   bool                     handsButtonReady = false;
   int                      handsMode = 0;
@@ -297,7 +297,7 @@ struct XrWindow::Impl {
   // Window controls scale with the window (1 at the default size), not below half size
   static constexpr float   DefaultWindowHeight = 0.9f;
   float chromeScale() const { return std::clamp(windowHeight()/DefaultWindowHeight, 0.5f, 1.4f); }
-  float dimLeft()   const { return 0.09f*chromeScale(); }
+  float dimLeft()   const { return -0.10f*chromeScale(); } // relative to sliderCenter()
   float dimTravel() const { return 0.20f*chromeScale(); }
   bool                     sliderReady = false, dimDirty = false;
   bool                     dimStyleAvailable = false, dimUsesOpacity = false, grabTrigger = false;
@@ -383,9 +383,13 @@ struct XrWindow::Impl {
   int sliderRow() const;
   void fillSlider(VkCommandBuffer cmd, VkFence fence);
   V3   buttonCenter() const { return handleCenter() + V3{0,-0.10f*chromeScale(),0}; }
-  V3   aspectCenter() const { return buttonCenter() + V3{-0.12f*chromeScale(),0,0}; }
-  V3   curveCenter() const { return buttonCenter() + V3{-0.24f*chromeScale(),0,0}; }
-  V3   handsCenter() const { return buttonCenter() + V3{-0.36f*chromeScale(),0,0}; }
+  // The row below the handle, centred: hands, curve, aspect lock, VR/passthrough; the
+  // dimming slider below the row
+  V3   environmentCenter() const { return buttonCenter() + V3{ 0.18f*chromeScale(),0,0}; }
+  V3   aspectCenter() const { return buttonCenter() + V3{ 0.06f*chromeScale(),0,0}; }
+  V3   sliderCenter() const { return buttonCenter() + V3{0,-0.07f*chromeScale(),0}; }
+  V3   curveCenter() const { return buttonCenter() + V3{-0.06f*chromeScale(),0,0}; }
+  V3   handsCenter() const { return buttonCenter() + V3{-0.18f*chromeScale(),0,0}; }
   void fillCurve(VkCommandBuffer cmd, VkFence fence);
   bool isCurved() const { return curved && curveRadius>0.f && sceneShown; }
   // The arc is centred on the viewer at the moment the window is placed or curved
@@ -460,6 +464,7 @@ XrWindow::Impl::~Impl() {
     for(auto& b:handsBuffer)
       b = Tempest::StorageBuffer();
     handsPipeline = Tempest::RenderPipeline();
+    handsFill     = Tempest::RenderPipeline();
     }
   for(auto& t:handTracker)
     if(t!=XR_NULL_HANDLE && xrDestroyHandTracker)
@@ -1122,14 +1127,11 @@ void XrWindow::Impl::saveDim() {
 
 int XrWindow::Impl::sliderRow() const {
   // Dimming applies to passthrough only: hidden in VR mode
-  if(!sliderReady || !dimStyleAvailable || !roomAvailable() || immersive || lastDimHover==0 || !chromeShown())
+  // Darkens the passthrough room, or the landscape in VR mode; shown with the buttons
+  const bool canDim = immersive ? hasColorScale : (dimStyleAvailable && roomAvailable());
+  if(!sliderReady || !canDim || !chromeShown())
     return -1;
-  // Keep the slider within reach when a ray crosses the gap beside the button.
-  const XrDuration age = frame.predictedDisplayTime-lastDimHover;
-  const auto fade = std::max<XrDuration>(0,age-600'000'000);
-  if(fade>=250'000'000)
-    return -1;
-  return SliderRows-1-int(fade*SliderRows/250'000'000);
+  return SliderRows-1;
   }
 
 void XrWindow::Impl::destroyPassthrough() {
@@ -1528,6 +1530,7 @@ void XrWindow::Impl::smokeHand(Hand& hand) {
     hand.grab = (f>=108 && f<116) || (f>=292 && f<300) ? 1.f : 0.f;
     } else if(f<530) {
     // Aim and trigger. Start at the light end and drag continuously.
+    point = sliderCenter();
     point.x += dimLeft()+dimTravel()*0.85f*std::clamp((float(f)-330.f)/94.f,0.f,1.f);
     ray = true;
     hand.trigger = f>=330 && f<500 ? 1.f : 0.f;
@@ -1704,8 +1707,12 @@ void XrWindow::Impl::updateInput() {
     const bool startTrigger = h.hover==Grip::Dim && triggerDown;
     auto moveDim = [&](const V3& worldPoint) {
       const float x = toLocal(windowPose,worldPoint).x;
-      const float level = std::clamp((x-buttonCenter().x-dimLeft())/dimTravel(),0.f,1.f);
-      if(level!=passthroughDim && applyDim(level))
+      const float level = std::clamp((x-sliderCenter().x-dimLeft())/dimTravel(),0.f,1.f);
+      if(level==passthroughDim)
+        return;
+      if(immersive)
+        passthroughDim = level, dimDirty = true; // the landscape takes it in submit()
+      else if(applyDim(level))
         dimDirty = true;
       };
     if(canManipulate && (h.hover==Grip::Dim || h.hover==Grip::Environment))
@@ -1715,7 +1722,7 @@ void XrWindow::Impl::updateInput() {
       const auto& action = grabTrigger ? h.trigger : h.grab;
       if(!action || *action<0.35f || !tracked ||
          ((grabbed==Grip::Environment || grabbed==Grip::Dim) && !roomAvailable()) ||
-         (grabbed==Grip::Dim && !dimStyleAvailable)) {
+         (grabbed==Grip::Dim && !(immersive ? hasColorScale : dimStyleAvailable))) {
         saveDim();
         if(grabbed==Grip::Handle && curved)
           updateCurveRadius();
@@ -1831,8 +1838,8 @@ void XrWindow::Impl::updateInput() {
     const bool quiet = steadyNow-lastGameInput.load() > 3000000000;
     const float step = std::clamp(float(frame.predictedDisplayPeriod)*1e-9f*5.f, 0.02f, 0.3f);
     const float halfW = windowWidth*0.5f, halfH = windowHeight()*0.5f;
-    auto capsule = [&](const XrVector3f& a, const XrVector3f& b, float radius, float opacity, V3 tint) {
-      handCapsules.push_back({{a.x,a.y,a.z,radius},{b.x,b.y,b.z,opacity},{tint.x,tint.y,tint.z,0.f}});
+    auto capsule = [&](const XrVector3f& a, const XrVector3f& b, float radius, float opacity, V3 tint, bool ray = false) {
+      handCapsules.push_back({{a.x,a.y,a.z,radius},{b.x,b.y,b.z,opacity},{tint.x,tint.y,tint.z,ray ? 1.f : 0.f}});
       };
     for(size_t i=0; i<hands.size() && i<2; ++i) {
       auto& h = hands[i];
@@ -1863,7 +1870,7 @@ void XrWindow::Impl::updateInput() {
           if(!(a.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) || !(b.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
             return;
           const float r = std::clamp(std::min(a.radius,b.radius), 0.004f, 0.02f);
-          capsule(a.pose.position, b.pose.position, r, 0.5f*fade, ghost);
+          capsule(a.pose.position, b.pose.position, r, fade, ghost);
           };
         bone(XR_HAND_JOINT_WRIST_EXT, XR_HAND_JOINT_THUMB_METACARPAL_EXT);
         for(int j=XR_HAND_JOINT_THUMB_METACARPAL_EXT; j<XR_HAND_JOINT_THUMB_TIP_EXT; ++j)
@@ -1886,8 +1893,8 @@ void XrWindow::Impl::updateInput() {
           if(std::abs(l.x)<halfW+0.4f && l.y>-halfH-0.5f && l.y<halfH+0.2f) {
             const bool target = h.hover!=Grip::None;
             const V3 tint = target ? V3{1.f,0.88f,0.55f} : ghost;
-            capsule(h.aim.position, toXr(*hit), 0.0012f, (target ? 0.7f : 0.45f)*fade, tint);
-            capsule(toXr(*hit), toXr(*hit), target ? 0.008f : 0.006f, 0.9f*fade, tint);
+            capsule(h.aim.position, toXr(*hit), 0.0012f, (target ? 0.7f : 0.45f)*fade, tint, true);
+            capsule(toXr(*hit), toXr(*hit), target ? 0.008f : 0.006f, 0.9f*fade, tint, true);
             }
           }
         }
@@ -1977,10 +1984,11 @@ Grip XrWindow::Impl::targetAt(float x, float y) const {
   const V3 lock = aspectCenter();
   if(aspectReady && std::abs(x-lock.x)<0.05f*k && std::abs(y-lock.y)<0.04f*k)
     return Grip::Aspect;
-  const V3 button = buttonCenter();
+  const V3 button = environmentCenter();
   if(buttonReady && roomAvailable() && std::abs(x-button.x)<0.065f*k && std::abs(y-button.y)<0.04f*k)
     return Grip::Environment;
-  if(sliderRow()>=0 && x>=button.x+dimLeft()-0.025f*k && x<=button.x+dimLeft()+dimTravel()+0.025f*k && std::abs(y-button.y)<0.032f*k)
+  const V3 slide = sliderCenter();
+  if(sliderRow()>=0 && x>=slide.x+dimLeft()-0.025f*k && x<=slide.x+dimLeft()+dimTravel()+0.025f*k && std::abs(y-slide.y)<0.025f*k)
     return Grip::Dim;
   return Grip::None;
   }
@@ -2146,6 +2154,8 @@ void XrWindow::drawHands(Encoder<CommandBuffer>& cmd, uint8_t eye, uint8_t slot)
     st.setBlendSource(RenderState::BlendMode::One);
     st.setBlendDest(RenderState::BlendMode::OneMinusSrcAlpha);
     s.handsPipeline = s.device->pipeline(Triangles,st,shader("hand_ghost.vert.sprv"),shader("hand_ghost.frag.sprv"));
+    st.setBlendDest(RenderState::BlendMode::Zero); // the fill replaces the outline under it
+    s.handsFill = s.device->pipeline(Triangles,st,shader("hand_ghost.vert.sprv"),shader("hand_ghost.frag.sprv"));
     }
   auto& buf = s.handsBuffer[slot%s.handsBuffer.size()];
   const size_t bytes = s.handCapsules.size()*sizeof(Impl::Capsule);
@@ -2186,9 +2196,13 @@ void XrWindow::drawHands(Encoder<CommandBuffer>& cmd, uint8_t eye, uint8_t slot)
   cmd.setDebugMarker("XR ghost hands");
   cmd.setFramebuffer({{target, Vec4(0,0,0,0), Tempest::Preserve}});
   cmd.setBinding(0, buf);
-  cmd.setPushData(&push, sizeof(push));
-  cmd.setPipeline(s.handsPipeline);
-  cmd.draw(nullptr, 0, 6, 0, s.handCapsules.size());
+  // Dark hands as VRON Engine draws them: pale outlines, the dark fill over them, then rays
+  for(int pass=0; pass<3; ++pass) {
+    push.size[3] = float(pass);
+    cmd.setPushData(&push, sizeof(push));
+    cmd.setPipeline(pass==1 ? s.handsFill : s.handsPipeline);
+    cmd.draw(nullptr, 0, 6, 0, s.handCapsules.size());
+    }
   s.handsDrawn[eye] = true;
   }
 
@@ -2326,8 +2340,13 @@ void XrWindow::drawSurfaceLight(Renderer& renderer, Encoder<CommandBuffer>& cmd,
     return;
   const auto& plane = *s.environmentDepth.surface();
   if(auto* target = s.surfaceLight.target(*s.device,s.session,s.eyeColorFormat,*s.vk.queueLock,s.frame.predictedDisplayTime)) {
+    // The window's light reaches the surface from its lower part: about a quarter of its height
+    // above its bottom edge. A curved window's light follows its arc.
+    const Tempest::Vec4 footprint(plane.fullSize.width,plane.fullSize.height,s.windowWidth,
+                                  s.isCurved() ? s.curveRadius : 0.f);
     const bool written = renderer.drawSurfaceLight(cmd,*target,{plane.uvOffset.x,plane.uvOffset.y},
-                            {plane.uvScale.x,plane.uvScale.y},s.passthroughDim,plane.drop,s.eyeColorFormat==VK_FORMAT_R8G8B8A8_SRGB);
+                            {plane.uvScale.x,plane.uvScale.y},s.passthroughDim,plane.drop,s.eyeColorFormat==VK_FORMAT_R8G8B8A8_SRGB,
+                            footprint,plane.drop+0.25f*s.windowHeight());
     s.surfaceLight.recorded(written);
     if(s.traceSurface) Log::i("XR surface texture recorded=",int(written));
     }
@@ -3091,7 +3110,14 @@ bool XrWindow::submit(bool rendered) {
   XrCompositionLayerPassthroughFB pt = {XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};
   XrCompositionLayerEquirect2KHR sky = {XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR};
   XrCompositionLayerEquirectKHR sky1 = {XR_TYPE_COMPOSITION_LAYER_EQUIRECT_KHR};
+  XrCompositionLayerColorScaleBiasKHR skyDim = {XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR};
   if(s.panoramaReady && (s.immersive || !s.roomAvailable())) {
+    if(s.hasColorScale && s.passthroughDim>0.f) {
+      const float k = 1.f-0.92f*s.passthroughDim;
+      skyDim.colorScale = {k,k,k,1.f};
+      sky.next  = &skyDim;
+      sky1.next = &skyDim;
+      }
     sky.space = s.localSpace;
     sky.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     sky.subImage.swapchain = s.panorama;
@@ -3213,7 +3239,7 @@ bool XrWindow::submit(bool rendered) {
     button.subImage.imageRect.extent = {int32_t(Impl::ButtonW), int32_t(Impl::ButtonH)};
     button.subImage.imageArrayIndex = (s.immersive ? 2u : 0u) + (hover ? 1u : 0u);
     button.pose = s.windowPose;
-    button.pose.position = toXr(toWorld(s.windowPose, s.buttonCenter()));
+    button.pose.position = toXr(toWorld(s.windowPose, s.environmentCenter()));
     button.size = {0.104f*s.chromeScale(),0.065f*s.chromeScale()};
     addLayer(button);
     }
@@ -3265,7 +3291,7 @@ bool XrWindow::submit(bool rendered) {
   XrCompositionLayerQuad slider[2] = {{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
   const int row = s.sliderRow();
   if(hasImage && row>=0) {
-    const auto center = s.buttonCenter();
+    const auto center = s.sliderCenter();
     for(unsigned part=0; part<2; ++part) {
       const bool knob = part==1;
       auto& q = slider[part];

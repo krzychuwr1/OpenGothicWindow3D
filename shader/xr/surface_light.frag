@@ -8,8 +8,11 @@ layout(location = 0) out vec4 result;
 #ifdef PALETTE
 #include "lighting/tonemapping.glsl"
 
+layout(binding = 1) uniform sampler2D previous;
+
 layout(push_constant, std140) uniform Push {
   VideoSettings video;
+  vec4          extra; // x: how much of this frame enters the running average (1 to reset)
   } push;
 
 void main() {
@@ -27,40 +30,59 @@ void main() {
       vec2 sampleUv = vec2((band+cell.x)/8.0,cell.y);
       vec3 display = gameTonemap(textureLod(source,sampleUv,0.0).rgb,push.video);
       vec3 linear = pow(display,vec3(2.2));
-      // Give small bright emitters (fire and spells) enough influence to
-      // change the broad spill, without copying their shapes onto the desk.
-      float peak = max(max(linear.r,linear.g),linear.b);
-      float weight = mix(0.65,1.35,cell.y)*(1.0+2.0*peak);
+      float weight = mix(0.65,1.35,cell.y);
       sum += linear*weight;
       weights += weight;
       }
     }
-  result = vec4(sum/weights,1.0);
+  // Light from a screen changes smoothly: average over time instead of following every frame
+  vec3 prev = texelFetch(previous, ivec2(gl_FragCoord.xy), 0).rgb;
+  result = vec4(mix(prev, sum/weights, push.extra.x), 1.0);
   }
 #else
 layout(push_constant, std140) uniform Push {
-  vec2 offset;
-  vec2 scale;
+  vec2  offset;
+  vec2  scale;
   float strength;
-  uint srgbTarget;
+  uint  srgbTarget;
+  float pad0, pad1;
+  vec4  footprint; // full footprint width and depth (m), window width (m), curve radius (m, 0 flat)
+  vec4  emitter;   // height of the window's light above the surface (m)
   } push;
 
 void main() {
   vec2 p = push.offset+uv*push.scale;
-  // Distant points receive a wider mixture of screen colours. Keep vertical
-  // detail completely diffuse so light on a table never resembles a reflection.
-  float spread = mix(0.12,0.38,p.y);
-  vec3 color = 0.40*textureLod(source,vec2(p.x,0.5),0.0).rgb;
-  color += 0.24*textureLod(source,vec2(p.x-spread,0.5),0.0).rgb;
-  color += 0.24*textureLod(source,vec2(p.x+spread,0.5),0.0).rgb;
-  color += 0.06*textureLod(source,vec2(p.x-2.0*spread,0.5),0.0).rgb;
-  color += 0.06*textureLod(source,vec2(p.x+2.0*spread,0.5),0.0).rgb;
-  float lateral = 1.0-smoothstep(0.28,1.0,abs(2.0*p.x-1.0));
-  float falloff = smoothstep(0.0,0.10,p.y)*exp(-2.8*p.y)*(1.0-smoothstep(0.65,1.0,p.y));
+  // Position on the surface, metres: across the window, and from the window's foot towards the viewer
+  const float W = push.footprint.z, R = push.footprint.w;
+  float x = (p.x-0.5)*push.footprint.x;
+  float z = p.y*push.footprint.y;
+  // Distance in front of the window's bottom edge, and position along it. A curved window's
+  // edge is an arc, so its light follows the arc.
+  float dist = z, along = x;
+  if(R>0.0) {
+    dist  = R-length(vec2(x,R-z));
+    along = R*atan(x,R-z);
+    }
+  // A vertical screen h above a surface lights it with E ~ d*h/(d^2+h^2)^2: highest at d = h/sqrt(3),
+  // so a window just above a table lights the table right in front of it.
+  const float h  = max(push.emitter.x, 0.04);
+  const float d  = max(dist, 0.0);
+  const float E  = d*h/pow(d*d+h*h,2.0);
+  const float Ep = 9.0/(16.0*sqrt(3.0)*h*h);
+  const float near = smoothstep(-0.02, 0.02, dist);
+  const float a = clamp(abs(along)/max(W,0.1)*2.0, 0.0, 2.0);
+  const float lateral = 1.0-smoothstep(0.75, 1.35, a); // fades a little beyond the window's sides
+
+  // Colour along the window, softly averaged across neighbouring bands
+  const float u = clamp(along/max(W,0.1)+0.5, 0.0, 1.0);
+  vec3 color = 0.5*textureLod(source,vec2(u,0.5),0.0).rgb;
+  color += 0.25*textureLod(source,vec2(u-0.2,0.5),0.0).rgb;
+  color += 0.25*textureLod(source,vec2(u+0.2,0.5),0.0).rgb;
+
   // Feather the detected tabletop boundary even when it clips the larger footprint.
   vec2 edge = min(uv,1.0-uv)*vec2(32.0,18.0);
   float support = smoothstep(0.5,2.0,min(edge.x,edge.y));
-  vec3 light = color*lateral*falloff*support*push.strength;
+  vec3 light = color*(E/Ep)*near*lateral*support*push.strength;
   float alpha = max(max(light.r,light.g),light.b);
   // Borrowed sRGB images have UNORM Vulkan views. Supply encoded RGB to that
   // view so runtime sampling reconstructs linear light before compositing it.

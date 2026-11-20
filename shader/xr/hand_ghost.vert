@@ -6,7 +6,7 @@
 struct Capsule {
   vec4 a;    // xyz, radius (metres)
   vec4 b;    // xyz, opacity
-  vec4 tint; // rgb, unused
+  vec4 tint; // rgb, 1 for a pointer ray (0 for a hand bone)
   };
 
 layout(binding = 0, std430) readonly buffer Capsules {
@@ -15,16 +15,24 @@ layout(binding = 0, std430) readonly buffer Capsules {
 
 layout(push_constant, std430) uniform Push {
   mat4 viewProject; // LOCAL -> clip of this eye (Vulkan, y down)
-  vec4 size;        // image width, height, focal length in pixels (vertical), unused
+  vec4 size;        // image width, height, focal length in pixels (vertical),
+                    // pass: 0 hand outline, 1 hand fill, 2 rays
   } push;
 
 layout(location = 0) out vec2 outA;
 layout(location = 1) out vec2 outB;
 layout(location = 2) out vec2 outRadius;  // radius in pixels, opacity
 layout(location = 3) out vec3 outTint;
+layout(location = 4) flat out int outPass;
 
 void main() {
   const Capsule c = caps[gl_InstanceIndex];
+  const int  pass = int(push.size.w+0.5);
+  const bool ray  = c.tint.w>0.5;
+  if(ray!=(pass==2)) {
+    gl_Position = vec4(2.0,2.0,0.0,1.0); // drawn in another pass
+    return;
+    }
   vec4 pa = push.viewProject*vec4(c.a.xyz,1.0);
   vec4 pb = push.viewProject*vec4(c.b.xyz,1.0);
   if(pa.w<0.02 || pb.w<0.02) {
@@ -33,7 +41,9 @@ void main() {
     }
   const vec2 sa = (pa.xy/pa.w*0.5+0.5)*push.size.xy;
   const vec2 sb = (pb.xy/pb.w*0.5+0.5)*push.size.xy;
-  const float r = max(c.a.w*push.size.z/min(pa.w,pb.w), 1.0) + 1.5;
+  // The outline pass widens each bone; the fill drawn over it leaves only the silhouette's edge
+  const float outline = pass==0 ? 2.5 : 0.0;
+  const float r = max(c.a.w*push.size.z/min(pa.w,pb.w), 1.0) + outline + 1.5;
 
   vec2 dir = sb-sa;
   float len = length(dir);
@@ -47,5 +57,6 @@ void main() {
   outB = sb;
   outRadius = vec2(r-1.5, c.b.w);
   outTint = c.tint.rgb;
+  outPass = pass;
   gl_Position = vec4(p/push.size.xy*2.0-1.0, 0.0, 1.0);
   }

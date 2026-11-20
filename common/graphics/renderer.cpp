@@ -2338,10 +2338,10 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
 
 #ifdef OPENGOTHIC_XR
 bool Renderer::drawSurfaceLight(Encoder<CommandBuffer>& cmd, Attachment& target, Vec2 uvOffset, Vec2 uvScale,
-                                float dim, float drop, bool srgbSwapchain) {
+                                float dim, float drop, bool srgbSwapchain, Vec4 footprint, float emitterHeight) {
   if(sceneLinear.isEmpty() || target.isEmpty())
     return false;
-  if(surfacePalette.isEmpty()) {
+  if(surfacePalette[0].isEmpty() || surfacePalette[1].isEmpty()) {
     const auto now = Application::tickCount();
     if(now<surfaceRetryAfter)
       return false;
@@ -2358,14 +2358,18 @@ bool Renderer::drawSurfaceLight(Encoder<CommandBuffer>& cmd, Attachment& target,
           *pipeline = device.pipeline(Triangles,state,vertex,device.shader(fs.data,fs.len));
           }
         }
-      surfacePalette = device.attachment(TextureFormat::RGBA8,8,1);
+      // Two palettes, alternating: each frame blends into the previous (16-bit, so slow
+      // averaging does not stall on 8-bit steps)
+      for(auto& p:surfacePalette)
+        p = device.attachment(TextureFormat::RGBA16F,8,1);
+      surfacePaletteFresh = true;
       }
     catch(const std::bad_alloc&) {}
     catch(const std::system_error& e) {
       if(e.code()!=GraphicsErrc::OutOfVideoMemory && e.code()!=GraphicsErrc::OutOfHostMemory)
         throw;
       }
-    if(surfacePalette.isEmpty()) {
+    if(surfacePalette[0].isEmpty() || surfacePalette[1].isEmpty()) {
       surfaceRetryAfter = now+3000;
       Log::e("XR surface light allocation failed, retrying in three seconds");
       return false;
@@ -2375,10 +2379,15 @@ bool Renderer::drawSurfaceLight(Encoder<CommandBuffer>& cmd, Attachment& target,
   // Match the eye's tonemapping before averaging the emitted display colours.
   const Vec4 video((settings.zVidBrightness-0.5f)*0.1f, std::max(1.5f-settings.zVidContrast,0.01f),
                    (1.f/2.2f)/std::max(2.f*settings.zVidGamma,0.01f),1.f);
+  const uint8_t prev = surfacePaletteCurrent, cur = uint8_t(1-prev);
+  surfacePaletteCurrent = cur;
+  struct GatherPush { Vec4 video; Vec4 extra; } gather{video,Vec4(surfacePaletteFresh ? 1.f : 0.06f,0,0,0)};
+  surfacePaletteFresh = false;
   cmd.setDebugMarker("XR surface light palette");
-  cmd.setFramebuffer({{surfacePalette,Tempest::Discard,Tempest::Preserve}});
+  cmd.setFramebuffer({{surfacePalette[cur],Tempest::Discard,Tempest::Preserve}});
   cmd.setBinding(0,sceneLinear,sampler);
-  cmd.setPushData(video);
+  cmd.setBinding(1,surfacePalette[prev],Sampler::nearest());
+  cmd.setPushData(gather);
   cmd.setPipeline(surfaceGather);
   cmd.draw(nullptr,0,3);
 
@@ -2386,13 +2395,16 @@ bool Renderer::drawSurfaceLight(Encoder<CommandBuffer>& cmd, Attachment& target,
     Vec2 offset, scale;
     float strength;
     uint32_t srgb;
+    float pad0, pad1;
+    Vec4 footprint, emitter;
     } push{uvOffset,uvScale,
            // Game scenes average 5-20% brightness: enough gain to read as light from a screen
            // in a dim room, stronger when the passthrough is dimmed
-           (1.7f+1.2f*dim)/(1.f+drop*drop),srgbSwapchain ? 1u : 0u};
+           (1.7f+1.2f*dim)/(1.f+0.5f*drop*drop),srgbSwapchain ? 1u : 0u,0.f,0.f,
+           footprint,Vec4(emitterHeight,0,0,0)};
   cmd.setDebugMarker("XR surface light spill");
   cmd.setFramebuffer({{target,Tempest::Discard,Tempest::Preserve}});
-  cmd.setBinding(0,surfacePalette,sampler);
+  cmd.setBinding(0,surfacePalette[cur],sampler);
   cmd.setPushData(push);
   cmd.setPipeline(surfaceSpill);
   cmd.draw(nullptr,0,3);

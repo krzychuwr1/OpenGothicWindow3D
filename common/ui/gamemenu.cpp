@@ -415,7 +415,7 @@ void GameMenu::addXrVideoChoices(bool foveation, bool surfaceLight, bool windowF
     {true,"MENUITEM_XR_AA","Anti-aliasing","Off|CMAA2","Smooths edges in the game scene before drawing the interface","xrCmaa2"},
     {windowFilter,"MENUITEM_XR_FILTER","Window filtering","Default|Enhanced","Asks the headset to supersample and sharpen the window","xrWindowFilter"},
     {foveation,"MENUITEM_XR_FOVEATION","Foveation","Off|On","Shades peripheral lighting at lower detail around the direction your head faces","xrFoveation"},
-    {surfaceLight,"MENUITEM_XR_SURFACE_LIGHT","Surface light","Off|On","Spills the game's colours onto the table or floor below the window","xrSurfaceLight"},
+    {surfaceLight,"MENUITEM_XR_SURFACE_LIGHT","Surface light (experimental)","Off|On","Spills the game's colours onto the table or floor below the window (experimental)","xrSurfaceLight"},
     };
   const auto count = std::count_if(std::begin(choices),std::end(choices),[](const Choice& c){ return c.enabled; });
   if(end-device<std::ptrdiff_t(std::size(stock))+2*count)
@@ -1253,7 +1253,7 @@ void GameMenu::updateVideo() {
       if(it.handle==nullptr)
         continue;
       if(it.name=="MENUITEM_VID_DEVICE") {
-        it.handle->text[0] = "SpaceWarp";
+        it.handle->text[0] = "SpaceWarp (experimental)";
         it.handle->text[1] = "Renders every other frame; the headset fills in the rest (experimental)";
         }
       if(it.name=="MENUITEM_VID_DEVICE_CHOICE") {

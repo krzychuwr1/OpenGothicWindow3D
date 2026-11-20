@@ -61,7 +61,8 @@ class Renderer final {
     void drawSpaceWarpDebug(Tempest::Encoder<Tempest::CommandBuffer>& cmd, Tempest::Attachment& motion, Tempest::Attachment& result);
 #ifdef OPENGOTHIC_XR
     bool drawSurfaceLight(Tempest::Encoder<Tempest::CommandBuffer>& cmd, Tempest::Attachment& target,
-                          Tempest::Vec2 uvOffset, Tempest::Vec2 uvScale, float dim, float drop, bool srgbSwapchain);
+                          Tempest::Vec2 uvOffset, Tempest::Vec2 uvScale, float dim, float drop, bool srgbSwapchain,
+                          Tempest::Vec4 footprint, float emitterHeight);
     void drawSpaceWarp(Tempest::Encoder<Tempest::CommandBuffer>& cmd, WorldView& wview,
                        Tempest::Attachment& motion, Tempest::ZBuffer& depth, const Tempest::VectorImage::Mesh& ui,
                        const Tempest::VectorImage::Mesh* counters, bool& hudReady, Tempest::Attachment* debugOutput);
@@ -72,7 +73,9 @@ class Renderer final {
   private:
     Tempest::Attachment debugMotion;
 #ifdef OPENGOTHIC_XR
-    Tempest::Attachment surfacePalette;
+    Tempest::Attachment surfacePalette[2];
+    uint8_t             surfacePaletteCurrent = 0;
+    bool                surfacePaletteFresh = true;
     Tempest::RenderPipeline surfaceGather, surfaceSpill;
     uint64_t surfaceRetryAfter = 0;
     int lightingEye = -1;

@@ -35,11 +35,16 @@ Uninstalling the app keeps the game files; delete `/sdcard/OpenGothic` to remove
   controller, push or pull the thumbstick while holding to move it away or closer.
 - **Resize:** reach for a bottom corner until a bracket appears, then grab and drag.
 - **Switch surroundings:** point at the crescent button below the handle and pinch or squeeze the controller grip to enter a quiet dusk landscape. The window icon brings back passthrough. The choice is saved in `INTERNAL/xrEnvironment` (0 for passthrough, 1 for VR).
-- **Dim the room:** hover over the crescent button and drag the slider that appears beside it.
+- **Dim the room:** the slider below the buttons darkens the passthrough room, or the
+  landscape in VR mode.
 - **Lock the shape:** the padlock button keeps the window's aspect ratio while you resize it.
 - **Curve the window:** the button with the arc curves the window around you like a curved
   monitor. The game is still seen in full 3D through it, and SpaceWarp keeps working.
-- The buttons stay faint until you point at them.
+- The buttons appear when you point at the handle and hide again a few seconds after you stop.
+- **Ghost hands:** the hand button shows your hands as dark outlines with pointing rays: off,
+  automatically when you raise a hand after a few seconds without keyboard, mouse or pad, or always.
+- **Surface light** (Video settings, experimental): the game's colours fall on the table or floor
+  under the window.
 - **Recenter:** hold the Meta button; the window comes back in front of you.
 - The window opens at the distance where it shows the game's full field of view. Further away it
   frames less of the scene, as a real window would.
