@@ -578,3 +578,11 @@ Tempest's PNG encoder ignored short writes and the output device's final flush. 
 A native MSVC fixture linked the production codec with the vendored libpng and zlib. It exercised successful RGBA8 output, short and throwing writes, and rejected and throwing final flushes. The old encoder missed all five result/flush checks. The new encoder passed, and an independent decoder recovered the exact 16 RGBA channel bytes. A PowerShell fixture using the production capture routine passed clean transfer, interrupted transfer, same-length corruption and existing destination cases. It preserved incomplete and pre-existing pairs.
 
 On Quest, the uninstrumented Android Release build ran city combat in dusk with SpaceWarp, motion visualization and a 15-second eye capture interval. The stopped process left four complete pairs. All eight transferred hashes matched, and each PNG decoded at 1600×900. The headset ended at 93% and 39.0 °C. Disk exhaustion and USB failure were exercised only by host fixtures.
+
+### Honor each announced LOCAL-space change at its effective time
+
+If the runtime announced two recenters before the next frame, the second timestamp replaced the first. A frame between their effective times could reuse the previous window placement, held grab and SpaceWarp history after the coordinate system had changed. The XR session now keeps pending times, consumes all changes due at the predicted display time and performs one placement/input reset for that frame.
+
+A host fixture ran the production event filter and placement gate. It covered two future changes, out-of-order announcements, duplicate times, several changes due in one frame, another session and another space type. The old code failed four checks. The new code reset all four required frames and preserved held input on intervening frames. Android Release linked. Multiple physical recenter events were not generated on the unattended headset.
+
+Source review also identified three remaining input cases. Android can report a canceled hardware key-up, physical gamepad removal can look like a normal button release, and a quick native gamepad tap can be consumed entirely between two game updates. Android's mouse translation also omits the two side buttons supported by the game's bindings. These cases have not been reproduced with external peripherals on Quest.

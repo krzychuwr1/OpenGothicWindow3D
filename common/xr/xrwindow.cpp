@@ -202,7 +202,7 @@ struct XrWindow::Impl {
   float                    windowWidth = 2.4f;
   float                    verticalFov = 67.5f;
   bool                     placed      = false;
-  XrTime                   recenterTime = 0;
+  std::vector<XrTime>      recenterTimes;
   int                      grabbedBy   = -1;
   Grip                     grabbed     = Grip::None;
   bool                     grabNear    = false;
@@ -923,7 +923,7 @@ bool XrWindow::Impl::pollEvents() {
       case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING: {
         auto& change = *reinterpret_cast<XrEventDataReferenceSpaceChangePending*>(&ev);
         if(change.session==session && change.referenceSpaceType==XR_REFERENCE_SPACE_TYPE_LOCAL)
-          recenterTime = change.changeTime;
+          recenterTimes.push_back(change.changeTime);
         break;
         }
       case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
@@ -937,8 +937,8 @@ bool XrWindow::Impl::pollEvents() {
   }
 
 void XrWindow::Impl::placeWindow() {
-  if(recenterTime!=0 && frame.predictedDisplayTime>=recenterTime) {
-    recenterTime = 0;
+  const auto due = [this](XrTime t) { return t<=frame.predictedDisplayTime; };
+  if(std::erase_if(recenterTimes,due)!=0) {
     placed = false;
     cancelInput();
     }
