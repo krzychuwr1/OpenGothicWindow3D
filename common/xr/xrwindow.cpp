@@ -162,6 +162,7 @@ struct XrWindow::Impl {
   // Window frame parts: grab handle (idle/hover/held) and resize corners (left/right, hover/held)
   XrSwapchain              handleSwapchain = XR_NULL_HANDLE;
   XrSwapchain              cornerSwapchain = XR_NULL_HANDLE;
+  bool                     chromeAttempted = false;
   bool                     chromeReady     = false;
   static constexpr uint32_t HandleW = 256, HandleH = 32, CornerSize = 64;
 
@@ -447,16 +448,19 @@ void XrWindow::Impl::createSession() {
   VkCommandPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   poolInfo.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
   poolInfo.queueFamilyIndex = vk.queueFamily;
-  vkCreateCommandPool(vk.device, &poolInfo, nullptr, &pool);
+  if(vkCreateCommandPool(vk.device, &poolInfo, nullptr, &pool)!=VK_SUCCESS)
+    throw std::runtime_error("OpenXR upload command pool");
   VkCommandBufferAllocateInfo alloc = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
   alloc.commandPool        = pool;
   alloc.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
   alloc.commandBufferCount = Ring;
-  vkAllocateCommandBuffers(vk.device, &alloc, cmd);
+  if(vkAllocateCommandBuffers(vk.device, &alloc, cmd)!=VK_SUCCESS)
+    throw std::runtime_error("OpenXR upload command buffers");
   for(auto& f:fence) {
     VkFenceCreateInfo fi = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     fi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    vkCreateFence(vk.device, &fi, nullptr, &f);
+    if(vkCreateFence(vk.device, &fi, nullptr, &f)!=VK_SUCCESS)
+      throw std::runtime_error("OpenXR upload fence");
     }
 
   createSwapchains();
@@ -471,17 +475,11 @@ void XrWindow::Impl::createSwapchains() {
   std::vector<int64_t> formats(count);
   xrEnumerateSwapchainFormats(session, count, &count, formats.data());
 
-  // The game writes gamma-encoded colour into an RGBA8 image; copying those bytes into an
-  // sRGB image lets the compositor decode them correctly.
-  int64_t format = VK_FORMAT_R8G8B8A8_SRGB;
-  bool    found  = false;
-  for(auto f:formats)
-    if(f==VK_FORMAT_R8G8B8A8_SRGB)
-      found = true;
-  if(!found) {
-    Log::e("OpenXR: RGBA8 sRGB swapchains are not supported, colours will be off");
-    format = formats.empty() ? VK_FORMAT_R8G8B8A8_UNORM : formats[0];
-    }
+  // The renderer and static uploads both require four RGBA8 channels.
+  auto supported = [&](int64_t f) { return std::find(formats.begin(), formats.end(), f)!=formats.end(); };
+  const int64_t format = supported(VK_FORMAT_R8G8B8A8_SRGB) ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+  if(!supported(format))
+    throw std::runtime_error("OpenXR requires an RGBA8 window swapchain");
 
   XrSwapchainCreateInfo info = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
   // Mutable format: the game writes its gamma-encoded RGBA8 through a UNORM view of the sRGB image
@@ -1054,55 +1052,70 @@ static uint32_t pixel(float r, float g, float b, float o, float a) {
   return c(r*a) | (c(g*a)<<8) | (c(b*a)<<16) | (c(a)<<24);
   }
 
-static void uploadStatic(const VulkanNativeContext& vk, VkCommandBuffer cb, VkFence fence, XrSwapchain sc,
+static bool uploadStatic(const VulkanNativeContext& vk, VkCommandBuffer cb, VkFence fence, XrSwapchain sc,
                          uint32_t w, uint32_t h, uint32_t layers, const std::vector<uint32_t>& rgba) {
-  uint32_t index = 0;
-  XrSwapchainImageAcquireInfo acq = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-  if(!XR_SUCCEEDED(xrAcquireSwapchainImage(sc, &acq, &index)))
-    return;
-  XrSwapchainImageWaitInfo wait = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-  wait.timeout = XR_INFINITE_DURATION;
-  xrWaitSwapchainImage(sc, &wait);
   uint32_t count = 0;
-  xrEnumerateSwapchainImages(sc, 0, &count, nullptr);
+  if(!ok(xrEnumerateSwapchainImages(sc, 0, &count, nullptr), "enumerate static images") || count==0)
+    return false;
   std::vector<XrSwapchainImageVulkan2KHR> img(count, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR});
-  xrEnumerateSwapchainImages(sc, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(img.data()));
-
+  if(!ok(xrEnumerateSwapchainImages(sc, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(img.data())), "static images"))
+    return false;
   // Host-visible staging buffer
   const VkDeviceSize size = VkDeviceSize(rgba.size()*sizeof(uint32_t));
   VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   bi.size  = size;
   bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-  VkBuffer buf = VK_NULL_HANDLE;
-  vkCreateBuffer(vk.device, &bi, nullptr, &buf);
+  struct Staging {
+    VkDevice device;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    ~Staging() {
+      vkDestroyBuffer(device, buffer, nullptr);
+      vkFreeMemory(device, memory, nullptr);
+      }
+    } staging{vk.device};
+  auto& buf = staging.buffer;
+  auto& mem = staging.memory;
+  if(vkCreateBuffer(vk.device, &bi, nullptr, &buf)!=VK_SUCCESS)
+    return false;
   VkMemoryRequirements req = {};
   vkGetBufferMemoryRequirements(vk.device, buf, &req);
   VkPhysicalDeviceMemoryProperties mp = {};
   vkGetPhysicalDeviceMemoryProperties(vk.physicalDevice, &mp);
-  uint32_t type = 0;
+  uint32_t type = mp.memoryTypeCount;
   const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
   for(uint32_t i=0; i<mp.memoryTypeCount; ++i)
     if((req.memoryTypeBits & (1u<<i)) && (mp.memoryTypes[i].propertyFlags & want)==want) {
       type = i;
       break;
       }
+  if(type==mp.memoryTypeCount)
+    return false;
   VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   ai.allocationSize  = req.size;
   ai.memoryTypeIndex = type;
-  VkDeviceMemory mem = VK_NULL_HANDLE;
-  vkAllocateMemory(vk.device, &ai, nullptr, &mem);
-  vkBindBufferMemory(vk.device, buf, mem, 0);
+  if(vkAllocateMemory(vk.device, &ai, nullptr, &mem)!=VK_SUCCESS ||
+     vkBindBufferMemory(vk.device, buf, mem, 0)!=VK_SUCCESS)
+    return false;
   void* data = nullptr;
-  vkMapMemory(vk.device, mem, 0, size, 0, &data);
+  if(vkMapMemory(vk.device, mem, 0, size, 0, &data)!=VK_SUCCESS)
+    return false;
   std::memcpy(data, rgba.data(), size_t(size));
   vkUnmapMemory(vk.device, mem);
 
-  vkWaitForFences(vk.device, 1, &fence, VK_TRUE, UINT64_MAX);
-  vkResetFences(vk.device, 1, &fence);
-  vkResetCommandBuffer(cb, 0);
+  uint32_t index = 0;
+  XrSwapchainImageAcquireInfo acq = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+  XrSwapchainImageWaitInfo wait = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+  wait.timeout = XR_INFINITE_DURATION;
+  if(!ok(xrAcquireSwapchainImage(sc, &acq, &index), "acquire static image") ||
+     !ok(xrWaitSwapchainImage(sc, &wait), "wait for static image"))
+    return false;
+
+  // Each upload waits for its own submission before freeing the staging memory.
   VkCommandBufferBeginInfo cbi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  vkBeginCommandBuffer(cb, &cbi);
+  if(vkResetCommandBuffer(cb, 0)!=VK_SUCCESS || vkBeginCommandBuffer(cb, &cbi)!=VK_SUCCESS)
+    return false;
   VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1124,21 +1137,21 @@ static void uploadStatic(const VulkanNativeContext& vk, VkCommandBuffer cb, VkFe
   b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
   b.dstAccessMask = 0;
   vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
-  vkEndCommandBuffer(cb);
+  if(vkEndCommandBuffer(cb)!=VK_SUCCESS)
+    return false;
   VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
   si.commandBufferCount = 1;
   si.pCommandBuffers    = &cb;
-  vkQueueSubmit(vk.queue, 1, &si, fence);
-  vkWaitForFences(vk.device, 1, &fence, VK_TRUE, UINT64_MAX);
-  vkDestroyBuffer(vk.device, buf, nullptr);
-  vkFreeMemory(vk.device, mem, nullptr);
+  if(vkResetFences(vk.device, 1, &fence)!=VK_SUCCESS || vkQueueSubmit(vk.queue, 1, &si, fence)!=VK_SUCCESS ||
+     vkWaitForFences(vk.device, 1, &fence, VK_TRUE, UINT64_MAX)!=VK_SUCCESS)
+    return false;
 
   XrSwapchainImageReleaseInfo rel = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-  xrReleaseSwapchainImage(sc, &rel);
+  return ok(xrReleaseSwapchainImage(sc, &rel), "release static image");
   }
 
 void XrWindow::Impl::fillChrome() {
-  chromeReady = true;
+  chromeAttempted = true;
   if(handleSwapchain==XR_NULL_HANDLE || cornerSwapchain==XR_NULL_HANDLE)
     return;
 
@@ -1158,7 +1171,8 @@ void XrWindow::Impl::fillChrome() {
           const float d  = std::sqrt(dx*dx + fy*fy);
           px[(size_t(l)*h + y)*w + x] = pixel(st[l].r, st[l].g, st[l].b, st[l].o, r - d + 0.5f);
           }
-    uploadStatic(vk, cmd[0], fence[0], handleSwapchain, w, h, 3, px);
+    if(!uploadStatic(vk, cmd[0], fence[0], handleSwapchain, w, h, 3, px))
+      return;
   }
 
   // Corners: an L bracket around the bottom-right corner (layers 0,1) and its mirror (2,3)
@@ -1183,7 +1197,7 @@ void XrWindow::Impl::fillChrome() {
           const auto& s = st[l%2];
           px[(size_t(l)*n + y)*n + x] = pixel(s.r, s.g, s.b, s.o, t - std::min(d1,d2) + 0.5f);
           }
-    uploadStatic(vk, cmd[0], fence[0], cornerSwapchain, n, n, 4, px);
+    chromeReady = uploadStatic(vk, cmd[0], fence[0], cornerSwapchain, n, n, 4, px);
   }
   }
 
@@ -1201,7 +1215,11 @@ Attachment* XrWindow::eyeTarget(uint8_t eye) {
     const uint64_t t1 = xrUs();
     XrSwapchainImageWaitInfo wait = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
     wait.timeout = XR_INFINITE_DURATION;
-    xrWaitSwapchainImage(s.swapchain[eye], &wait);
+    if(xrWaitSwapchainImage(s.swapchain[eye], &wait)!=XR_SUCCESS) {
+      Log::e("OpenXR: failed to wait for acquired image");
+      SystemApi::exit();
+      return nullptr;
+      }
     tAcquire  += t1-t0;
     tSwapWait += xrUs()-t1;
     s.acquired[eye] = int32_t(index);
@@ -1229,7 +1247,11 @@ Attachment* XrWindow::motionTarget(uint8_t eye) {
       return nullptr;
     XrSwapchainImageWaitInfo wait = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
     wait.timeout = XR_INFINITE_DURATION;
-    xrWaitSwapchainImage(s.mvSwapchain[eye], &wait);
+    if(xrWaitSwapchainImage(s.mvSwapchain[eye], &wait)!=XR_SUCCESS) {
+      Log::e("OpenXR: failed to wait for acquired image");
+      SystemApi::exit();
+      return nullptr;
+      }
     s.mvAcquired[eye] = int32_t(index);
     }
   return &s.mvTargets[eye][size_t(s.mvAcquired[eye])];
@@ -1247,7 +1269,11 @@ ZBuffer* XrWindow::depthTarget(uint8_t eye) {
       return nullptr;
     XrSwapchainImageWaitInfo wait = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
     wait.timeout = XR_INFINITE_DURATION;
-    xrWaitSwapchainImage(s.depthSwapchain[eye], &wait);
+    if(xrWaitSwapchainImage(s.depthSwapchain[eye], &wait)!=XR_SUCCESS) {
+      Log::e("OpenXR: failed to wait for acquired image");
+      SystemApi::exit();
+      return nullptr;
+      }
     s.depthAcquired[eye] = int32_t(index);
     }
   return &s.depthTargets[eye][size_t(s.depthAcquired[eye])];
@@ -1273,7 +1299,7 @@ void XrWindow::submit(bool rendered) {
   s.frameBegun = false;
 
   std::lock_guard<std::mutex> guard(*s.vk.queueLock);
-  if(rendered && !s.chromeReady)
+  if(rendered && !s.chromeAttempted)
     s.fillChrome();
   const bool hasImage = rendered && s.acquired[0]>=0 && s.acquired[1]>=0;
   const bool warp     = hasImage && s.spaceWarpWanted &&
