@@ -349,3 +349,11 @@ While the session stayed focused, one continuous pinch could toggle the environm
 A host harness compiled the real input update before and after the fix. It exercised an initially held right grip, inactive and failed action reads during a hold, a healthy hand while the opposite action failed, and fresh releases on both hands. Old code persisted seven switches for four genuine presses and failed five checks. New code persisted exactly four and passed all checks. Real hand occlusion and reacquisition require a wearer.
 
 Additional audit findings under investigation include a held XR gameplay button interpreted as released when window grabbing suppresses the pad, and focus loss followed by regain within a single event drain. Neither sequence has been exercised by a wearer. Source inspection also identified cleanup hazards on Vulkan fence-wait errors and on host allocation failure after upload submission or before ending the first XR frame. These exceptional paths have not been induced on the device.
+
+### First-frame allocations and XR image ownership
+
+The first submit generated the chrome and panorama after clearing `frameBegun`. A `std::bad_alloc` escaped before releasing the acquired eyes or ending the frame. The compositor layer list could also allocate after image release. Optional graphics now retain their successfully uploaded parts on allocation failure. Submission uses fixed storage for the maximum seven layers.
+
+A host fault-injection test used the production submit path with two acquired eyes. Failing chrome generation or panorama generation previously left both images acquired and ended zero frames across two cases. Both fixed cases released the eyes and each called `xrEndFrame` once. Android Release linked. Actual device memory exhaustion was not induced.
+
+The uninstrumented foveation release also completed a low-clock city combat run with dusk and SpaceWarp at 36.0 app FPS. The compositor showed the dusk sky above the game; 19 decoded 1600×900 stereo pairs showed the fight in both eyes (`20261120-052422-304`). The package stopped at 85%, 40.0°C.

@@ -1607,8 +1607,14 @@ bool XrWindow::submit(bool rendered) {
 
   std::lock_guard<std::mutex> guard(*s.vk.queueLock);
   if(rendered && !s.chromeAttempted) {
-    s.fillChrome();
-    s.fillEnvironment();
+    try {
+      s.fillChrome();
+      s.fillEnvironment();
+      }
+    catch(const std::bad_alloc&) {
+      // Keep the layers already uploaded and finish this frame with its acquired eyes.
+      Log::e("OpenXR: insufficient memory for optional window graphics");
+      }
     }
   bool hasImage = rendered && s.acquired[0]>=0 && s.acquired[1]>=0;
   bool warp = hasImage && s.spaceWarpWanted &&
@@ -1620,7 +1626,12 @@ bool XrWindow::submit(bool rendered) {
     SystemApi::exit();
     }
 
-  std::vector<const XrCompositionLayerBaseHeader*> layers;
+  // One background, two eyes, a button, a handle and two corner brackets.
+  std::array<const XrCompositionLayerBaseHeader*,7> layers;
+  uint32_t layerCount = 0;
+  auto addLayer = [&](const auto& layer) {
+    layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer);
+    };
 
   XrCompositionLayerPassthroughFB pt = {XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};
   XrCompositionLayerEquirect2KHR sky = {XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR};
@@ -1636,18 +1647,18 @@ bool XrWindow::submit(bool rendered) {
     sky.upperVerticalAngle = float(M_PI)*0.5f;
     sky.lowerVerticalAngle = -sky.upperVerticalAngle;
     if(s.hasEquirect2) {
-      layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&sky));
+      addLayer(sky);
       } else {
       sky1.space = sky.space;
       sky1.eyeVisibility = sky.eyeVisibility;
       sky1.subImage = sky.subImage;
       sky1.pose = sky.pose;
       sky1.scale = {1.f,1.f};
-      layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&sky1));
+      addLayer(sky1);
       }
     } else if(s.passthroughLayer!=XR_NULL_HANDLE) {
     pt.layerHandle = s.passthroughLayer;
-    layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&pt));
+    addLayer(pt);
     }
 
   // The same rectangle in the room for both eyes, each showing its own view through it
@@ -1682,7 +1693,7 @@ bool XrWindow::submit(bool rendered) {
     proj.space     = s.localSpace;
     proj.viewCount = 2;
     proj.views     = pv;
-    layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&proj));
+    addLayer(proj);
     }
 
   if(hasImage && !warp) {
@@ -1695,7 +1706,7 @@ bool XrWindow::submit(bool rendered) {
       q.subImage.imageArrayIndex = 0;
       q.pose                     = s.windowPose;
       q.size                     = {s.windowWidth, s.windowHeight()};
-      layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&q));
+      addLayer(q);
       }
     }
 
@@ -1712,7 +1723,7 @@ bool XrWindow::submit(bool rendered) {
     button.pose = s.windowPose;
     button.pose.position = toXr(toWorld(s.windowPose, s.buttonCenter()));
     button.size = {0.104f,0.065f};
-    layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&button));
+    addLayer(button);
     }
   XrCompositionLayerQuad handle = {XR_TYPE_COMPOSITION_LAYER_QUAD};
   std::array<XrCompositionLayerQuad,2> corners;
@@ -1735,7 +1746,7 @@ bool XrWindow::submit(bool rendered) {
     handle.pose.orientation          = s.windowPose.orientation;
     handle.pose.position             = toXr(toWorld(s.windowPose, s.handleCenter()));
     handle.size                      = {0.22f, 0.0275f};
-    layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&handle));
+    addLayer(handle);
 
     const float halfW = s.windowWidth*0.5f, halfH = s.windowHeight()*0.5f, sz = 0.10f;
     for(int c=0; c<2; ++c) {
@@ -1756,14 +1767,14 @@ bool XrWindow::submit(bool rendered) {
       q.pose.orientation         = s.windowPose.orientation;
       q.pose.position            = toXr(toWorld(s.windowPose, at));
       q.size                     = {sz, sz};
-      layers.push_back(reinterpret_cast<const XrCompositionLayerBaseHeader*>(&q));
+      addLayer(q);
       }
     }
 
   XrFrameEndInfo end = {XR_TYPE_FRAME_END_INFO};
   end.displayTime          = s.frame.predictedDisplayTime;
   end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-  end.layerCount           = s.frame.shouldRender && isVisible() ? uint32_t(layers.size()) : 0;
+  end.layerCount           = s.frame.shouldRender && isVisible() ? layerCount : 0;
   end.layers               = layers.data();
   {
   const uint64_t t0 = xrUs();
