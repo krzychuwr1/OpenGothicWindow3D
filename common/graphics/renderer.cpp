@@ -689,9 +689,6 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
     wview.updateRtScene();
   wview.updateLights(gameTime);
 
-  if(requiresLightsTree())
-    prepareLightsBvh(cmd, wview);
-
   updateCamera(wview, camera);
 
   static bool updFr = true;
@@ -722,6 +719,8 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
   if(motionVectors && !secondView)
     wview.snapshotPrevInstances(cmd); // before this frame's instance data lands
   wview.prepareGlobals(cmd,fId);
+  if(requiresLightsTree())
+    prepareLightsBvh(cmd, wview);
   cpuPhases.mark("prepareGlobals");
 
   if(settings.pathTraceEnabled) {
