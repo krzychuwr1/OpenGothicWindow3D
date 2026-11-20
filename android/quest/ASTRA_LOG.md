@@ -895,3 +895,16 @@ The Quest tools now resolve a USB-authorized Quest from the host inventory, resp
 **Window edges.** Video → Window edges stores Square (default), Rounded corners, or Rounded, soft edge in INTERNAL/xrWindowEdges. The rounded styles write coverage into the final eye alpha after the HUD. OpenXR premultiplies the source colour after sRGB decoding. The outer contour has stationary motion and window-plane depth. At the default window size the radius is 6.75 cm and the soft transition spans 3.51 cm. Both scale with the shorter dimension. Square skips the edge passes.
 
 Both 1024 × 604 eye captures of the small soft window matched the expected coverage byte-for-byte, including 47,300 partially covered texels per eye. The physical stereo display showed the transition into passthrough with SpaceWarp, including a measured eight-pixel brightness transition. The standalone Metacam still from that run showed only the room. The ordinary stereo quad showed the rounded game image against the VR panorama. [Soft edges on the physical stereo display](../../captures/20261120-131216-156-NW_CITY_MAINSTREET_02-display/display.mp4) · [Rounded corners in VR](../../captures/20261120-131309-689-NW_CITY_MAINSTREET_02-none-org.opengothic.window3d-20261120-131336.jpg)
+
+**Quality measurements.** CPU level 1, GPU level 0, noon at NW_CITY_MAINSTREET_02 and NW_TAVERNE, same nominal window, SpaceWarp, surface light and foveation off. Each cell lists forward/reverse runs; each run contributed three complete GPU timing intervals and eleven one-second VrApi samples after warm-up. FPS is the application rate reported by the runtime.
+
+| Video choice | City GPU ms/eye | City FPS | Tavern GPU ms/eye | Tavern FPS |
+| --- | ---: | ---: | ---: | ---: |
+| 75% | 6.39 / 6.40 | 72.55 / 72.64 | 6.50 / 6.71 | 72.27 / 72.45 |
+| 100% | 7.57 / 7.55 | 64.18 / 64.18 | 8.36 / 8.64 | 58.64 / 56.91 |
+| 125% | 10.08 / 10.03 | 49.00 / 49.00 | 11.80 / 12.09 | 42.00 / 41.00 |
+| 150% | 12.68 / 12.52 | 38.82 / 39.36 | 15.35 / 15.91 | 32.36 / 31.18 |
+| 75% + CMAA2 | 6.91 / 6.87 | 68.82 / 69.64 | 7.04 / 7.42 | 69.09 / 65.45 |
+| 75% + enhanced filtering | 6.44 / 6.46 | 72.73 / 72.36 | 6.46 / 6.81 | 72.55 / 72.18 |
+
+Use `tools/bench-quest.ps1 -Waypoint NW_TAVERNE -QualitySweep 123456` and repeat with `654321`. The option changes live command-line overrides only. The results support keeping 75% as the default at low clocks. Enhanced compositor filtering had negligible application cost here. Its perceived sharpness and shimmer remain a wearer judgement.

@@ -34,6 +34,9 @@
 #include <utility>
 #include "gothic.h"
 #include "xr/xrwindow.h"
+#ifdef OPENGOTHIC_XR
+#include "xr/qualitybenchmark.h"
+#endif
 #include "marvin.h"
 
 #if defined(OPENGOTHIC_XR)
@@ -1567,6 +1570,10 @@ void MainWindow::updateFrame(uint64_t displayDt) {
     */
   const uint64_t tu0 = nowUs();
   runStartupCommands();
+#ifdef OPENGOTHIC_XR
+  if(startupDone)
+    XrQualityBenchmark::tick();
+#endif
   const uint64_t dt = tick(displayDt);
   const uint64_t tu1 = nowUs();
   updateAnimation(dt);

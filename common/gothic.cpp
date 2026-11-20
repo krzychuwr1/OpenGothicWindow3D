@@ -24,6 +24,9 @@
 
 #include "commandline.h"
 #include "mainwindow.h"
+#ifdef OPENGOTHIC_XR
+#include "xr/qualitybenchmark.h"
+#endif
 
 using namespace Tempest;
 using namespace FileUtil;
@@ -193,6 +196,9 @@ Gothic::Gothic(GameModDescriptor desc) {
   overrideIni.reset(new IniFile());
   for(auto& o:CommandLine::inst().settingsOverrides())
     overrideIni->set(o.section, o.key, o.value);
+#ifdef OPENGOTHIC_XR
+  XrQualityBenchmark::configure(*overrideIni);
+#endif
 #if defined(__ANDROID__)
   // The original Gothic.ini (copied with the game) enables desktop-cost effects;
   // start mobile installs without them. The video menu still changes these.

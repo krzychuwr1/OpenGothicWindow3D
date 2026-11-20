@@ -13,10 +13,14 @@
     spells  skeleton mages and a fire lizard attack (spell effects, particles, light)
   -Captures N takes N headset screenshots (what the compositor shows) during sampling and
   copies them to captures/ for checking the picture.
+  -QualitySweep measures a sequence of image-quality choices in the same loaded scene.
+  Digits 1-6 select 75%, 100%, 125%, 150%, 75% + CMAA2 and 75% + enhanced filtering.
+  Each phase warms up for 5 seconds and measures for 12. Repeat in reverse order.
 
 .EXAMPLE
   ./tools/bench-quest.ps1 -Waypoint NW_CITY_MAINSTREET_02
   ./tools/bench-quest.ps1 -Waypoint NW_TAVERNE -Scenario spells -Captures 3
+  ./tools/bench-quest.ps1 -Waypoint NW_TAVERNE -QualitySweep 321
 #>
 param(
   [ValidatePattern('^[A-Za-z0-9_]+$')][string]$Waypoint = 'NW_CITY_MAINSTREET_02',
@@ -24,6 +28,7 @@ param(
   [string]$Package  = 'org.opengothic.window3d',
   [string]$Apk = '',
   [switch]$VrStats,
+  [ValidatePattern('^[1-6]{1,6}$')][string]$QualitySweep,
   [int]$LoadSeconds = 50,
   [int]$Samples     = 12,
   [string]$Extra    = '',
@@ -127,6 +132,12 @@ switch ($Scenario) {
   spells { $commands += 'cheat god','insert SKELETONMAGE','insert SKELETONMAGE','insert FIREWARAN' }
 }
 $capArg = if ($EyeCaptures -gt 0) { "-capture $EyeCaptures" } else { '' }
+if ($QualitySweep) {
+  if ($Perf -ne 'low' -or $EyeCaptures -ne 0 -or $Scenario -ne 'none') {
+    throw 'Quality sweeps require the low clock level, a static scenario and eye captures disabled.'
+  }
+  $Extra += " -xrfaceview -setting BENCHMARK xrQualitySweep $QualitySweep -setting INTERNAL xrSpaceWarp 0 -setting INTERNAL xrFoveation 0 -setting INTERNAL xrSurfaceLight 0 -setting INTERNAL xrEnvironment 0"
+}
 $exec = $commands -join ';'
 $launchArgs = "-nomenu -novideo -gpuprofile -perf $Perf $capArg $Extra -exec `"$exec`""
 $serial = Invoke-BenchAdb get-serialno
@@ -194,7 +205,16 @@ try {
     if (-not $gamePid) { Start-Sleep -Milliseconds 200 }
   }
   if (-not $gamePid) { throw 'Game process did not start' }
-  Start-Sleep $LoadSeconds
+  if ($QualitySweep) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($LoadSeconds)
+    do {
+      Start-Sleep 1
+      $warmup = Invoke-BenchAdb logcat -d -T $launchTime "--pid=$gamePid" -s app:* | Select-String 'XR quality [1-6] warmup'
+      if (-not $warmup -and [DateTime]::UtcNow -ge $deadline) { throw 'Quality sweep did not reach the loaded scene' }
+    } until ($warmup)
+  } else {
+    Start-Sleep $LoadSeconds
+  }
   if ((Invoke-BenchAdb shell pidof $Package) -ne $gamePid) { throw 'Game process changed during loading' }
   $startup = Invoke-BenchAdb logcat -d -T $launchTime "--pid=$gamePid" -s app:*
   $executed = @(foreach ($line in $startup) {
@@ -205,8 +225,23 @@ try {
   })
   if (($executed -join ';') -ine $exec) { throw "Requested scene did not load. Observed commands: $($executed -join ';')" }
   # Read a bounded time window without clearing the device-wide logs.
-  $since = (Invoke-BenchAdb shell date '+%s') + '.000'
-  Start-Sleep ($Samples + 1)
+  if ($QualitySweep) {
+    $since = $launchTime
+    $deadline = [DateTime]::UtcNow.AddSeconds(17*$QualitySweep.Length+12)
+    # Leave adb idle through the measured phases. Allow for reallocation time
+    # when entering higher resolutions before checking the final phase marker.
+    Start-Sleep (17*$QualitySweep.Length)
+    do {
+      $qualityGame = @(Invoke-BenchAdb logcat -d -T $since "--pid=$gamePid" -s app:*)
+      $finished = @($qualityGame | Select-String 'XR quality [1-6] end')
+      if ($finished.Count -eq $QualitySweep.Length) { break }
+      if ([DateTime]::UtcNow -ge $deadline) { throw 'Quality sweep did not finish all phases' }
+      Start-Sleep 1
+    } while ($true)
+  } else {
+    $since = (Invoke-BenchAdb shell date '+%s') + '.000'
+    Start-Sleep ($Samples + 1)
+  }
   if ((Invoke-BenchAdb shell pidof $Package) -ne $gamePid) { throw 'Game process changed during sampling' }
   if (((Invoke-BenchAdb shell cat $remoteArgs) -join "`n") -cne $launchArgs) { throw 'Launch arguments changed during sampling' }
   $vr = @(Invoke-BenchAdb logcat -d -T $since -s VrApi:* | Select-String 'App=')
@@ -256,6 +291,17 @@ try {
 }
 
 if ($VrStats) { $vr | ForEach-Object { $_.Line } }
+if ($QualitySweep) {
+  $reportDir = Join-Path $dir "$stamp-$Waypoint-quality-$QualitySweep"
+  New-Item -ItemType Directory -Path $reportDir | Out-Null
+  $qualityGame | Set-Content (Join-Path $reportDir 'game.log')
+  $vr.Line | Set-Content (Join-Path $reportDir 'vrapi.log')
+  "args=$launchArgs" | Set-Content (Join-Path $reportDir 'run.txt')
+  "Quality logs: $reportDir"
+  & python -B (Join-Path $PSScriptRoot 'analyze-quest-quality.py') $reportDir
+  if ($LASTEXITCODE -ne 0) { throw 'Quality sweep analysis failed' }
+  return
+}
 $fps = @(); $gpu = @(); $cg = @()
 foreach ($l in $vr) {
   if ($l -match 'FPS=(\d+)/')          { $fps += [int]$Matches[1] }
