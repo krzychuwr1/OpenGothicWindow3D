@@ -33,6 +33,7 @@
 #include "ui/dialogmenu.h"
 #include "ui/inventorymenu.h"
 #include "xr/gamepadinput.h"
+#include "xr/frameclock.h"
 #include "ui/chapterscreen.h"
 #include "ui/documentmenu.h"
 #include "ui/videowidget.h"
@@ -108,12 +109,12 @@ class MainWindow : public Tempest::Window {
 
     void render() override;
 
-    uint64_t tick();
+    uint64_t tick(uint64_t displayDt);
     void     tickPad(uint64_t dt);
     void     cancelHeldInput();
     bool     padMenuContext() const;
     void     renderFrame(bool xr);
-    void     updateFrame();
+    void     updateFrame(uint64_t displayDt = 0);
     void     runStartupCommands();
 
     struct FrameTiming {
@@ -153,6 +154,7 @@ class MainWindow : public Tempest::Window {
     PadState              previousXrPad;
     bool                  previousPadMenu = false;
 #endif
+    XrFrameClock          frameClock;
     uint64_t              padTime = 0;
     Tempest::TextureAtlas atlas;
     Shaders               shaders;

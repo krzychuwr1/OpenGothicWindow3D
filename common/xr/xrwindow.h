@@ -37,6 +37,8 @@ class XrWindow final {
     // Waits for the next display frame.
     // Returns true when the application should render and then call submit().
     bool              beginFrame();
+    int64_t           nominalFramePeriod() const;
+    int64_t           predictedDisplayTime() const; // nanoseconds on the OpenXR clock
     // Render target of one eye for this frame (the window layer's swapchain image).
     Tempest::Attachment* eyeTarget(uint8_t eye);
 

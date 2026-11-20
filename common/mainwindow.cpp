@@ -976,9 +976,9 @@ void MainWindow::onMarvinKey() {
     }
   }
 
-uint64_t MainWindow::tick() {
+uint64_t MainWindow::tick(uint64_t displayDt) {
   auto time = Application::tickCount();
-  auto dt   = time-lastTick;
+  auto dt   = displayDt!=0 ? displayDt : time-lastTick;
   // NOTE: limit to ~200 FPS in game logic to avoid math issues
   if(dt<5)
     return 0;
@@ -1491,8 +1491,6 @@ void MainWindow::runStartupCommands() {
 void MainWindow::render(){
   try {
     if(auto xr = XrWindow::inst()) {
-      // The game update runs while the GPU still works on the previous frame;
-      // only recording the eyes waits for the runtime's frame timing.
       // The game holds still while the headset is off or a system menu has the focus.
       const uint64_t tu = nowUs();
       bool inputLost = false;
@@ -1506,26 +1504,32 @@ void MainWindow::render(){
 #if defined(__ANDROID__)
       AndroidApi::setExternalInputFocus(focused);
 #endif
-      if(focused)
-        updateFrame();
-      else {
+      if(!focused) {
+        frameClock = {};
         if(padTime!=0)
           cancelHeldInput();
         eyeHistoryValid = false;
         lastTick = Application::tickCount();
         }
+      // Tick while the GPU finishes the last pair. Its display prediction supplies
+      // the pacing sample for this update; input does not wait on the next frame.
+      const int64_t display = xr->predictedDisplayTime();
+      if(focused && display>0 && display!=frameClock.lastTarget)
+        updateFrame(frameClock.advance(display,xr->nominalFramePeriod()));
       const uint64_t t0 = nowUs();
-      if(!xr->beginFrame()) {
-        eyeHistoryValid = false;
-        return;
-        }
+      const bool renderable = xr->beginFrame();
       const uint64_t t1 = nowUs();
       try {
+        if(!renderable) {
+          eyeHistoryValid = false;
+          return;
+          }
         renderFrame(true);
         }
       catch(...) {
         eyeHistoryValid = false;
-        xr->submit(false);
+        if(renderable)
+          xr->submit(false);
         throw;
         }
       const uint64_t t2 = nowUs();
@@ -1547,11 +1551,12 @@ void MainWindow::render(){
     }
   }
 
-void MainWindow::updateFrame() {
+void MainWindow::updateFrame(uint64_t displayDt) {
   {
   const uint64_t now = Application::tickCount();
   const auto lastPadTime = std::exchange(padTime,now);
-  tickPad(lastPadTime==0 ? 0 : std::min<uint64_t>(now-lastPadTime, 50));
+  const uint64_t dt = displayDt!=0 ? displayDt : (lastPadTime!=0 ? now-lastPadTime : 0);
+  tickPad(std::min<uint64_t>(dt,50));
   }
 
   /*
@@ -1561,7 +1566,7 @@ void MainWindow::updateFrame() {
     */
   const uint64_t tu0 = nowUs();
   runStartupCommands();
-  const uint64_t dt = tick();
+  const uint64_t dt = tick(displayDt);
   const uint64_t tu1 = nowUs();
   updateAnimation(dt);
   const uint64_t tu2 = nowUs();
@@ -1590,7 +1595,7 @@ void MainWindow::renderFrame(bool xr) {
       }
     }
 
-  // XR updates the game before waiting for the display frame (see render)
+  // XR already advanced the game before waiting for this frame.
   if(!xr)
     updateFrame();
 
@@ -1611,7 +1616,13 @@ void MainWindow::renderFrame(bool xr) {
     ++captureFrame;
     if(captureFrame<=150) {
       const auto v = Gothic::inst().camera()->view();
-      Log::i("XR trajectory ",captureFrame," gameMs=",lastTick," heading=",v.at(0,2),",",v.at(2,2));
+      Log::i("XR trajectory ",captureFrame," gameMs=",lastTick," heading=",v.at(0,2),",",v.at(2,2)," displayMs=",XrWindow::inst()->predictedDisplayTime()/1000000," simMs=",frameClock.simulationMillis());
+      if(cli.xrWalkForward()) {
+        if(auto* hero=Gothic::inst().player()) {
+          const auto pos = hero->position();
+          Log::i("XR advance ",captureFrame," heroCm=",pos.x,",",pos.y,",",pos.z);
+          }
+        }
       }
     }
   const bool useHistory = xr && XrWindow::inst()->prepareSpaceWarp(warp, eyeHistoryValid);

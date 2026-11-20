@@ -119,6 +119,8 @@ struct XrWindow::Impl {
   bool                     hasHandInteraction = false;
   bool                     hasPerfSettings    = false;
   bool                     hasSpaceWarp       = false;
+  float                    refreshRate = 0.f;
+  PFN_xrGetDisplayRefreshRateFB xrGetRate = nullptr;
   PFN_xrPerfSettingsSetPerformanceLevelEXT xrSetPerfLevel = nullptr;
 
   PFN_xrCreateVulkanInstanceKHR         xrCreateVulkanInstance      = nullptr;
@@ -365,6 +367,9 @@ bool XrWindow::Impl::createInstance() {
   hasPassthrough     = has(XR_FB_PASSTHROUGH_EXTENSION_NAME);
   hasHandInteraction = has(XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
   hasPerfSettings    = has(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
+  const bool hasRefreshRate = has(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
+  if(hasRefreshRate)
+    ext.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
   hasSpaceWarp       = has(XR_FB_SPACE_WARP_EXTENSION_NAME);
   if(hasSpaceWarp)
     ext.push_back(XR_FB_SPACE_WARP_EXTENSION_NAME);
@@ -412,6 +417,8 @@ bool XrWindow::Impl::createInstance() {
     return false;
   if(hasPerfSettings)
     hasPerfSettings = fn("xrPerfSettingsSetPerformanceLevelEXT", xrSetPerfLevel);
+  if(hasRefreshRate)
+    fn("xrGetDisplayRefreshRateFB",xrGetRate);
   if(canSetSkySampler) {
     fn("xrGetSwapchainStateFB", xrGetSwapchainState);
     fn("xrUpdateSwapchainFB", xrUpdateSwapchain);
@@ -940,6 +947,8 @@ void XrWindow::Impl::updateSessionRunning() {
     }
   transitionFailures = 0;
   running = begin;
+  if(begin && xrGetRate && XR_FAILED(xrGetRate(session,&refreshRate)))
+    refreshRate = 0.f;
   if(begin && hasPerfSettings) {
     const bool low = CommandLine::inst().xrPerfLevel()=="low";
     const auto lvl = low ? XR_PERF_SETTINGS_LEVEL_POWER_SAVINGS_EXT : XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT;
@@ -980,6 +989,9 @@ bool XrWindow::Impl::pollEvents() {
           }
         break;
         }
+      case XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB:
+        refreshRate = reinterpret_cast<const XrEventDataDisplayRefreshRateChangedFB&>(ev).toDisplayRefreshRate;
+        break;
       case XR_TYPE_EVENT_DATA_PASSTHROUGH_STATE_CHANGED_FB:
         passthroughChanged(reinterpret_cast<const XrEventDataPassthroughStateChangedFB&>(ev).flags);
         break;
@@ -1387,6 +1399,16 @@ bool XrWindow::pollInputFocus(bool nativeFocusLost) {
   if(nativeFocusLost || !AndroidApi::activityFocused())
     impl->cancelInput();
   return !interrupted && isFocused();
+  }
+
+int64_t XrWindow::nominalFramePeriod() const {
+  if(!(impl->refreshRate>=30.f && impl->refreshRate<=240.f))
+    return 0;
+  return int64_t(std::llround((impl->spaceWarpWanted ? 2e9 : 1e9)/double(impl->refreshRate)));
+  }
+
+int64_t XrWindow::predictedDisplayTime() const {
+  return impl->frame.predictedDisplayTime;
   }
 
 bool XrWindow::beginFrame() {
@@ -2059,6 +2081,8 @@ bool      XrWindow::pollInputFocus(bool) { return false; }
 void      XrWindow::attach(Tempest::Device&) {}
 Tempest::Size XrWindow::resolution() const { return Tempest::Size(0,0); }
 bool      XrWindow::beginFrame() { return false; }
+int64_t   XrWindow::nominalFramePeriod() const { return 0; }
+int64_t   XrWindow::predictedDisplayTime() const { return 0; }
 bool      XrWindow::submit(bool) { return false; }
 bool      XrWindow::isSpaceWarpSupported() const { return false; }
 #ifdef OPENGOTHIC_XR
