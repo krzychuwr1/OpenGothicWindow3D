@@ -1890,27 +1890,30 @@ bool XrWindow::beginFrame() {
 
 void XrWindow::drawWindowEdges(Encoder<CommandBuffer>& cmd, bool motion) {
   auto& s = *impl;
-  if(s.edgeStyle==0)
+  static const bool apertureGuard = Gothic::settingsGetI("BENCHMARK","xrApertureGuard")!=0;
+  if(s.edgeStyle==0 && !(motion && apertureGuard))
     return;
-  if(s.edgeCoverage.isEmpty()) {
+  if((motion ? s.edgeMotion : s.edgeCoverage).isEmpty()) {
     auto shader = [&](const char* name) {
       const auto code = GothicShader::get(name);
       return s.device->shader(code.data,code.len);
       };
     RenderState state;
-    state.setZWriteEnabled(false);
     state.setCullFaceMode(RenderState::CullMode::NoCull);
-    state.setBlendSource(RenderState::BlendMode::OneMinusDstColor);
-    state.setBlendDest(RenderState::BlendMode::One);
-    s.edgeOpaque = s.device->pipeline(Triangles,state,shader("triangle.vert.sprv"),shader("window_opaque.frag.sprv"));
-    state.setBlendSource(RenderState::BlendMode::Zero);
-    state.setBlendDest(RenderState::BlendMode::SrcColor);
     auto border = shader("window_edge.vert.sprv");
-    s.edgeCoverage = s.device->pipeline(Triangles,state,border,shader("window_edge.frag.sprv"));
-    state.setBlendSource(RenderState::BlendMode::One);
-    state.setBlendDest(RenderState::BlendMode::Zero);
-    state.setZWriteEnabled(true);
-    s.edgeMotion = s.device->pipeline(Triangles,state,border,shader("window_edge_motion.frag.sprv"));
+    state.setZWriteEnabled(motion);
+    if(motion) {
+      state.setBlendSource(RenderState::BlendMode::One);
+      state.setBlendDest(RenderState::BlendMode::Zero);
+      s.edgeMotion = s.device->pipeline(Triangles,state,border,shader("window_edge_motion.frag.sprv"));
+      } else {
+      state.setBlendSource(RenderState::BlendMode::OneMinusDstColor);
+      state.setBlendDest(RenderState::BlendMode::One);
+      s.edgeOpaque = s.device->pipeline(Triangles,state,shader("triangle.vert.sprv"),shader("window_opaque.frag.sprv"));
+      state.setBlendSource(RenderState::BlendMode::Zero);
+      state.setBlendDest(RenderState::BlendMode::SrcColor);
+      s.edgeCoverage = s.device->pipeline(Triangles,state,border,shader("window_edge.frag.sprv"));
+      }
     }
   // Both draws stay in the active eye colour pass. With source (0,0,0,1)
   // the first blend gives RGB = dst.rgb and A = 1 - dst.a + dst.a.
@@ -1924,8 +1927,9 @@ void XrWindow::drawWindowEdges(Encoder<CommandBuffer>& cmd, bool motion) {
   struct Push {
     Vec2 size, metresPerPixel;
     float radius, feather;
+    uint32_t guard;
     } push{{s.windowWidth,s.windowHeight()},{s.windowWidth/float(w),s.windowHeight()/float(h)},
-           s.edgeRadius(),s.edgeFeather()};
+           s.edgeRadius(),s.edgeFeather(),uint32_t(motion && apertureGuard)};
   cmd.setPipeline(motion ? s.edgeMotion : s.edgeCoverage);
   cmd.setPushData(push);
   cmd.draw(nullptr,0,6,0,4);

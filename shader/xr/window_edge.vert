@@ -3,6 +3,7 @@
 layout(push_constant, std430) uniform Push {
   vec2 size, metresPerPixel;
   float radius, feather;
+  uint guard;
   } push;
 
 void main() {
