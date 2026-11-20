@@ -192,6 +192,7 @@ struct XrWindow::Impl {
   int                      grabbedBy   = -1;
   Grip                     grabbed     = Grip::None;
   bool                     grabNear    = false;
+  XrTime                   lastGrabTime = 0;
   V3                       grabLocal;          // grabbed point in the space of the holding pose
   float                    grabScale   = 1;    // window width per corner reach at the start of a resize
   V3                       headPos;
@@ -938,7 +939,12 @@ void XrWindow::Impl::updateInput() {
       if(!grabNear) {
         // Thumbstick pushes a pointed-at window away or pulls it closer
         const XrVector2f stick = getV(aStick, h.path);
-        grabLocal.z = std::clamp(grabLocal.z - stick.y*0.03f, -8.f, -0.2f);
+        const float dt = std::clamp(float(frame.predictedDisplayTime-lastGrabTime)*1e-9f, 0.f, 0.05f);
+        lastGrabTime = frame.predictedDisplayTime;
+        // Preserve the original 72 Hz speed. A grab that starts outside the
+        // travel limits can move back inside without snapping on contact.
+        const float z = grabLocal.z;
+        grabLocal.z = std::clamp(z-stick.y*2.16f*dt, std::min(z,-8.f), std::max(z,-0.2f));
         }
       const V3 point = toWorld(holder, grabLocal);
       h.hit   = point;
@@ -962,6 +968,7 @@ void XrWindow::Impl::updateInput() {
       grabbedBy = int(i);
       grabbed   = h.hover;
       grabNear  = h.hoverNear;
+      lastGrabTime = frame.predictedDisplayTime;
       grabLocal = toLocal(grabNear ? h.nearPose : h.aim, h.hit);
       if(grabbed==Grip::Environment) {
         if(setEnvironment(!immersive)) {
