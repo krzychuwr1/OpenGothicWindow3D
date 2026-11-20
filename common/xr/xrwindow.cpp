@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bitset>
 #include <chrono>
 #include <cstdio>
@@ -170,6 +171,11 @@ struct XrWindow::Impl {
   bool                     hasWindowFilter    = false;
   float                    refreshRate = 0.f;
   PFN_xrGetDisplayRefreshRateFB xrGetRate = nullptr;
+  PFN_xrEnumerateDisplayRefreshRatesFB xrEnumRates = nullptr;
+  PFN_xrRequestDisplayRefreshRateFB xrRequestRate = nullptr;
+  std::vector<float>       supportedRates;
+  int                      requestedRateChoice = -1;
+  void applyRefreshRate();
   PFN_xrPerfSettingsSetPerformanceLevelEXT xrSetPerfLevel = nullptr;
 
   PFN_xrCreateVulkanInstanceKHR         xrCreateVulkanInstance      = nullptr;
@@ -242,13 +248,19 @@ struct XrWindow::Impl {
   bool                     aspectReady = false, aspectLocked = false;
   XrSwapchain              curveButton = XR_NULL_HANDLE; // curved window: flat or curved, idle or hovered
   bool                     curveReady = false, curved = false;
+  int                      curveLevel = 0;               // 0 flat, 1 slight, 2 strong
+  std::atomic<int64_t>     lastGameInput{0};             // steady clock, nanoseconds
   float                    curveRadius = 0.f;            // metres: the arc's radius, centred near the viewer
   uint8_t                  recordingEye = 0;
   std::array<std::array<float,4>,2> eyeRect = {};        // per eye: left, right, bottom, top on the window plane
   Tempest::RenderPipeline  curveCoverage, curveMotion;
   XrSwapchain              dimSlider = XR_NULL_HANDLE;
   static constexpr int     RailW = 160, KnobW = 24, SliderRows = 16;
-  static constexpr float   DimLeft = 0.09f, DimTravel = 0.20f;
+  // Window controls scale with the window (1 at the default size), not below half size
+  static constexpr float   DefaultWindowHeight = 0.9f;
+  float chromeScale() const { return std::clamp(windowHeight()/DefaultWindowHeight, 0.5f, 1.4f); }
+  float dimLeft()   const { return 0.09f*chromeScale(); }
+  float dimTravel() const { return 0.20f*chromeScale(); }
   bool                     sliderReady = false, dimDirty = false;
   bool                     dimStyleAvailable = false, dimUsesOpacity = false, grabTrigger = false;
   float                    passthroughDim = 0.f;
@@ -332,13 +344,17 @@ struct XrWindow::Impl {
   void saveDim();
   int sliderRow() const;
   void fillSlider(VkCommandBuffer cmd, VkFence fence);
-  V3   buttonCenter() const { return handleCenter() + V3{0,-0.10f,0}; }
-  V3   aspectCenter() const { return buttonCenter() + V3{-0.12f,0,0}; }
-  V3   curveCenter() const { return buttonCenter() + V3{-0.24f,0,0}; }
+  V3   buttonCenter() const { return handleCenter() + V3{0,-0.10f*chromeScale(),0}; }
+  V3   aspectCenter() const { return buttonCenter() + V3{-0.12f*chromeScale(),0,0}; }
+  V3   curveCenter() const { return buttonCenter() + V3{-0.24f*chromeScale(),0,0}; }
   void fillCurve(VkCommandBuffer cmd, VkFence fence);
   bool isCurved() const { return curved && curveRadius>0.f; }
   // The arc is centred on the viewer at the moment the window is placed or curved
-  void updateCurveRadius() { curveRadius = std::clamp(length(headPos-toV3(windowPose.position)),0.8f,6.f); }
+  // Slight: the arc centred on the viewer. Strong: a tighter arc (the viewer stays inside it).
+  void updateCurveRadius() {
+    const float d = std::clamp(length(headPos-toV3(windowPose.position)),0.8f,6.f);
+    curveRadius = curveLevel>=2 ? 0.7f*d : d;
+    }
   // How far the window's side edges come towards the viewer
   float curveSag() const { return isCurved() ? curveRadius*(1.f-std::cos(windowWidth*0.5f/curveRadius)) : 0.f; }
   // Window space <-> unrolled arc space (x: arc length, y: height, z: distance in front of the arc).
@@ -551,8 +567,11 @@ bool XrWindow::Impl::createInstance() {
     return false;
   if(hasPerfSettings)
     hasPerfSettings = fn("xrPerfSettingsSetPerformanceLevelEXT", xrSetPerfLevel);
-  if(hasRefreshRate)
+  if(hasRefreshRate) {
     fn("xrGetDisplayRefreshRateFB",xrGetRate);
+    fn("xrEnumerateDisplayRefreshRatesFB",xrEnumRates);
+    fn("xrRequestDisplayRefreshRateFB",xrRequestRate);
+    }
   if(canSetSkySampler) {
     fn("xrGetSwapchainStateFB", xrGetSwapchainState);
     fn("xrUpdateSwapchainFB", xrUpdateSwapchain);
@@ -826,7 +845,9 @@ void XrWindow::Impl::createSwapchains() {
   info.height      = ButtonH;
   info.arraySize   = 4;
   aspectButton = makeSwapchain(session, info, "aspect lock swapchain");
+  info.arraySize   = 6; // flat, slight, strong: idle or hovered
   curveButton  = makeSwapchain(session, info, "curve button swapchain");
+  info.arraySize   = 4;
 
   if(hasPanorama) {
     info.width = SkyW;
@@ -1013,7 +1034,8 @@ void XrWindow::Impl::saveDim() {
   }
 
 int XrWindow::Impl::sliderRow() const {
-  if(!sliderReady || !dimStyleAvailable || !roomAvailable() || lastDimHover==0)
+  // Dimming applies to passthrough only: hidden in VR mode
+  if(!sliderReady || !dimStyleAvailable || !roomAvailable() || immersive || lastDimHover==0)
     return -1;
   // Keep the slider within reach when a ray crosses the gap beside the button.
   const XrDuration age = frame.predictedDisplayTime-lastDimHover;
@@ -1207,6 +1229,21 @@ void XrWindow::Impl::updateSessionRunning() {
   running = begin;
   if(begin && xrGetRate && XR_FAILED(xrGetRate(session,&refreshRate)))
     refreshRate = 0.f;
+  if(begin && xrEnumRates) {
+    uint32_t count = 0;
+    supportedRates.clear();
+    if(XR_SUCCEEDED(xrEnumRates(session,0,&count,nullptr)) && count>0) {
+      supportedRates.resize(count);
+      if(XR_FAILED(xrEnumRates(session,count,&count,supportedRates.data())))
+        supportedRates.clear();
+      supportedRates.resize(std::min<size_t>(count,supportedRates.size()));
+      }
+    std::string list;
+    for(float r:supportedRates)
+      list += std::to_string(int(std::lround(r))) + " ";
+    Log::i("OpenXR: display refresh rates ", list);
+    requestedRateChoice = -1;
+    }
   if(begin && hasPerfSettings) {
     const bool low = CommandLine::inst().xrPerfLevel()=="low";
     const auto lvl = low ? XR_PERF_SETTINGS_LEVEL_POWER_SAVINGS_EXT : XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT;
@@ -1333,8 +1370,9 @@ void XrWindow::Impl::placeWindow() {
   V3 fwd = headForward;
   fwd.y  = 0;
   fwd    = normalize(fwd);
-  // The sweet spot: the window covers exactly the game's field of view, so nothing is cropped
-  const float distance = std::clamp(portalDistance(verticalFov), 0.6f, 3.f);
+  // A little beyond the sweet spot (where the window covers the game's field of view), so the
+  // whole window fits in view with room to spare
+  const float distance = std::clamp(portalDistance(verticalFov)*1.1f, 1.0f, 1.4f);
   const V3    pos      = headPos + fwd*std::sqrt(distance*distance-0.1f*0.1f) + V3{0,-0.1f,0};
   windowPose.position    = toXr(pos);
   windowPose.orientation = facing(headPos - pos);
@@ -1403,7 +1441,7 @@ void XrWindow::Impl::smokeHand(Hand& hand) {
     hand.grab = (f>=108 && f<116) || (f>=292 && f<300) ? 1.f : 0.f;
     } else if(f<530) {
     // Aim and trigger. Start at the light end and drag continuously.
-    point.x += DimLeft+DimTravel*0.85f*std::clamp((float(f)-330.f)/94.f,0.f,1.f);
+    point.x += dimLeft()+dimTravel()*0.85f*std::clamp((float(f)-330.f)/94.f,0.f,1.f);
     ray = true;
     hand.trigger = f>=330 && f<500 ? 1.f : 0.f;
     } else {
@@ -1476,6 +1514,9 @@ void XrWindow::Impl::updateInput() {
   // Pointing at or touching the frame parts: the handle moves the window, the corners resize it.
   // The game image itself is never a grab target, so playing never moves the window by accident.
   const bool canManipulate = frame.shouldRender && placed && headValid;
+  const int64_t steadyNow = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch()).count();
+  const bool gameInputRecent = steadyNow-lastGameInput.load() < 1000000000;
   const V3 wNormal = rotate(windowPose.orientation, V3{0,0,1});
   auto rayHit = [&](const XrPosef& aim) -> std::optional<V3> {
     const V3 origin = toV3(aim.position);
@@ -1528,6 +1569,8 @@ void XrWindow::Impl::updateInput() {
       smokeHand(h);
     h.hover     = Grip::None;
     h.hoverNear = false;
+    if(gameInputRecent && grabbedBy!=int(i))
+      continue;
 
     // Direct touch first: the pinch point (or controller grip) close to a frame part
     if(h.nearValid) {
@@ -1574,7 +1617,7 @@ void XrWindow::Impl::updateInput() {
     const bool startTrigger = h.hover==Grip::Dim && triggerDown;
     auto moveDim = [&](const V3& worldPoint) {
       const float x = toLocal(windowPose,worldPoint).x;
-      const float level = std::clamp((x-buttonCenter().x-DimLeft)/DimTravel,0.f,1.f);
+      const float level = std::clamp((x-buttonCenter().x-dimLeft())/dimTravel(),0.f,1.f);
       if(level!=passthroughDim && applyDim(level))
         dimDirty = true;
       };
@@ -1658,11 +1701,12 @@ void XrWindow::Impl::updateInput() {
       if(grabbed==Grip::Dim) {
         moveDim(h.hit);
         } else if(grabbed==Grip::Curve) {
-        curved = !curved;
+        curveLevel = (curveLevel+1)%3;
+        curved = curveLevel>0;
         if(curved)
           updateCurveRadius();
         skipExtrapolation = true;
-        Gothic::settingsSetI("INTERNAL", "xrCurved", curved ? 1 : 0);
+        Gothic::settingsSetI("INTERNAL", "xrCurved", curveLevel);
         Gothic::flushSettings();
         } else if(grabbed==Grip::Aspect) {
         aspectLocked = !aspectLocked;
@@ -1733,14 +1777,15 @@ void XrWindow::Impl::updateInput() {
   }
 
 V3 XrWindow::Impl::handleCenter() const {
-  return V3{0, -windowHeight()*0.5f + edgeFeather()*0.5f - 0.05f, 0};
+  return V3{0, -windowHeight()*0.5f + edgeFeather()*0.5f - 0.05f*chromeScale(), 0};
   }
 
 Grip XrWindow::Impl::targetAt(float x, float y) const {
   const float halfW = windowWidth*0.5f;
   const float halfH = windowHeight()*0.5f;
   // Corners: a hand-sized zone around each bottom corner, mostly outside the image
-  const float zone = 0.10f;
+  const float k = chromeScale();
+  const float zone = 0.10f*k;
   const float inset = cornerInset();
   if(cornersReady && std::abs(y+halfH-inset)<zone) {
     if(std::abs(x-halfW+inset)<zone)
@@ -1749,18 +1794,18 @@ Grip XrWindow::Impl::targetAt(float x, float y) const {
       return Grip::CornerLeft;
     }
   const V3 hc = handleCenter();
-  if(handleReady && std::abs(x-hc.x)<0.16f && std::abs(y-hc.y)<0.045f)
+  if(handleReady && std::abs(x-hc.x)<0.16f*k && std::abs(y-hc.y)<0.045f*k)
     return Grip::Handle;
   const V3 bend = curveCenter();
-  if(curveReady && std::abs(x-bend.x)<0.05f && std::abs(y-bend.y)<0.04f)
+  if(curveReady && std::abs(x-bend.x)<0.05f*k && std::abs(y-bend.y)<0.04f*k)
     return Grip::Curve;
   const V3 lock = aspectCenter();
-  if(aspectReady && std::abs(x-lock.x)<0.05f && std::abs(y-lock.y)<0.04f)
+  if(aspectReady && std::abs(x-lock.x)<0.05f*k && std::abs(y-lock.y)<0.04f*k)
     return Grip::Aspect;
   const V3 button = buttonCenter();
-  if(buttonReady && roomAvailable() && std::abs(x-button.x)<0.065f && std::abs(y-button.y)<0.04f)
+  if(buttonReady && roomAvailable() && std::abs(x-button.x)<0.065f*k && std::abs(y-button.y)<0.04f*k)
     return Grip::Environment;
-  if(sliderRow()>=0 && x>=button.x+DimLeft-0.025f && x<=button.x+DimLeft+DimTravel+0.025f && std::abs(y-button.y)<0.032f)
+  if(sliderRow()>=0 && x>=button.x+dimLeft()-0.025f*k && x<=button.x+dimLeft()+dimTravel()+0.025f*k && std::abs(y-button.y)<0.032f*k)
     return Grip::Dim;
   return Grip::None;
   }
@@ -1840,8 +1885,11 @@ void XrWindow::Impl::locateEyes() {
         add(-half,y);
         add( half,y);
         }
-      if(f[0]<f[1] && f[2]<f[3])
-        r = f;
+      if(f[0]<f[1] && f[2]<f[3]) {
+        // A small margin keeps the outline off the image border
+        const float mx = 0.01f*(f[1]-f[0]), my = 0.01f*(f[3]-f[2]);
+        r = {f[0]-mx, f[1]+mx, f[2]-my, f[3]+my};
+        }
       }
     eyePose[i].orientation = windowPose.orientation;
     eyePose[i].position    = toXr(toWorld(windowPose, e));
@@ -2047,12 +2095,30 @@ int64_t XrWindow::predictedDisplayTime() const {
   return impl->frame.predictedDisplayTime;
   }
 
+void XrWindow::Impl::applyRefreshRate() {
+  // Video settings: 60, 72, 80, 90 or 120 Hz (the closest the headset supports). With
+  // SpaceWarp the game renders at half of it.
+  static constexpr float choices[] = {60.f, 72.f, 80.f, 90.f, 120.f};
+  const int choice = std::clamp(Gothic::settingsGetI("INTERNAL","xrRefreshRate"),0,4);
+  if(choice==requestedRateChoice || xrRequestRate==nullptr || supportedRates.empty())
+    return;
+  requestedRateChoice = choice;
+  float best = supportedRates.front();
+  for(float r:supportedRates)
+    if(std::abs(r-choices[choice])<std::abs(best-choices[choice]))
+      best = r;
+  if(ok(xrRequestRate(session,best),"xrRequestDisplayRefreshRateFB"))
+    Log::i("OpenXR: requested ", best, " Hz");
+  }
+
 bool XrWindow::beginFrame() {
   auto& s = *impl;
   if(!s.running || s.state==XR_SESSION_STATE_STOPPING) {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     return false;
     }
+  if(s.state==XR_SESSION_STATE_FOCUSED || s.state==XR_SESSION_STATE_VISIBLE)
+    s.applyRefreshRate();
 
   XrFrameWaitInfo wait = {XR_TYPE_FRAME_WAIT_INFO};
   s.frame = {XR_TYPE_FRAME_STATE};
@@ -2458,15 +2524,17 @@ void XrWindow::Impl::fillEnvironment(VkCommandBuffer cmd, VkFence fence) {
   }
 
 void XrWindow::Impl::fillCurve(VkCommandBuffer cmd, VkFence fence) {
-  curved = Gothic::settingsGetI("INTERNAL","xrCurved")!=0;
+  curveLevel = std::clamp(Gothic::settingsGetI("INTERNAL","xrCurved"),0,2);
+  curved = curveLevel>0;
   if(curved && placed && headValid)
     updateCurveRadius();
   if(curveButton==XR_NULL_HANDLE)
     return;
-  // A window outline seen from above: a straight line (flat) or an arc (curved)
-  std::vector<uint32_t> px(size_t(ButtonW)*ButtonH*4);
-  for(unsigned layer=0; layer<4; ++layer) {
-    const bool bent = layer>=2, hover = (layer&1)!=0;
+  // A window outline seen from above: a straight line (flat) or an arc (slight, strong)
+  std::vector<uint32_t> px(size_t(ButtonW)*ButtonH*6);
+  for(unsigned layer=0; layer<6; ++layer) {
+    const unsigned level = layer/2;
+    const bool bent = level>0, hover = (layer&1)!=0;
     for(uint32_t y=0; y<ButtonH; ++y)
       for(uint32_t x=0; x<ButtonW; ++x) {
         const float u = float(x)+0.5f-float(ButtonW)*0.5f;
@@ -2475,7 +2543,7 @@ void XrWindow::Impl::fillCurve(VkCommandBuffer cmd, VkFence fence) {
         float line;
         if(bent) {
           // An arc bulging away from the viewer (its centre lies below the icon)
-          const float R = 26.f;
+          const float R = level>=2 ? 17.f : 26.f;
           line = std::abs(std::hypot(u, v-R+8.f)-R)-2.f;
           line = std::max(line, std::abs(u)-17.f);
           } else {
@@ -2491,7 +2559,7 @@ void XrWindow::Impl::fillCurve(VkCommandBuffer cmd, VkFence fence) {
                   hover ? 0.97f : 0.12f+0.16f*light, 34.f-rim); // faint until hovered
         }
     }
-  curveReady = uploadStatic(vk, cmd, fence, curveButton, ButtonW, ButtonH, 4, px);
+  curveReady = uploadStatic(vk, cmd, fence, curveButton, ButtonW, ButtonH, 6, px);
   }
 
 void XrWindow::Impl::fillAspect(VkCommandBuffer cmd, VkFence fence) {
@@ -2808,6 +2876,11 @@ bool XrWindow::submit(bool rendered) {
       v.fov                      = s.eyeFov[eye];
       v.subImage.swapchain       = s.swapchain[eye];
       v.subImage.imageRect       = {{0,0},{int32_t(s.width),int32_t(s.height)}};
+      if(curvedView) {
+        // The image is usually smaller than its swapchain: keep the compositor's filter from
+        // reaching stale texels beyond it (a faint frame around the curved window)
+        v.subImage.imageRect = {{1,1},{int32_t(s.width)-2,int32_t(s.height)-2}};
+        }
       v.subImage.imageArrayIndex = 0;
       }
     proj.space     = s.localSpace;
@@ -2844,7 +2917,7 @@ bool XrWindow::submit(bool rendered) {
     button.subImage.imageArrayIndex = (s.immersive ? 2u : 0u) + (hover ? 1u : 0u);
     button.pose = s.windowPose;
     button.pose.position = toXr(toWorld(s.windowPose, s.buttonCenter()));
-    button.size = {0.104f,0.065f};
+    button.size = {0.104f*s.chromeScale(),0.065f*s.chromeScale()};
     addLayer(button);
     }
   XrCompositionLayerQuad lockButton = {XR_TYPE_COMPOSITION_LAYER_QUAD};
@@ -2858,7 +2931,7 @@ bool XrWindow::submit(bool rendered) {
     lockButton.subImage.imageArrayIndex = (s.aspectLocked ? 2u : 0u) + (hover ? 1u : 0u);
     lockButton.pose = s.windowPose;
     lockButton.pose.position = toXr(toWorld(s.windowPose, s.aspectCenter()));
-    lockButton.size = {0.104f,0.065f};
+    lockButton.size = {0.104f*s.chromeScale(),0.065f*s.chromeScale()};
     addLayer(lockButton);
     }
   XrCompositionLayerQuad bendButton = {XR_TYPE_COMPOSITION_LAYER_QUAD};
@@ -2869,10 +2942,10 @@ bool XrWindow::submit(bool rendered) {
     bendButton.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     bendButton.subImage.swapchain = s.curveButton;
     bendButton.subImage.imageRect.extent = {int32_t(Impl::ButtonW), int32_t(Impl::ButtonH)};
-    bendButton.subImage.imageArrayIndex = (s.curved ? 2u : 0u) + (hover ? 1u : 0u);
+    bendButton.subImage.imageArrayIndex = uint32_t(s.curveLevel)*2u + (hover ? 1u : 0u);
     bendButton.pose = s.windowPose;
     bendButton.pose.position = toXr(toWorld(s.windowPose, s.curveCenter()));
-    bendButton.size = {0.104f,0.065f};
+    bendButton.size = {0.104f*s.chromeScale(),0.065f*s.chromeScale()};
     addLayer(bendButton);
     }
   XrCompositionLayerQuad slider[2] = {{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
@@ -2889,9 +2962,10 @@ bool XrWindow::submit(bool rendered) {
       q.subImage.imageRect = {{knob ? Impl::RailW : 0,row*Impl::KnobW},
                               {knob ? Impl::KnobW : Impl::RailW,Impl::KnobW}};
       q.pose = s.windowPose;
-      const float x = Impl::DimLeft+Impl::DimTravel*(knob ? s.passthroughDim : 0.5f);
+      const float x = s.dimLeft()+s.dimTravel()*(knob ? s.passthroughDim : 0.5f);
       q.pose.position = toXr(toWorld(s.windowPose,center+V3{x,0.f,0.f}));
-      q.size = knob ? XrExtent2Df{0.034f,0.034f} : XrExtent2Df{0.22f,0.033f};
+      const float k = s.chromeScale();
+      q.size = knob ? XrExtent2Df{0.034f*k,0.034f*k} : XrExtent2Df{0.22f*k,0.033f*k};
       addLayer(q);
       }
     }
@@ -2908,12 +2982,12 @@ bool XrWindow::submit(bool rendered) {
     handle.subImage.imageArrayIndex  = s.grabbed==Grip::Handle ? 2u : (hoverHandle ? 1u : 0u);
     handle.pose.orientation          = s.windowPose.orientation;
     handle.pose.position             = toXr(toWorld(s.windowPose, s.handleCenter()));
-    handle.size                      = {0.22f, 0.0275f};
+    handle.size                      = {0.22f*s.chromeScale(), 0.0275f*s.chromeScale()};
     addLayer(handle);
     }
 
   if(s.cornersReady && hasImage) {
-    const float halfW = s.windowWidth*0.5f, halfH = s.windowHeight()*0.5f, sz = 0.10f;
+    const float halfW = s.windowWidth*0.5f, halfH = s.windowHeight()*0.5f, sz = 0.10f*s.chromeScale();
     for(int c=0; c<2; ++c) {
       const auto corner = c==0 ? Grip::CornerLeft : Grip::CornerRight;
       const bool held = s.grabbed==corner;
@@ -2923,7 +2997,7 @@ bool XrWindow::submit(bool rendered) {
       const float sx = c==0 ? -1.f : 1.f;
       const float k  = sz*(44.f/64.f - 0.5f);   // bracket corner offset from the quad centre
       const float inset = s.cornerInset();
-      const V3 at{sx*(halfW - inset + 0.012f - k), -halfH + inset - 0.012f + k, 0.002f};
+      const V3 at{sx*(halfW - inset + 0.012f*s.chromeScale() - k), -halfH + inset - 0.012f*s.chromeScale() + k, 0.002f};
       auto& q = corners[size_t(c)];
       q = {XR_TYPE_COMPOSITION_LAYER_QUAD};
       q.layerFlags               = chromeFlags;
@@ -3055,6 +3129,11 @@ bool XrWindow::takePadInterruption(PadState& releaseSources) {
   return std::exchange(impl->padInterrupted,false);
   }
 
+void XrWindow::noteGameInput() {
+  impl->lastGameInput = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+
 bool XrWindow::isFocused() const {
   return AndroidApi::activityFocused() && impl->state==XR_SESSION_STATE_FOCUSED;
   }
@@ -3103,6 +3182,7 @@ std::string XrWindow::timingReport() { return ""; }
 PadState  XrWindow::pad() const { return {}; }
 bool XrWindow::takePadInterruption(PadState&) { return false; }
 bool      XrWindow::isFocused() const { return false; }
+void      XrWindow::noteGameInput() {}
 bool      XrWindow::isVisible() const { return false; }
 
 #endif

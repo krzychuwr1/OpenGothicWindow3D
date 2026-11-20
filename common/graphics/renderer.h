@@ -31,7 +31,7 @@ class Renderer final {
     // The second view of a stereo frame reuses the first view's shadow maps
     void setSecondView(bool second) { secondView = second; }
     // XR curved window: where the interface goes inside the eye image (empty: everywhere)
-    void setUiViewport(const Tempest::Rect& r) { uiViewport = r; }
+    void setUiViewport(const Tempest::Rect& r, Tempest::Size frame) { uiViewport = r; uiFrame = frame; }
 #ifdef OPENGOTHIC_XR
     Tempest::Size prepareXrViewport(Tempest::Size current, Tempest::Size desired, Tempest::Fence* previous);
     void releaseXrViewport(Tempest::Fence& completed);
@@ -238,7 +238,8 @@ class Renderer final {
 
     Tempest::Attachment       gbufDiffuse;
     LayeredTargets            mvTest;
-    Tempest::Rect             uiViewport;   // -skip mvtest: two-layer G-buffer for the multiview timing test
+    Tempest::Rect             uiViewport;
+    Tempest::Size             uiFrame;   // -skip mvtest: two-layer G-buffer for the multiview timing test
     Tempest::Attachment       gbufNormal;
 
     struct Shadow {

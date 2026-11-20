@@ -92,7 +92,7 @@ class CommandLine {
     int                 captureSec = 0, captureBurst = 0;
     float               turnRate = 0.f;
     float               mouseRate = 0.f, stickX = 0.f;
-    float               portalWidth = 2.4f, portalHeight = 1.35f;
+    float               portalWidth = 1.6f, portalHeight = 0.9f; // fits the view at ~1.1 m with room to spare
     bool                walkForward = false;
     bool                smokeTest = false;
     bool                faceView = false;

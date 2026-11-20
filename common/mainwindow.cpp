@@ -368,7 +368,14 @@ void MainWindow::metricsEvent(DisplayMetricsEvent& event) {
   update();
   }
 
+// Keyboard, mouse and pad play: keep the XR window controls out of the way for a moment
+static void noteXrGameInput() {
+  if(auto xr = XrWindow::inst())
+    xr->noteGameInput();
+  }
+
 void MainWindow::mouseDownEvent(MouseEvent &event) {
+  noteXrGameInput();
   if(event.button<sizeof(mouseP))
     mouseP[event.button]=true;
   auto act     = keycodec.tr(event);
@@ -377,6 +384,7 @@ void MainWindow::mouseDownEvent(MouseEvent &event) {
   }
 
 void MainWindow::mouseUpEvent(MouseEvent &event) {
+  noteXrGameInput();
   auto act     = keycodec.tr(event);
   auto mapping = keycodec.mapping(event);
   player.onKeyReleased(act,mapping);
@@ -385,6 +393,7 @@ void MainWindow::mouseUpEvent(MouseEvent &event) {
   }
 
 void MainWindow::mouseDragEvent(MouseEvent &event) {
+  noteXrGameInput();
   const bool fs = SystemApi::isFullscreen(hwnd());
   if(!mouseP[Event::ButtonLeft] && !fs)
     return;
@@ -394,6 +403,7 @@ void MainWindow::mouseDragEvent(MouseEvent &event) {
   }
 
 void MainWindow::mouseMoveEvent(MouseEvent &event) {
+  noteXrGameInput();
   processMouse(event,SystemApi::isFullscreen(hwnd()));
   }
 
@@ -461,6 +471,7 @@ void MainWindow::onSettings() {
   }
 
 void MainWindow::mouseWheelEvent(MouseEvent &event) {
+  noteXrGameInput();
   if(auto camera = Gothic::inst().camera())
     camera->changeZoom(event.delta);
   }
@@ -474,6 +485,7 @@ Tempest::Widget*& MainWindow::keyRecipient(Tempest::Event::KeyType key) {
   }
 
 void MainWindow::keyDownEvent(KeyEvent &event) {
+  noteXrGameInput();
   auto& uiKeyUp = keyRecipient(event.key);
   if(video.isActive()){
     event.accept();
@@ -543,6 +555,7 @@ void MainWindow::keyDownEvent(KeyEvent &event) {
   }
 
 void MainWindow::keyRepeatEvent(KeyEvent& event) {
+  noteXrGameInput();
   auto uiKeyUp = keyRecipient(event.key);
   if(uiKeyUp==&video){
     if(event.isAccepted())
@@ -583,6 +596,7 @@ void MainWindow::keyCancelEvent(KeyEvent& event) {
 #endif
 
 void MainWindow::keyUpEvent(KeyEvent &event) {
+  noteXrGameInput();
   auto uiKeyUp = keyRecipient(event.key);
   if(uiKeyUp==&video){
     video.keyUpEvent(event);
@@ -1424,6 +1438,14 @@ void MainWindow::tickPad(uint64_t dt) {
         }
       }
     state = PadState::merge(nativePad(native.state),xrState);
+    {
+      bool active = std::abs(state.lx)>0.25f || std::abs(state.ly)>0.25f || std::abs(state.rx)>0.25f ||
+                    std::abs(state.ry)>0.25f || state.lt>0.2f || state.rt>0.2f;
+      for(bool b:state.buttons)
+        active |= b;
+      if(active)
+        noteXrGameInput();
+    }
     const auto& cli = CommandLine::inst();
     if(!menu && XrWindow::inst() && (startupDone || cli.startupCommands().empty())) {
       if(cli.xrWalkForward()) {
@@ -1500,7 +1522,10 @@ void MainWindow::FrameTiming::report() {
 //   give ITEM [COUNT]   add items to the inventory
 //   equip ITEM          add one if missing, then wear, wield or ready it (armour, weapons, runes)
 //   guild NUMBER        true and current guild (1 paladin, 4 fire mage, 6 dragon hunter, ...)
-//   talent NUMBER LEVEL talent skill (1 one-handed, 2 two-handed, 3 bow, 4 crossbow, 7 magic circle)
+//   talent NUMBER LEVEL talent skill (7: magic circle)
+//   fight TALENT PERCENT  the game's fight training (1 one-handed, 2 two-handed, 3 bow, 4 crossbow):
+//                         skill level and hit chance, as trainers raise them
+//   chapter N           the game's own chapter change (story events, new NPCs)
 //   attr NAME VALUE     str, dex, hp or mana: sets the maximum and fills it
 bool MainWindow::runHeroCommand(std::string_view cmd) {
   auto* world = Gothic::inst().world();
@@ -1543,6 +1568,10 @@ bool MainWindow::runHeroCommand(std::string_view cmd) {
     hero->handle().guild = num(1,0);
     return true;
     }
+  if(arg[0]=="fight" && arg.size()>=3)
+    return world->script().devRaiseFightTalent(*hero, num(1,0), num(2,0));
+  if(arg[0]=="chapter" && arg.size()>=2)
+    return world->script().devChangeChapter(num(1,1));
   if(arg[0]=="talent" && arg.size()>=3) {
     hero->setTalentSkill(Talent(num(1,0)), num(2,0));
     return true;
@@ -1897,7 +1926,8 @@ void MainWindow::renderFrame(bool xr) {
       }
 #ifdef OPENGOTHIC_XR
     renderer.setLightingEye(foveate && stereo ? view : -1);
-    renderer.setUiViewport(xr ? XrWindow::inst()->uiViewport(uint8_t(view)) : Tempest::Rect());
+    renderer.setUiViewport(xr ? XrWindow::inst()->uiViewport(uint8_t(view)) : Tempest::Rect(),
+                           xr ? XrWindow::inst()->resolution() : Tempest::Size());
 #endif
     renderer.setSecondView(camera!=nullptr && view==1);
     CommandBuffer& cmd = commands[cmdId];

@@ -2450,11 +2450,20 @@ void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
 
   const bool inventoryOpen = counters!=nullptr;
   const bool hasHud = !ui.isEmpty() || inventoryOpen;
+  // A curved window insets the interface differently in each eye: rebuild the mask per eye
+  const bool uiInset = uiViewport.w>0 && uiViewport.h>0 && uiFrame.w>0 && uiFrame.h>0;
+  if(uiInset)
+    hudReady = false;
   if(hasHud && (!hudReady || hudTransmittance.size()!=motion.size())) {
     hudReady = ensureHudMask(motion.size());
     if(hudReady) {
       cmd.setDebugMarker("SpaceWarp HUD coverage");
       cmd.setFramebuffer({{hudTransmittance, Vec4(1,1,1,1), Tempest::Preserve}});
+      if(uiInset) {
+        const float sx = float(motion.w())/float(uiFrame.w), sy = float(motion.h())/float(uiFrame.h);
+        cmd.setViewport(int(float(uiViewport.x)*sx), int(float(uiViewport.y)*sy),
+                        std::max(1,int(float(uiViewport.w)*sx)), std::max(1,int(float(uiViewport.h)*sy)));
+        }
       ui.draw(cmd, &*hudBlend);
       if(counters!=nullptr)
         counters->draw(cmd, &*hudBlend);

@@ -20,13 +20,13 @@ $ErrorActionPreference = 'Stop'
 $questSerial = & (Join-Path $PSScriptRoot 'install-quest.ps1') -GetQuestSerial
 
 # Hero setups for the later-chapter saves (startup commands: give, equip, guild, talent, attr)
-$paladin = 'set var KAPITEL 3;guild 1;attr str 120;attr dex 60;attr hp 450;talent 2 2;talent 4 1;' +
+$paladin = 'chapter 3;guild 1;attr str 120;attr dex 60;attr hp 450;fight 2 75;fight 4 50;' +
            'equip ITAR_PAL_M;equip ITMW_2H_PAL_SWORD;equip ITRW_CROSSBOW_H_02;give ITRW_BOLT 200;give ITPO_HEALTH_03 10'
-$mage    = 'set var KAPITEL 4;guild 4;talent 7 6;attr mana 320;attr hp 320;equip ITAR_KDF_H;' +
+$mage    = 'chapter 4;guild 4;talent 7 6;attr mana 320;attr hp 320;fight 1 40;equip ITAR_KDF_H;' +
            'equip ITRU_FIREBOLT;equip ITRU_INSTANTFIREBALL;equip ITRU_ICEBOLT;equip ITRU_LIGHTNINGFLASH;' +
            'equip ITRU_FIRESTORM;equip ITRU_ICEWAVE;equip ITRU_FIRERAIN;equip ITRU_SUMDEMON;equip ITRU_LIGHTHEAL;' +
            'give ITPO_MANA_03 20;give ITPO_HEALTH_03 10'
-$hunter  = 'set var KAPITEL 5;guild 6;attr str 160;attr dex 160;attr hp 650;talent 1 2;talent 3 2;' +
+$hunter  = 'chapter 5;guild 6;attr str 160;attr dex 160;attr hp 650;fight 1 80;fight 3 75;' +
            'equip ITAR_DJG_H;equip ITMW_1H_SPECIAL_03;equip ITRW_BOW_H_04;give ITRW_ARROW 300;give ITPO_HEALTH_03 10'
 
 # slot, name, waypoint, time, extra console commands

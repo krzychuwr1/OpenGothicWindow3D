@@ -79,6 +79,9 @@ class XrWindow final {
     // Previous XR controls still eligible to generate an ordinary release.
     bool              takePadInterruption(PadState& releaseSources);
     bool              isFocused() const;
+    // Keyboard, mouse or pad input for the game: the window controls ignore pointing and
+    // pinching until it has been quiet for a moment, so playing never grabs them by accident
+    void              noteGameInput();
     // The session shows frames (headset worn and the app in front, possibly under a system menu)
     bool              isVisible() const;
 

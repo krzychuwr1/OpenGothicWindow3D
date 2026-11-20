@@ -975,6 +975,25 @@ void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
   vm.call_function(vm.find_symbol_by_index(dlg.scriptFn));
   }
 
+bool GameScript::devChangeChapter(int32_t chapter) {
+  auto fn    = vm.find_symbol_by_name("B_Kapitelwechsel");
+  auto world = vm.find_symbol_by_name("NEWWORLD_ZEN");
+  if(fn==nullptr || world==nullptr)
+    return false;
+  vm.call_function<void>(fn, chapter, world->get_int());
+  return true;
+  }
+
+bool GameScript::devRaiseFightTalent(Npc& hero, int32_t talent, int32_t percent) {
+  auto fn = vm.find_symbol_by_name("B_RaiseFightTalent");
+  if(fn==nullptr)
+    return false;
+  ScopeVar self (*vm.global_self(),  hero.handlePtr());
+  ScopeVar other(*vm.global_other(), hero.handlePtr());
+  vm.call_function<void>(fn, hero.handlePtr(), talent, percent);
+  return true;
+  }
+
 void GameScript::printCannotUseError(Npc& npc, int32_t atr, int32_t nValue) {
   auto id = vm.find_symbol_by_name("G_CanNotUse");
   if(id==nullptr)

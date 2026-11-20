@@ -121,6 +121,7 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
   const float reach = std::clamp(0.35f+0.28f*size.width,0.55f,1.35f);
   std::vector<Sample> cloud;
   cloud.reserve(gridW*gridH);
+  std::vector<Point> wide; // also under and behind the window, for the fallback below
   for(int y=0;y<gridH;++y) {
     for(int x=0;x<gridW;++x) {
       const size_t i = size_t(y*gridW+x);
@@ -138,6 +139,8 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
         continue;
       if(counts) ++counts->valid;
       const Point p = {dot(world,right),world.y,dot(world,front)};
+      if(std::abs(p.x)<halfW+1.0f && p.z>-3.0f && p.z<reach && p.y<=maxHeight && p.y>=-2.3f)
+        wide.push_back(p);
       if(std::abs(p.x)>=halfW || p.z<0 || p.z>=reach || p.y>maxHeight || p.y< -2.3f)
         continue;
       const int col = std::min(columns-1,int((p.x+halfW)*float(columns)/(2.f*halfW)));
@@ -154,8 +157,65 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
       }
     }
   if(counts) counts->footprint=cloud.size();
+
+  // Looking at the window, the depth sensor rarely sees the surface between the window and the
+  // viewer: it lies too steeply below the gaze. It does see the same table or floor under and
+  // just behind the window. Take the strongest horizontal surface there (a height peak among
+  // the samples, the higher one when a table stands on the floor), require it to reach the
+  // window, and light it towards the viewer.
+  auto fallback = [&]() -> std::optional<EnvironmentDepth::Surface> {
+    if(wide.size()<30) {
+      Tempest::Log::i("XR surface fallback samples=",wide.size()," (too few)");
+      return {};
+      }
+    constexpr float bin = 0.02f;
+    const float low = -2.3f;
+    const int   n   = std::max(1,int((maxHeight-low)/bin)+1);
+    std::vector<int> hist(size_t(n),0);
+    for(auto& p:wide)
+      ++hist[size_t(std::clamp(int((p.y-low)/bin),0,n-1))];
+    const int needed = std::max(30,int(wide.size()/8));
+    int peak = -1;
+    for(int i=0;i<n;++i) {
+      const int around = hist[size_t(i)] + (i>0 ? hist[size_t(i-1)] : 0) + (i+1<n ? hist[size_t(i+1)] : 0);
+      if(around>=needed)
+        peak = i; // keep the highest strong surface
+      }
+    if(peak<0) {
+      Tempest::Log::i("XR surface fallback samples=",wide.size()," no horizontal peak");
+      return {};
+      }
+    const float guess = low+(float(peak)+0.5f)*bin;
+    double sum = 0;
+    int    count = 0, nearWindow = 0;
+    for(auto& p:wide) {
+      if(std::abs(p.y-guess)>0.025f)
+        continue;
+      sum += p.y;
+      ++count;
+      if(p.z>-1.5f)
+        ++nearWindow;
+      }
+    Tempest::Log::i("XR surface fallback samples=",wide.size()," height=",guess," inliers=",count," nearWindow=",nearWindow);
+    if(count<needed || nearWindow<10)
+      return {};
+    const float c = float(sum/count);
+    if(counts) counts->inliers=size_t(count);
+    EnvironmentDepth::Surface out;
+    const float yaw = 0.5f*std::atan2(front.x,front.z);
+    const XrQuaternionf facing = {0,std::sin(yaw),0,std::cos(yaw)};
+    constexpr float k = 0.70710678f;
+    out.pose.orientation = compose(facing,{-k,0,0,k});
+    out.pose.position = foot+front*(reach*0.5f)+up*(c+0.004f);
+    out.uvOffset = {0.f,0.f};
+    out.uvScale  = {1.f,1.f};
+    out.size     = {2.f*halfW,reach};
+    out.drop     = std::max(0.f,-c);
+    return out;
+    };
+
   if(cloud.size()<12)
-    return {};
+    return fallback();
 
   float bestScore = 0, a=0,b=0,c=0;
   Footprint bounds;
@@ -198,7 +258,7 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
     consider(ax,bz,p.y-ax*p.x-bz*p.z);
     }
   if(bestScore==0)
-    return {};
+    return fallback();
 
   // Fit the selected tabletop or floor to all agreeing points inside its measured footprint.
   double sx=0,sz=0,sy=0,sxx=0,szz=0,sxz=0,sxy=0,szy=0,count=0;
@@ -214,7 +274,7 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
     }
   if(counts) counts->inliers=size_t(count);
   if(count<12)
-    return {};
+    return fallback();
   sxx-=sx*sx/count; szz-=sz*sz/count; sxz-=sx*sz/count;
   sxy-=sx*sy/count; szy-=sz*sy/count;
   const double det = sxx*szz-sxz*sxz;
@@ -222,12 +282,12 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
   // Demand at least 3.5 cm RMS support in the least-spread horizontal axis.
   const double minVariance=(sxx+szz-std::hypot(sxx-szz,2*sxz))/(2*count);
   if(det<=1e-8 || minVariance<0.035*0.035)
-    return {};
+    return fallback();
   a=float((szz*sxy-sxz*szy)/det);
   b=float((sxx*szy-sxz*sxy)/det);
   c=float((sy-double(a)*sx-double(b)*sz)/count);
   if(a*a+b*b>0.09f || c>maxHeight || c< -2.3f)
-    return {};
+    return fallback();
 
   const float x = halfW*(float(bounds.l+bounds.r)/float(columns)-1.f);
   const float z = reach*0.5f*float(bounds.t+bounds.b)/float(rows);
