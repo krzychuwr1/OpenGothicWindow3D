@@ -23,32 +23,83 @@ param(
   [string]$Perf     = 'low'
 )
 $ErrorActionPreference = 'Stop'
-$argsFile = [IO.Path]::GetTempFileName()
-"-nomenu -novideo -gpuprofile -perf $Perf $Extra -exec `"goto waypoint $Waypoint;set time $Time`"" | Set-Content $argsFile -NoNewline -Encoding ascii
-adb push $argsFile /sdcard/OpenGothic/args.txt | Out-Null
-Remove-Item $argsFile
-
-adb shell am force-stop $Package
-# Low forced clocks for unattended runs (heat, battery); cleared again after the run
-if ($Perf -eq 'low') {
-  adb shell setprop debug.oculus.cpuLevel 1
-  adb shell setprop debug.oculus.gpuLevel 0
+# Check native exit codes explicitly, including the expected pidof/test misses.
+$PSNativeCommandUseErrorActionPreference = $false
+function Invoke-BenchAdb {
+  $output = & adb @args
+  if ($LASTEXITCODE -ne 0) { throw "adb failed ($LASTEXITCODE): $($args -join ' ')" }
+  $output
 }
-# Keep the display on for this run only (proximity sensor override)
-adb shell input keyevent KEYCODE_WAKEUP
-adb shell am broadcast -a com.oculus.vrpowermanager.prox_close | Out-Null
-adb shell am start -n "$Package/android.app.NativeActivity" | Out-Null
-Start-Sleep $LoadSeconds
-adb logcat -c
-Start-Sleep ($Samples + 1)
-$vr  = adb logcat -d -s VrApi:* | Select-String 'App='
-$cpu = adb logcat -d -s app:* | Select-String 'Frame CPU ms|Point lights:|Update:|Draw CPU|eye 1|Per frame|XR submit|GPU ms per view|^.*app\s+:\s+[ A-Za-z#0-9&\-]+ [\d.]+;' | Select-Object -Last 8
-adb shell rm -f /sdcard/OpenGothic/args.txt
-# Stop the game and let the headset sleep again between runs
-adb shell am force-stop $Package
-adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable | Out-Null
-adb shell setprop debug.oculus.cpuLevel "''"
-adb shell setprop debug.oculus.gpuLevel "''"
+
+$remoteArgs = '/sdcard/OpenGothic/args.txt'
+$launchArgs = "-nomenu -novideo -gpuprofile -perf $Perf $Extra -exec `"goto waypoint $Waypoint;set time $Time`""
+$serial = Invoke-BenchAdb get-serialno
+if ($serial -eq 'unknown') { throw 'No connected headset' }
+# Two checkouts on this host must not run the benchmark on the same headset.
+$lease = [Threading.Mutex]::new($false, "Local\OpenGothicQuestBench-$serial")
+try { $owned = $lease.WaitOne(0) } catch [Threading.AbandonedMutexException] { $owned = $true }
+if (-not $owned) { $lease.Dispose(); throw 'Another benchmark owns the headset' }
+$argsFile = $null
+$wroteArgs = $false
+$forcedClocks = $false
+$wakeRequested = $false
+$launched = $false
+try {
+  $battery = (Invoke-BenchAdb shell dumpsys battery) -join "`n"
+  if ($battery -notmatch '(?m)^\s*level:\s*(\d+)' -or [int]$Matches[1] -lt 25 -or
+      $battery -notmatch '(?m)^\s*temperature:\s*(\d+)' -or [int]$Matches[1] -gt 450) {
+    throw 'Headset battery or temperature outside test limits. Allow at least 20 minutes to cool or charge.'
+  }
+  # pidof and test use exit code 1 for absence.
+  & adb shell pidof $Package | Out-Null
+  if ($LASTEXITCODE -ne 1) { throw 'Cannot start a benchmark while the app may already be running' }
+  & adb shell test -e $remoteArgs
+  if ($LASTEXITCODE -ne 1) { throw 'Existing developer arguments or device error; leaving args.txt alone' }
+
+  $argsFile = [IO.Path]::GetTempFileName()
+  [IO.File]::WriteAllText($argsFile, $launchArgs, [Text.Encoding]::ASCII)
+  $wroteArgs = $true
+  Invoke-BenchAdb push $argsFile $remoteArgs | Out-Null
+  if ($Perf -eq 'low') {
+    $forcedClocks = $true
+    Invoke-BenchAdb shell setprop debug.oculus.cpuLevel 1
+    Invoke-BenchAdb shell setprop debug.oculus.gpuLevel 0
+  }
+  $wakeRequested = $true
+  Invoke-BenchAdb shell input keyevent KEYCODE_WAKEUP
+  Invoke-BenchAdb shell am broadcast -a com.oculus.vrpowermanager.prox_close | Out-Null
+  $launchTime = (Invoke-BenchAdb shell date '+%s') + '.000'
+  $launched = $true
+  Invoke-BenchAdb shell am start -n "$Package/android.app.NativeActivity" | Out-Null
+  Start-Sleep $LoadSeconds
+  $gamePid = Invoke-BenchAdb shell pidof $Package
+  $startup = Invoke-BenchAdb logcat -d -T $launchTime "--pid=$gamePid" -s app:*
+  if (-not ($startup | Select-String -SimpleMatch "startup command `"goto waypoint $Waypoint`": ok") -or
+      -not ($startup | Select-String -SimpleMatch "startup command `"set time $Time`": ok")) {
+    throw 'Requested scene did not load in this process. Discarding the run.'
+  }
+  # Read a bounded time window without clearing the device-wide logs.
+  $since = (Invoke-BenchAdb shell date '+%s') + '.000'
+  Start-Sleep ($Samples + 1)
+  if ((Invoke-BenchAdb shell pidof $Package) -ne $gamePid) { throw 'Game process changed during sampling' }
+  if ((Invoke-BenchAdb shell cat $remoteArgs) -cne $launchArgs) { throw 'Launch arguments changed during sampling' }
+  $vr = @(Invoke-BenchAdb logcat -d -T $since -s VrApi:* | Select-String 'App=')
+  $cpu = Invoke-BenchAdb logcat -d -T $since "--pid=$gamePid" -s app:* | Select-String 'Frame CPU ms|Point lights:|Update:|Draw CPU|eye 1|Per frame|XR submit|GPU ms per view|^.*app\s+:\s+[ A-Za-z#0-9&\-]+ [\d.]+;' | Select-Object -Last 8
+} finally {
+  # A failing adb call must not prevent the remaining cleanup attempts.
+  if ($launched) { & adb shell am force-stop $Package }
+  if ($wakeRequested) { & adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable | Out-Null }
+  if ($forcedClocks) {
+    & adb shell setprop debug.oculus.cpuLevel "''"
+    & adb shell setprop debug.oculus.gpuLevel "''"
+  }
+  if ($wroteArgs -and ((& adb shell cat $remoteArgs) -ceq $launchArgs)) {
+    & adb shell rm -f $remoteArgs
+  }
+  if ($argsFile) { Remove-Item -LiteralPath $argsFile }
+  $lease.ReleaseMutex()
+  $lease.Dispose()
+}
 
 $fps = @(); $gpu = @(); $cg = @()
 foreach ($l in $vr) {
