@@ -742,6 +742,15 @@ void MainWindow::paintFocusMarkers(Painter& p, const Focus& focus, const Matrix4
     }*/
   }
 
+static bool warpCalibrationEnabled() {
+#ifdef OPENGOTHIC_XR
+  static const bool enabled = Gothic::settingsGetI("BENCHMARK","xrMotionTrial")==10;
+  return enabled;
+#else
+  return false;
+#endif
+  }
+
 void MainWindow::paintEyeOverlay(const Camera& camera) {
   eyeOverlay.clear();
   auto world = Gothic::inst().world();
@@ -750,11 +759,7 @@ void MainWindow::paintEyeOverlay(const Camera& camera) {
     return;
   auto focus = world->validateFocus(player.focus());
   const bool showBounds = XrWindow::inst() && CommandLine::inst().debugShow("windowbounds");
-#ifdef OPENGOTHIC_XR
-  static const bool showWarpProbe = Gothic::settingsGetI("BENCHMARK","xrMotionTrial")==10;
-#else
-  const bool showWarpProbe = false;
-#endif
+  const bool showWarpProbe = warpCalibrationEnabled();
   if(!focus && !showBounds && !showWarpProbe)
     return;
   PaintEvent e(eyeOverlay,atlas,w(),h());
@@ -763,12 +768,14 @@ void MainWindow::paintEyeOverlay(const Camera& camera) {
     // In submitted colour both bars have fixed positions. Only the magenta
     // bar has artificial velocity in spacewarp_trial.frag; cyan anchors it.
     const float sx = float(w())/64.f, sy = float(h())/64.f;
-    p.setBrush(Color(0.f,0.f,0.f,1.f));
-    p.drawRect(14*sx,24*sy,9*sx,4*sy,0.f,0.f,1.f,1.f);
-    p.setBrush(Color(0.f,1.f,1.f,1.f));
-    p.drawRect(15*sx,24.5f*sy,sx,3*sy,0.f,0.f,1.f,1.f);
-    p.setBrush(Color(1.f,0.f,1.f,1.f));
-    p.drawRect(19*sx,24.5f*sy,sx,3*sy,0.f,0.f,1.f,1.f);
+    for(const float top:{24.f,48.f}) {
+      p.setBrush(Color(0.f,0.f,0.f,1.f));
+      p.drawRect(14*sx,top*sy,9*sx,4*sy,0.f,0.f,1.f,1.f);
+      p.setBrush(Color(0.f,1.f,1.f,1.f));
+      p.drawRect(15*sx,(top+0.5f)*sy,sx,3*sy,0.f,0.f,1.f,1.f);
+      p.setBrush(Color(1.f,0.f,1.f,1.f));
+      p.drawRect(19*sx,(top+0.5f)*sy,sx,3*sy,0.f,0.f,1.f,1.f);
+      }
     }
   if(showBounds) {
     // Mark the submitted eye boundary without changing the scene depth or its motion vectors.
@@ -1773,15 +1780,20 @@ void MainWindow::renderFrame(bool xr) {
           Painter painter(pe);
           const int cell = std::max(8,w()/48);
           // Guards distinguish both uniformly coloured codes from a missing window.
-          painter.setBrush(Color(1.f,1.f,1.f,1.f));
-          painter.drawRect(w()/2-3*cell,h()/12,cell,cell);
-          painter.setBrush(Color(0.f,0.f,0.f,1.f));
-          painter.drawRect(w()/2+2*cell,h()/12,cell,cell);
-          for(unsigned bit=0; bit<4; ++bit) {
-            const float c = (captureFrame & (1u<<bit))!=0 ? 1.f : 0.f;
-            painter.setBrush(Color(c,c,c,1.f));
-            painter.drawRect(w()/2-2*cell+int(bit)*cell,h()/12,cell,cell);
-            }
+          auto drawFrameId = [&](int y) {
+            painter.setBrush(Color(1.f,1.f,1.f,1.f));
+            painter.drawRect(w()/2-3*cell,y,cell,cell);
+            painter.setBrush(Color(0.f,0.f,0.f,1.f));
+            painter.drawRect(w()/2+2*cell,y,cell,cell);
+            for(unsigned bit=0; bit<4; ++bit) {
+              const float c = (captureFrame & (1u<<bit))!=0 ? 1.f : 0.f;
+              painter.setBrush(Color(c,c,c,1.f));
+              painter.drawRect(w()/2-2*cell+int(bit)*cell,y,cell,cell);
+              }
+            };
+          drawFrameId(h()/12);
+          if(warpCalibrationEnabled())
+            drawFrameId(3*h()/4);
           }
 
         numOverlay.clear();

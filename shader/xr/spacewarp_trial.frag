@@ -13,7 +13,8 @@ void main() {
     // Same 64-unit grid as the two stationary colour bars in paintEyeOverlay.
     // Preserve actual scene vectors everywhere outside their black backing.
     vec2 cell = (vec2(at)+0.5)*64.0/vec2(textureSize(motion,0));
-    if(cell.x>=14.0 && cell.x<23.0 && cell.y>=24.0 && cell.y<28.0)
+    bool patchRow = (cell.y>=24.0 && cell.y<28.0) || (cell.y>=48.0 && cell.y<52.0);
+    if(cell.x>=14.0 && cell.x<23.0 && patchRow)
       v = vec3(cell.x>=18.0 && cell.x<21.0 ? 0.08 : 0.0,0.0,0.0);
     } else if(at.y > textureSize(motion,0).y/4 && at.y < 3*textureSize(motion,0).y/4)
     v.xy += vec2(max(trial.gainAndOffset.w,0.0),max(-trial.gainAndOffset.w,0.0));

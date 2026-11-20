@@ -31,14 +31,16 @@ def decode(movie):
         if version != 2 or count < 2 or pos + 16 + count * 8 > len(buf):
             raise ValueError('Invalid Winscope timing record')
         wall = (np.frombuffer(buf, '<i8', count, pos+16) + offset) * 1e-9
-    pts, changes = [], [np.nan]
+    pts, changes = [], [(np.nan, np.nan, np.nan)]
     previous = None
     with av.open(str(movie)) as video:
         for frame in video.decode(video=0):
             pts.append(frame.time)
             picture = frame.to_ndarray(format='gray')[::4, ::4].astype(np.int16)
             if previous is not None:
-                changes.append(np.abs(picture-previous).mean())
+                row_delta = np.abs(picture-previous).mean(axis=1)
+                split = (frame.height + 7)//8  # Every fourth source row above the midline.
+                changes.append((row_delta.mean(), row_delta[:split].mean(), row_delta[split:].mean()))
             previous = picture
     if len(wall) != len(pts) or np.any(np.diff(wall) <= 0):
         raise ValueError('Winscope timestamps and decoded frames disagree')
@@ -100,9 +102,12 @@ def analyze(args):
         raise ValueError('Give the nonzero image-space direction of the window horizontal')
     shift = (r['dx_right_px']*axis[0] + r['dy_down_px']*axis[1])/np.linalg.norm(axis)
     good = (ids[:-1] >= 0) & (ids[1:] >= 0) & (r['peak_sidelobe'] >= 12)
-    duplicate = delta[end] < .35
+    duplicate, upper_hold, lower_hold = (delta[end] < .35).T
+    local_hold = r['mean_abs_delta'] < .35
+    if args.roi_half:
+        local_hold |= upper_hold if args.roi_half=='upper' else lower_hold
     brackets = importlib.import_module('analyze-quest-motion').marker_brackets
-    accepted, changing = [], []
+    accepted, changing, local = [], [], []
     print('report end        frames/repeats   ROI holds/good    FPS    ASW   Stale  Tear  E(mean/RMS)')
     seconds = 0
     for t, _, stat in logs:
@@ -128,9 +133,16 @@ def analyze(args):
         accepted.extend(shift[:-1][pair]/total[pair])
         pair &= ~duplicate[:-1] & ~duplicate[1:]
         changing.extend(shift[:-1][pair]/total[pair])
+        pair &= ~local_hold[:-1] & ~local_hold[1:]
+        local.extend(shift[:-1][pair]/total[pair])
     if not seconds:
         raise ValueError('No complete VrApi report seconds within the motion CSV')
-    for name, sample in [('All', accepted), ('Both encoded transitions changed', changing)]:
+    print(f'Across the selected interval, only the upper half changed on '
+          f'{(~upper_hold & lower_hold).sum()} transitions and only the lower half on '
+          f'{(upper_hold & ~lower_hold).sum()} of {len(end)}.')
+    region = f'measured ROI and {args.roi_half} half' if args.roi_half else 'measured ROI'
+    for name, sample in [('All', accepted), ('Both encoded transitions changed', changing),
+                         (f'Both transitions changed in the {region}', local)]:
         print(f'{name}: {len(sample)} accepted AppSW triplets' +
               (f', intervening displacement fraction p25/50/75 {np.round(np.percentile(sample,[25,50,75]),3)}'
                if sample else ''))
@@ -143,6 +155,8 @@ if __name__ == '__main__':
     parser.add_argument('motion_csv', type=Path, help='analyze-quest-motion.py --csv with a decoded frame-ID marker')
     parser.add_argument('--utc-offset', required=True, help='headset logcat UTC offset, e.g. +01:00')
     parser.add_argument('--axis', nargs=2, type=float, required=True, metavar=('DX','DY'))
+    parser.add_argument('--roi-half', choices=('upper','lower'),
+                        help='also require a change in the mirror half containing the measured ROI')
     try:
         analyze(parser.parse_args())
     except (ValueError, KeyError, OSError, struct.error) as exc:
