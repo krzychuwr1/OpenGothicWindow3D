@@ -411,7 +411,9 @@ void MainWindow::tickMouse(uint64_t dt) {
     return;
     }
 
-  if(dMouse==Point())
+  const auto& cli = CommandLine::inst();
+  const float turn = XrWindow::inst() && (startupDone || cli.startupCommands().empty()) ? cli.xrTurnRate() : 0.f;
+  if(dMouse==Point() && turn==0.f)
     return;
 
   const bool  camLookaroundInverse = Gothic::inst().settingsGetI("GAME","camLookaroundInverse");
@@ -433,6 +435,7 @@ void MainWindow::tickMouse(uint64_t dt) {
   // Log::d("mouse dMouse   = ", dMouse.x,   ", ", dMouse.y);
   // Log::d("mouse dpScaled = ", dpScaled.x, ", ", dpScaled.y);
 
+  dpScaled.x += turn*dtF;
   camera->onRotateMouse(PointF(dpScaled.y,-dpScaled.x));
   if(!inventory.isActive()) {
     player.onRotateMouse(-dpScaled.x, -dpScaled.y);
@@ -1377,6 +1380,11 @@ void MainWindow::tickPad(uint64_t dt) {
         }
       }
     state = PadState::merge(nativePad(native.state),xrState);
+    const auto& cli = CommandLine::inst();
+    if(!menu && cli.xrWalkForward() && XrWindow::inst() && (startupDone || cli.startupCommands().empty())) {
+      state.connected = true;
+      state.ly = -1.f;
+      }
     previousXrPad = xrState;
     const bool previousMenu = std::exchange(previousPadMenu,menu);
     if(interrupted && !pad.cancelMissing(PadState::merge(nativePad(native.releaseSources),xrReleases),previousMenu,state,menu))
@@ -1601,6 +1609,15 @@ void MainWindow::renderFrame(bool xr) {
   if(warp && Gothic::inst().camera()->takeCameraCut())
     eyeHistoryValid = false;
 #endif
+  const auto& cli = CommandLine::inst();
+  const bool probeReady = xr && Gothic::inst().camera()!=nullptr && (startupDone || cli.startupCommands().empty());
+  if(probeReady && (cli.xrCaptureBurst()>0 || cli.xrTurnRate()!=0 || cli.xrWalkForward())) {
+    ++captureFrame;
+    if(captureFrame<=150) {
+      const auto v = Gothic::inst().camera()->view();
+      Log::i("XR trajectory ",captureFrame," gameMs=",lastTick," heading=",v.at(0,2),",",v.at(2,2));
+      }
+    }
   const bool useHistory = xr && XrWindow::inst()->prepareSpaceWarp(warp, eyeHistoryValid);
   for(int view=0; view<views; ++view) {
     auto& sync = fence[cmdId];
@@ -1708,6 +1725,8 @@ void MainWindow::renderFrame(bool xr) {
       for(auto& writer:captureWriter)
         if(writer.valid() && writer.wait_for(std::chrono::seconds(0))!=std::future_status::ready)
           captureDue = false;
+      if(cli.xrCaptureBurst()>0)
+        captureDue = probeReady && captureFrame>=80 && capturedBurst<cli.xrCaptureBurst();
       if(captureDue)
         captureNext = now + uint64_t(CommandLine::inst().xrCaptureInterval())*1000;
       }
@@ -1726,7 +1745,7 @@ void MainWindow::renderFrame(bool xr) {
         }
       std::snprintf(name, sizeof(name), "eye-%03u-%c.png", captureCount-1, view==0 ? 'L' : 'R');
       // Encoding a PNG takes about a second at low clocks: off the render thread
-      captureWriter[view] = std::async(std::launch::async, [pm=device.readPixels(backbuf), file=std::string(name)] {
+      auto saveEye = [](const Pixmap& pm, const std::string& file) {
         const auto tmp = file+".tmp";
         try {
           pm.save(tmp.c_str(), "png");
@@ -1737,7 +1756,17 @@ void MainWindow::renderFrame(bool xr) {
           std::filesystem::remove(tmp,ec);
           Log::e("Eye capture failed: ", e.what());
           }
-        });
+        };
+      if(cli.xrCaptureBurst()>0) {
+        captureBurstImages.emplace_back(name,device.readPixels(backbuf));
+        if(view==1 && ++capturedBurst==cli.xrCaptureBurst())
+          captureWriter[0] = std::async(std::launch::async,[images=std::move(captureBurstImages),saveEye] {
+            for(auto& [file,pm]:images)
+              saveEye(pm,file);
+            });
+        } else {
+        captureWriter[view] = std::async(std::launch::async,saveEye,device.readPixels(backbuf),std::string(name));
+        }
       }
     timing.record += nowUs()-tr;
     if(!xr)

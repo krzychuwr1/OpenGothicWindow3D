@@ -6,7 +6,7 @@
   Starts a new game without the menu, teleports the hero to a waypoint at noon (through
   /sdcard/OpenGothic/args.txt and the -exec console hook), then averages the runtime's
   per-second statistics (VrApi) and the game's own frame CPU breakdown.
-  The headset must be awake (proximity sensor covered or disabled). args.txt is removed after the run.
+  The unattended headset must be asleep with no foreground app. args.txt is removed after the run.
 
   -Scenario adds action to the scene (the hero is made invulnerable):
     combat  wolves and an orc warrior attack (animation, weapon swings, blood)
@@ -22,6 +22,8 @@ param(
   [ValidatePattern('^[A-Za-z0-9_]+$')][string]$Waypoint = 'NW_CITY_MAINSTREET_02',
   [string]$Time     = '12 0',
   [string]$Package  = 'org.opengothic.window3d',
+  [string]$Apk = '',
+  [switch]$VrStats,
   [int]$LoadSeconds = 50,
   [int]$Samples     = 12,
   [string]$Extra    = '',
@@ -43,6 +45,17 @@ function Invoke-BenchAdb {
   $output
 }
 
+function Assert-HeadsetIdle {
+  $power = (Invoke-BenchAdb shell dumpsys power) -join "`n"
+  $windows = (Invoke-BenchAdb shell dumpsys window displays) -join "`n"
+  $activities = (Invoke-BenchAdb shell dumpsys activity activities) -join "`n"
+  if ($power -notmatch '(?m)^\s*mWakefulness=Asleep\s*$' -or
+      $windows -notmatch '(?m)^\s*mFocusedApp=null\s*$' -or
+      $windows -match '(?m)^\s*mFocusedApp=(?!null\s*$)\S' -or
+      $activities -match '(?m)^\s*(?:topResumedActivity|mResumedActivity)[:=]\s*ActivityRecord') {
+    throw 'Headset is awake, in use, or its foreground is unknown. Check again in ten minutes.'
+  }
+}
 function Copy-BenchCaptures {
   $eyeFiles = @()
   if ($EyeCaptures -gt 0) {
@@ -121,6 +134,7 @@ $eyesBefore = @()
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 $dir = Join-Path (Split-Path $PSScriptRoot) 'captures'
 try {
+  Assert-HeadsetIdle
   $battery = (Invoke-BenchAdb shell dumpsys battery) -join "`n"
   if ($battery -notmatch '(?m)^\s*level:\s*(\d+)' -or [int]$Matches[1] -lt 25 -or
       $battery -notmatch '(?m)^\s*temperature:\s*(\d+)' -or [int]$Matches[1] -gt 450) {
@@ -132,6 +146,15 @@ try {
   & adb shell test -e $remoteArgs
   if ($LASTEXITCODE -ne 1) { throw 'Existing developer arguments or device error; leaving args.txt alone' }
 
+  if ($Apk) {
+    $file = (Resolve-Path -LiteralPath $Apk).Path
+    Invoke-BenchAdb install -r $file | Out-Null
+    $installed = (Invoke-BenchAdb shell pm path $Package) -replace '^package:', ''
+    if ($installed -notmatch '^/data/app/[a-zA-Z0-9/_.=~-]+/base[.]apk$') { throw 'Unexpected package path' }
+    $hash = ((Invoke-BenchAdb shell sha256sum $installed) -split '\s+')[0]
+    if ($hash -ne (Get-FileHash -Algorithm SHA256 $file).Hash) { throw 'Installed APK hash differs' }
+    Assert-HeadsetIdle
+  }
   if ($EyeCaptures -gt 0) { $eyesBefore = @(Invoke-BenchAdb shell run-as $Package ls files) }
   $argsFile = [IO.Path]::GetTempFileName()
   [IO.File]::WriteAllText($argsFile, $launchArgs, [Text.Encoding]::ASCII)
@@ -217,6 +240,7 @@ try {
   }
 }
 
+if ($VrStats) { $vr | ForEach-Object { $_.Line } }
 $fps = @(); $gpu = @(); $cg = @()
 foreach ($l in $vr) {
   if ($l -match 'FPS=(\d+)/')          { $fps += [int]$Matches[1] }

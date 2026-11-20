@@ -134,6 +134,16 @@ CommandLine::CommandLine(int argc, const char** argv) {
       if(i<argc)
         skipPasses = argv[i];
       }
+    else if(arg=="-xrturn" && i+1<argc) {
+      turnRate = std::clamp(float(std::atof(argv[++i])), -360.f, 360.f);
+      }
+    else if(arg=="-xrforward") {
+      walkForward = true;
+      }
+    else if(arg=="-captureburst" && i+1<argc) {
+      captureBurst = std::clamp(std::atoi(argv[++i]),1,4);
+      captureSec = std::max(1,captureSec);
+      }
     else if(arg=="-capture") {
       ++i;
       if(i<argc)
