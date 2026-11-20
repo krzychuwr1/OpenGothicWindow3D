@@ -164,6 +164,16 @@ add_shader(main_obj_m_bindless.vert  materials/main.vert -S vert "-DMESH_TYPE=1"
 add_shader(main_ani_m_bindless.vert  materials/main.vert -S vert "-DMESH_TYPE=2" -DDEPTH_ONLY -DMOTION_VECTORS -DBINDLESS)
 add_shader(main_mph_m_bindless.vert  materials/main.vert -S vert "-DMESH_TYPE=3" -DDEPTH_ONLY -DMOTION_VECTORS -DBINDLESS)
 add_shader(main_motion.frag          materials/motion.frag)
+if(ANDROID)
+  add_shader(main_obj_m_at_slot.vert     materials/main.vert -S vert "-DMESH_TYPE=1" -DDEPTH_ONLY -DMOTION_VECTORS -DATEST)
+  add_shader(main_ani_m_at_slot.vert     materials/main.vert -S vert "-DMESH_TYPE=2" -DDEPTH_ONLY -DMOTION_VECTORS -DATEST)
+  add_shader(main_mph_m_at_slot.vert     materials/main.vert -S vert "-DMESH_TYPE=3" -DDEPTH_ONLY -DMOTION_VECTORS -DATEST)
+  add_shader(main_obj_m_at_bindless.vert materials/main.vert -S vert "-DMESH_TYPE=1" -DDEPTH_ONLY -DMOTION_VECTORS -DATEST -DBINDLESS)
+  add_shader(main_ani_m_at_bindless.vert materials/main.vert -S vert "-DMESH_TYPE=2" -DDEPTH_ONLY -DMOTION_VECTORS -DATEST -DBINDLESS)
+  add_shader(main_mph_m_at_bindless.vert materials/main.vert -S vert "-DMESH_TYPE=3" -DDEPTH_ONLY -DMOTION_VECTORS -DATEST -DBINDLESS)
+  add_shader(main_motion_at_slot.frag     materials/motion.frag -DDEPTH_ONLY -DATEST)
+  add_shader(main_motion_at_bindless.frag materials/motion.frag -DDEPTH_ONLY -DATEST -DBINDLESS)
+endif()
 
 # tesselation
 add_shader(main_lnd_f_slot.tesc      materials/main.tesc  "-DMESH_TYPE=0" -DWATER)

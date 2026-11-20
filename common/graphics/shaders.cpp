@@ -519,13 +519,13 @@ const RenderPipeline* Shaders::materialPipeline(const Material& mat, DrawCommand
   if(pt==PipelineType::T_Motion) {
     // Moving objects: characters, animated meshes and movable objects (the shader drops movable
     // ones whose transform did not change, so only carried weapons, opening doors etc. remain);
-    // alpha-tested surfaces are drawn as solid
+    // cutouts use the same material alpha test as the G-buffer
     if(t!=DrawCommands::Movable && t!=DrawCommands::Animated && t!=DrawCommands::Morph)
       return nullptr;
     if(alpha!=Material::Solid && alpha!=Material::AlphaTest)
       return nullptr;
     for(auto& i:materials) {
-      if(i.type==t && i.pipelineType==pt && i.bindless==bl)
+      if(i.alpha==alpha && i.type==t && i.pipelineType==pt && i.bindless==bl)
         return &i.pipeline;
       }
     RenderState st;
@@ -535,14 +535,17 @@ const RenderPipeline* Shaders::materialPipeline(const Material& mat, DrawCommand
     const char* tok = (t==DrawCommands::Animated ? "ani" : (t==DrawCommands::Morph ? "mph" : "obj"));
     materials.emplace_front();
     auto& b = materials.front();
-    b.alpha        = Material::Solid;
+    b.alpha        = alpha;
     b.type         = t;
     b.pipelineType = pt;
     b.bindless     = bl;
     b.trivial      = false;
     auto& device = Resources::device();
-    auto  shVs   = GothicShader::get(string_frm("main_", tok, "_m", bl ? "_bindless" : "_slot", ".vert.sprv"));
-    auto  shFs   = GothicShader::get("main_motion.frag.sprv");
+    const bool cutout = alpha==Material::AlphaTest;
+    const char* binding = bl ? "_bindless" : "_slot";
+    auto shVs = GothicShader::get(string_frm("main_", tok, cutout ? "_m_at" : "_m", binding, ".vert.sprv"));
+    auto shFs = cutout ? GothicShader::get(string_frm("main_motion_at", binding, ".frag.sprv"))
+                       : GothicShader::get("main_motion.frag.sprv");
     b.pipeline = device.pipeline(Triangles, st, device.shader(shVs.data,shVs.len), device.shader(shFs.data,shFs.len));
     return &b.pipeline;
     }
