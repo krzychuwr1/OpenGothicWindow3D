@@ -143,6 +143,7 @@ struct XrWindow::Impl {
   bool                     running    = false;
   XrSpace                  localSpace = XR_NULL_HANDLE;
   XrSpace                  viewSpace  = XR_NULL_HANDLE;
+  bool                     passthroughUnavailable = false;
   XrPassthroughFB          passthrough      = XR_NULL_HANDLE;
   XrPassthroughLayerFB     passthroughLayer = XR_NULL_HANDLE;
 
@@ -227,6 +228,9 @@ struct XrWindow::Impl {
   void createSession();
   void createSwapchains();
   void createPassthrough();
+  void destroyPassthrough();
+  void passthroughChanged(XrPassthroughStateChangedFlagsFB flags);
+  bool roomAvailable() const { return passthroughLayer!=XR_NULL_HANDLE && !passthroughUnavailable; }
   void createActions();
   bool pollEvents();
   void stopSession();
@@ -280,10 +284,7 @@ XrWindow::Impl::~Impl() {
     if(pool!=VK_NULL_HANDLE)
       vkDestroyCommandPool(vk.device, pool, nullptr);
     }
-  if(passthroughLayer!=XR_NULL_HANDLE)
-    xrDestroyPassthroughLayer(passthroughLayer);
-  if(passthrough!=XR_NULL_HANDLE)
-    xrDestroyPassthrough(passthrough);
+  destroyPassthrough();
   if(panorama!=XR_NULL_HANDLE)
     xrDestroySwapchain(panorama);
   if(environmentButton!=XR_NULL_HANDLE)
@@ -723,14 +724,51 @@ void XrWindow::Impl::createPassthrough() {
   if(!hasPassthrough)
     return;
   XrPassthroughCreateInfoFB info = {XR_TYPE_PASSTHROUGH_CREATE_INFO_FB};
-  info.flags = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB;
-  if(!ok(xrCreatePassthrough(session, &info, &passthrough), "xrCreatePassthroughFB"))
+  info.flags = immersive ? 0 : XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB;
+  XrPassthroughFB feature = XR_NULL_HANDLE;
+  if(!ok(xrCreatePassthrough(session, &info, &feature), "xrCreatePassthroughFB"))
     return;
   XrPassthroughLayerCreateInfoFB layer = {XR_TYPE_PASSTHROUGH_LAYER_CREATE_INFO_FB};
-  layer.passthrough = passthrough;
+  layer.passthrough = feature;
   layer.flags       = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB;
   layer.purpose     = XR_PASSTHROUGH_LAYER_PURPOSE_RECONSTRUCTION_FB;
-  ok(xrCreatePassthroughLayer(session, &layer, &passthroughLayer), "xrCreatePassthroughLayerFB");
+  XrPassthroughLayerFB room = XR_NULL_HANDLE;
+  if(!ok(xrCreatePassthroughLayer(session, &layer, &room), "xrCreatePassthroughLayerFB")) {
+    xrDestroyPassthrough(feature);
+    return;
+    }
+  passthrough = feature;
+  passthroughLayer = room;
+  }
+
+void XrWindow::Impl::destroyPassthrough() {
+  if(passthroughLayer!=XR_NULL_HANDLE)
+    xrDestroyPassthroughLayer(passthroughLayer);
+  if(passthrough!=XR_NULL_HANDLE)
+    xrDestroyPassthrough(passthrough);
+  passthroughLayer = XR_NULL_HANDLE;
+  passthrough = XR_NULL_HANDLE;
+  }
+
+void XrWindow::Impl::passthroughChanged(XrPassthroughStateChangedFlagsFB flags) {
+  Log::i("OpenXR: passthrough state flags ", flags);
+  if(flags & XR_PASSTHROUGH_STATE_CHANGED_NON_RECOVERABLE_ERROR_BIT_FB) {
+    destroyPassthrough();
+    passthroughUnavailable = true;
+    return;
+    }
+  const bool reinit = (flags & XR_PASSTHROUGH_STATE_CHANGED_REINIT_REQUIRED_BIT_FB)!=0;
+  const bool restored = (flags & XR_PASSTHROUGH_STATE_CHANGED_RESTORED_ERROR_BIT_FB)!=0;
+  if(reinit)
+    destroyPassthrough();
+  if(reinit || restored) {
+    if(passthroughLayer==XR_NULL_HANDLE)
+      createPassthrough();
+    passthroughUnavailable = false;
+    }
+  if(!restored && (flags & XR_PASSTHROUGH_STATE_CHANGED_RECOVERABLE_ERROR_BIT_FB)) {
+    passthroughUnavailable = true;
+    }
   }
 
 void XrWindow::Impl::createActions() {
@@ -875,6 +913,9 @@ bool XrWindow::Impl::pollEvents() {
           }
         break;
         }
+      case XR_TYPE_EVENT_DATA_PASSTHROUGH_STATE_CHANGED_FB:
+        passthroughChanged(reinterpret_cast<const XrEventDataPassthroughStateChangedFB&>(ev).flags);
+        break;
       case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING: {
         auto& change = *reinterpret_cast<XrEventDataReferenceSpaceChangePending*>(&ev);
         if(change.session==session && change.referenceSpaceType==XR_REFERENCE_SPACE_TYPE_LOCAL)
@@ -1134,7 +1175,7 @@ Grip XrWindow::Impl::targetAt(float x, float y) const {
   if(std::abs(x-hc.x)<0.16f && std::abs(y-hc.y)<0.045f)
     return Grip::Handle;
   const V3 button = buttonCenter();
-  if(buttonReady && std::abs(x-button.x)<0.065f && std::abs(y-button.y)<0.04f)
+  if(buttonReady && roomAvailable() && std::abs(x-button.x)<0.065f && std::abs(y-button.y)<0.04f)
     return Grip::Environment;
   return Grip::None;
   }
@@ -1452,7 +1493,7 @@ void XrWindow::Impl::fillEnvironment() {
   panoramaReady = uploadStatic(vk, cmd[0], fence[0], panorama, SkyW, SkyH, 1, duskPanorama(SkyW,SkyH));
   if(!panoramaReady)
     return;
-  if(environmentButton!=XR_NULL_HANDLE && passthroughLayer!=XR_NULL_HANDLE) {
+  if(environmentButton!=XR_NULL_HANDLE && hasPassthrough) {
     std::vector<uint32_t> px(size_t(ButtonW)*ButtonH*4);
     for(unsigned layer=0; layer<4; ++layer) {
       const bool sky = layer>=2, hover = (layer&1)!=0;
@@ -1476,7 +1517,7 @@ void XrWindow::Impl::fillEnvironment() {
     }
   // Settings exist by the first rendered frame. An incomplete button should
   // never strand a wearer in VR when passthrough is available.
-  setEnvironment(passthroughLayer==XR_NULL_HANDLE || (buttonReady && Gothic::settingsGetI("INTERNAL","xrEnvironment")==1));
+  setEnvironment(buttonReady && Gothic::settingsGetI("INTERNAL","xrEnvironment")==1);
   }
 
 void XrWindow::Impl::fillChrome() {
@@ -1656,7 +1697,7 @@ bool XrWindow::submit(bool rendered) {
   XrCompositionLayerPassthroughFB pt = {XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};
   XrCompositionLayerEquirect2KHR sky = {XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR};
   XrCompositionLayerEquirectKHR sky1 = {XR_TYPE_COMPOSITION_LAYER_EQUIRECT_KHR};
-  if(s.immersive) {
+  if(s.panoramaReady && (s.immersive || !s.roomAvailable())) {
     sky.space = s.localSpace;
     sky.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     sky.subImage.swapchain = s.panorama;
@@ -1676,7 +1717,7 @@ bool XrWindow::submit(bool rendered) {
       sky1.scale = {1.f,1.f};
       addLayer(sky1);
       }
-    } else if(s.passthroughLayer!=XR_NULL_HANDLE) {
+    } else if(s.roomAvailable()) {
     pt.layerHandle = s.passthroughLayer;
     addLayer(pt);
     }
@@ -1734,7 +1775,7 @@ bool XrWindow::submit(bool rendered) {
   constexpr XrCompositionLayerFlags chromeFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
                                                XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
   XrCompositionLayerQuad button = {XR_TYPE_COMPOSITION_LAYER_QUAD};
-  if(s.buttonReady && hasImage) {
+  if(s.buttonReady && s.roomAvailable() && hasImage) {
     const bool hover = s.grabbed==Grip::Environment || s.hands[0].hover==Grip::Environment || s.hands[1].hover==Grip::Environment;
     button.layerFlags = chromeFlags;
     button.space = s.localSpace;

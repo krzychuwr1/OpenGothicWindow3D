@@ -406,3 +406,9 @@ Tried copying a complete changed palette once, skipping identical content and pu
 | Tavern | App FPS | 51.4 | 51.8 | 51.4 | 51.6 |
 
 The measured work saved about 16 µs per storage commit on the main street and 23 µs in the tavern, summed over workers. The CPU update and app FPS showed no repeatable improvement, so the release keeps the existing write strategy. Every run stopped the game. The series peaked at 45.0°C, rested between runs and ended at 87%, 43.0°C.
+
+### Recreate passthrough when OpenXR requests it
+
+The event loop ignored passthrough state changes and kept submitting the old room layer after a reinitialization request. It now destroys the layer before its parent and creates a replacement in the selected mode. If the room is unavailable, the compositor shows the uploaded dusk sky and hides the switch. Recovery brings back the selected surroundings. Runtime errors leave the saved preference intact. A failed layer creation now also releases its parent. [OpenXR passthrough state flags](https://registry.khronos.org/OpenXR/specs/1.0/man/html/XrPassthroughStateChangedFlagBitsFB.html)
+
+A host queue exercised eight event and creation sequences using the production event handler. The old path failed seven; the new path passed all eight, including combined flags, partial creation, destroy order, camera-paused VR and selection recovery. On Quest, injected notifications recreated the real room handles in passthrough, hid the unavailable room, restored it, then recreated the handles in dusk. Subsequent calls switched to room and back to dusk successfully. The compositor capture showed the city, dusk and the idle handle after recovery (`20261120-055315-021`). SpaceWarp stayed active, with 36.5 app FPS at low clocks. The app stopped at 87%, 42.0°C. This simulated the notification; a spontaneous headset camera failure was not induced.
