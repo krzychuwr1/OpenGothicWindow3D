@@ -22,6 +22,9 @@
 #include "gothic.h"
 #include "resources.h"
 #include "build.h"
+#if defined(OPENGOTHIC_XR)
+#include "xr/xrwindow.h"
+#endif
 
 using namespace Tempest;
 
@@ -375,24 +378,6 @@ void GameMenu::initItems() {
       }
     updateItem(hItems[i]);
     }
-#if defined(OPENGOTHIC_XR)
-  // XR window: the graphics device choice has no use on the headset; it becomes the
-  // Application SpaceWarp switch (INTERNAL/xrSpaceWarp)
-  for(auto& it:hItems) {
-    if(it.handle==nullptr)
-      continue;
-    if(it.name=="MENUITEM_VID_DEVICE") {
-      it.handle->text[0] = "Application SpaceWarp";
-      it.handle->text[1] = "Renders every other frame; the headset fills in the rest (experimental)";
-      }
-    if(it.name=="MENUITEM_VID_DEVICE_CHOICE") {
-      it.handle->text[0]                   = "Off|On";
-      it.handle->on_chg_set_option         = "xrSpaceWarp";
-      it.handle->on_chg_set_option_section = "INTERNAL";
-      updateItem(it);
-      }
-    }
-#endif
   }
 
 void GameMenu::paintEvent(PaintEvent &e) {
@@ -1158,8 +1143,27 @@ void GameMenu::updateSavThumb(GameMenu::Item &sel) {
   }
 
 void GameMenu::updateVideo() {
-  set("MENUITEM_VID_DEVICE_CHOICE",     Resources::renderer());
   set("MENUITEM_VID_RESOLUTION_CHOICE", "full|upscale(75%)|upscale(half)");
+#if defined(OPENGOTHIC_XR)
+  if(auto* xr = XrWindow::inst(); xr!=nullptr && xr->isSpaceWarpSupported()) {
+    for(auto& it:hItems) {
+      if(it.handle==nullptr)
+        continue;
+      if(it.name=="MENUITEM_VID_DEVICE") {
+        it.handle->text[0] = "SpaceWarp";
+        it.handle->text[1] = "Renders every other frame; the headset fills in the rest (experimental)";
+        }
+      if(it.name=="MENUITEM_VID_DEVICE_CHOICE") {
+        it.handle->text[0]                   = "Off|On";
+        it.handle->on_chg_set_option         = "xrSpaceWarp";
+        it.handle->on_chg_set_option_section = "INTERNAL";
+        updateItem(it);
+        }
+      }
+    return;
+    }
+#endif
+  set("MENUITEM_VID_DEVICE_CHOICE", Resources::renderer());
   }
 
 void GameMenu::setDefaultKeys(std::string_view preset) {

@@ -320,3 +320,9 @@ Used one temporary APK, CPU level 1/GPU level 0, with normal shading (A) and uni
 | NW_TAVERNE | 9.608 / 7.430 / 7.475 / 9.595 | 51.2 / 65.9 / 65.7 / 51.5 | 4.298 ms |
 
 This exceeds the 1 ms threshold for investigating a full-rate centre and coarse periphery. Uniform 2×2 was removed from the source after the experiment. Shutdown and battery checks succeeded after all eight runs. The last ended at 84%, 45.0°C.
+
+### SpaceWarp Video choice survived its menu refresh
+
+Opening Video or rebuilding its script VM replaced the choices with the Vulkan device name. A one-entry choice always clamped to zero, so command-line settings worked while the actual menu could never enable SpaceWarp. Configure the XR choice when refreshing Video, preserving the desktop and unsupported device label. The headset capture also showed the original label clipped to “Application”, so the final label reads “SpaceWarp”.
+
+The host menu fixture checked unsupported and desktop rows plus both directions and mobile confirm. A temporary Quest build opened the real Video menu in the city with an isolated INI. Its selectable label went 0 → 1 (Right), back to 0 (Left after rebuilding the script VM), then to 1 (confirm). The compositor capture showed On, the app submitted SpaceWarp at 36 FPS and the private INI contained `xrSpaceWarp=1`. The owner’s INI hash matched before and after. The probe file was removed, the game stopped, and battery was 86% at 40.0°C. Input was injected; no physical controller was operated.
