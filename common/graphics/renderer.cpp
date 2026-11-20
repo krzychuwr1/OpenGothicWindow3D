@@ -6,6 +6,7 @@
 #endif
 
 #include <cstring>
+#include <limits>
 
 #include "commandline.h"
 
@@ -2044,78 +2045,65 @@ void Renderer::drawLights(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
   }
 
 bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
-  // Bin the visible lights into screen tiles by the screen rectangle of their bounding cube,
-  // clipped at the near plane (as light.vert does), then light every pixel in one pass
+  // Bound the portion of each light sphere inside each view-depth slice.
   const uint32_t tileSize = 32;
-  const int32_t  w        = zbuffer.w();
-  const int32_t  h        = zbuffer.h();
-  const uint32_t tilesX   = uint32_t((w+int32_t(tileSize)-1)/int32_t(tileSize));
-  const uint32_t tilesY   = uint32_t((h+int32_t(tileSize)-1)/int32_t(tileSize));
+  const int32_t  w = zbuffer.w(), h = zbuffer.h();
+  const uint32_t tilesX = (uint32_t(w)+tileSize-1)/tileSize;
+  const uint32_t tilesY = (uint32_t(h)+tileSize-1)/tileSize;
   const uint32_t sliceStride = tilesX*tilesY;
-  const size_t   tiles       = size_t(sliceStride)*4;
-  // NDC depths at approximately 4, 16 and 64 times the eye's near distance.
+  const size_t   tiles = size_t(sliceStride)*4;
   const float ends[3] = {0.75f, 0.9375f, 0.984375f};
-  auto slice = [&](float z) { return uint32_t(z>=ends[0]) + uint32_t(z>=ends[1]) + uint32_t(z>=ends[2]); };
+  auto linearDepth = [&](float z){ return clipInfo.x/(clipInfo.y*z+clipInfo.z); };
+  // Overlap neighboring slabs to allow for quantization of the sampled depth.
+  const float slack = 0.0001f;
+  const float starts[] = {linearDepth(-slack), linearDepth(ends[0]-slack), linearDepth(ends[1]-slack), linearDepth(ends[2]-slack)};
+  const float stops[]  = {linearDepth(ends[0]+slack), linearDepth(ends[1]+slack), linearDepth(ends[2]+slack), std::numeric_limits<float>::infinity()};
+  const float offX = proj.at(2,0), offY = proj.at(2,1);
+  const float scaleX = std::abs(proj.at(0,0)), scaleY = std::abs(proj.at(1,1));
 
-  struct Rect { uint32_t x0, y0, x1, y1, z0, z1, id; };
+  struct Rect { uint32_t x0, y0, x1, y1, slice, id; };
   static std::vector<Rect> rects;
   rects.clear();
 
-  auto& data = wview.lights();
-  static const float cube[8][3] = {{-1,-1,-1},{1,-1,-1},{1,1,-1},{-1,1,-1},{-1,-1,1},{1,-1,1},{1,1,1},{-1,1,1}};
-  static const int   edges[12][2] = {{0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}};
+  auto& scene = wview.sceneGlobals();
+  auto& data  = wview.lights();
   for(auto id:visibleLights) {
-    const auto& l = data.lightData(id);
-    float c[8][4];
-    int   neg = 0;
-    for(int i=0; i<8; ++i) {
-      viewProj.project(l.pos.x+cube[i][0]*l.range, l.pos.y+cube[i][1]*l.range, l.pos.z+cube[i][2]*l.range, 1.f,
-                       c[i][0], c[i][1], c[i][2], c[i][3]);
-      if(c[i][2]<0)
-        neg++;
+    const auto& light = data.lightData(id);
+    const auto  pos = light.pos-scene.originLwc;
+    float cx, cy, cz, depth;
+    viewProjLwc.project(pos.x,pos.y,pos.z,1.f,cx,cy,cz,depth);
+    cx -= offX*depth;
+    cy -= offY*depth;
+    const float radius = light.range + std::max(0.05f,light.range*0.0001f);
+    for(uint32_t slice=0; slice<4; ++slice) {
+      const float nearZ = std::max(starts[slice],depth-radius);
+      const float farZ  = std::min(stops[slice], depth+radius);
+      if(nearZ>farZ)
+        continue;
+      const float dz = std::clamp(depth,nearZ,farZ)-depth;
+      const float span = std::sqrt(std::max(0.f,(radius-dz)*(radius+dz)));
+      const float invNear = 1.f/nearZ, invFar = 1.f/farZ;
+      // The largest cross-section bounds the slab. Choose the outermost
+      // perspective divisor for each signed end of the lateral interval.
+      auto extent = [&](float center,float offset,float scale,int pixels,uint32_t& first,uint32_t& last) {
+        const float lo = center-span*scale, hi = center+span*scale;
+        const float ndcLo = offset + lo*(lo<0 ? invNear : invFar);
+        const float ndcHi = offset + hi*(hi>0 ? invNear : invFar);
+        const float minPx = (0.5f*ndcLo+0.5f)*float(pixels)-0.5f;
+        const float maxPx = (0.5f*ndcHi+0.5f)*float(pixels)+0.5f;
+        if(maxPx<0 || minPx>=float(pixels))
+          return false;
+        first = uint32_t(std::clamp(minPx,0.f,float(pixels-1)))/tileSize;
+        last  = uint32_t(std::clamp(maxPx,0.f,float(pixels-1)))/tileSize;
+        return true;
+        };
+      Rect r;
+      if(!extent(cx,offX,scaleX,w,r.x0,r.x1) || !extent(cy,offY,scaleY,h,r.y0,r.y1))
+        continue;
+      r.slice = slice;
+      r.id = id;
+      rects.push_back(r);
       }
-    if(neg==8)
-      continue;
-    float mnx = 1e9f, mny = 1e9f, mxx = -1e9f, mxy = -1e9f;
-    auto extend = [&](float x, float y) { mnx = std::min(mnx,x); mny = std::min(mny,y); mxx = std::max(mxx,x); mxy = std::max(mxy,y); };
-    float minDepth = neg>0 ? 0.f : 1.f, maxDepth = 0.f;
-    bool full = false;
-    for(int i=0; i<8; ++i)
-      if(c[i][2]>=0) {
-        if(c[i][3]<=0.f) { full = true; break; }
-        const float invW = 1.f/c[i][3];
-        extend(c[i][0]*invW, c[i][1]*invW);
-        const float depth = c[i][2]*invW;
-        minDepth = std::min(minDepth, depth);
-        maxDepth = std::max(maxDepth, depth);
-        }
-    if(neg>0) {
-      for(auto& e:edges) {
-        const float* a = c[e[0]];
-        const float* b = c[e[1]];
-        if((a[2]>=0)==(b[2]>=0))
-          continue;
-        const float t  = a[2]/(a[2]-b[2]);
-        const float px = a[0]+(b[0]-a[0])*t, py = a[1]+(b[1]-a[1])*t, pw = a[3]+(b[3]-a[3])*t;
-        if(pw<=0) { full = true; break; }
-        extend(px/pw, py/pw);
-        }
-      }
-    if(full) { mnx = -1; mny = -1; mxx = 1; mxy = 1; }
-    mnx = std::clamp(mnx,-1.f,1.f); mxx = std::clamp(mxx,-1.f,1.f);
-    mny = std::clamp(mny,-1.f,1.f); mxy = std::clamp(mxy,-1.f,1.f);
-    if(mnx>=mxx || mny>=mxy)
-      continue;
-    Rect r;
-    r.x0 = uint32_t(std::clamp(int32_t((mnx*0.5f+0.5f)*float(w)), 0, w-1))/tileSize;
-    r.x1 = uint32_t(std::clamp(int32_t((mxx*0.5f+0.5f)*float(w)), 0, w-1))/tileSize;
-    r.y0 = uint32_t(std::clamp(int32_t((mny*0.5f+0.5f)*float(h)), 0, h-1))/tileSize;
-    r.y1 = uint32_t(std::clamp(int32_t((mxy*0.5f+0.5f)*float(h)), 0, h-1))/tileSize;
-    // Round outward across slice boundaries, including depth quantization.
-    r.z0 = full ? 0 : slice(minDepth-0.0001f);
-    r.z1 = full ? 3 : slice(maxDepth+0.0001f);
-    r.id = id;
-    rects.push_back(r);
     }
   if(rects.empty())
     return true;
@@ -2125,12 +2113,11 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
   // holds the closing endpoint of a span that reaches the final tile.
   lightTiles.assign((tiles+1)*2, 0);
   for(const auto& r:rects)
-    for(uint32_t z=r.z0; z<=r.z1; ++z)
-      for(uint32_t y=r.y0; y<=r.y1; ++y) {
-        const uint32_t row = z*sliceStride+y*tilesX;
-        ++lightTiles[(row+r.x0)*2+1];
-        --lightTiles[(row+r.x1+1)*2+1];
-        }
+    for(uint32_t y=r.y0; y<=r.y1; ++y) {
+      const uint32_t row = r.slice*sliceStride+y*tilesX;
+      ++lightTiles[(row+r.x0)*2+1];
+      --lightTiles[(row+r.x1+1)*2+1];
+      }
 
   uint32_t at = uint32_t(tiles*2), count = 0;
   for(size_t t=0; t<tiles; ++t) {
@@ -2141,13 +2128,12 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
     }
   lightTiles.resize(at);
   for(const auto& r:rects)
-    for(uint32_t z=r.z0; z<=r.z1; ++z)
-      for(uint32_t y=r.y0; y<=r.y1; ++y)
-        for(uint32_t x=r.x0; x<=r.x1; ++x) {
-          const size_t t = z*sliceStride+y*tilesX+x;
-          lightTiles[lightTiles[t*2+0] + lightTiles[t*2+1]] = r.id;
-          lightTiles[t*2+1]++;
-          }
+    for(uint32_t y=r.y0; y<=r.y1; ++y)
+      for(uint32_t x=r.x0; x<=r.x1; ++x) {
+        const size_t t = r.slice*sliceStride+y*tilesX+x;
+        lightTiles[lightTiles[t*2+0] + lightTiles[t*2+1]] = r.id;
+        lightTiles[t*2+1]++;
+        }
 
   auto& device = Resources::device();
   auto& list   = visibleLightsSsbo[lightSlot];
@@ -2157,7 +2143,6 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
     }
   list.update(lightTiles.data(), 0, lightTiles.size()*sizeof(uint32_t));
 
-  auto& scene = wview.sceneGlobals();
   struct Push {
     Tempest::Vec3 origin;
     uint32_t tilesX, tileSize, sliceStride;

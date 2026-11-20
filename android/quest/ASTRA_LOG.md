@@ -541,3 +541,24 @@ A reused UI mesh block could keep and bind its former texture after switching to
 A host fixture ran the production brush state and mesh update methods with reference-counted texture/sprite handles. It covered texture and clamp changes, nested state restoration, an unchanged push/pop, and a sprite → direct texture → solid transition in one slot. The old code failed six checks and the new code passed all six. Android Release linked. No claim about headset memory consumption follows from this fixture.
 
 An independent source review also found an inherited issue in Tempest's rectangle allocator. Releasing a full-page CPU atlas allocation can dereference its null parent, and smaller freed rectangles may disappear from the searchable tree. The regular Gothic HUD and focus labels use direct game font textures. We found no full-page sprite allocation in their normal Quest paths. This allocator issue remains open.
+
+### Bound point lights separately in each view-depth slice
+
+The tiled lighting pass projected the eight corners of each light's enclosing box and used the same screen rectangle for every intersecting depth slice. The new CPU bounds use the largest sphere cross-section in each occupied slice. Signed projection extents handle both off-axis eyes, with overlapping depth boundaries and a half-pixel screen margin. The shader, shading rate, light model and summation order are unchanged.
+
+The first version clipped at the nominal far plane. A host regression using the default portal dimensions found a valid D32 depth that reconstructed beyond that plane in both fused and split arithmetic. The camera frustum admits the test light. The final slice now extends to the light's own far edge. A separate host run checked 630,000 sampled pixels, including offset and flipped projections and slice boundaries. It preserved all 257,821 in-range contributions in order and reduced synthetic list entries from 12,132 to 10,413.
+
+On Quest, a diagnostic build read back each eye's pre-water scene depth after waiting for its own submission. A stratified one-in-sixteen pixel sample checked every visible light against the unprojected pixel and the exact list used by that eye. The tavern returned 372,263 and 359,672 in-range contributions, the city 32,540 and 29,034. Both eyes in both scenes returned zero missing contributions and zero unsorted tile lists. These diagnostic runs are excluded from timing.
+
+Exclusive low-clock tests used CPU 1 / GPU 0, fixed noon, ordinary stereo and no captures. Each scene ran control/first/first/control, followed by final/final/control after the separate readbacks. Device and local APK hashes matched at every switch. GPU and recording figures average each run's last four reports, then average across runs.
+
+| Scene | Build | VrApi fps per run | GPU ms/eye | Lighting and sky ms/eye | Stereo CPU recording ms/frame |
+| --- | --- | --- | ---: | ---: | ---: |
+| Tavern | Control | 51.6, 51.5, 51.9 | 9.569 | 3.660 | 6.173 |
+| Tavern | First bounds | 55.9, 55.7 | 8.841 | 2.900 | 5.779 |
+| Tavern | Final bounds | 55.8, 55.6 | 8.851 | 2.941 | 5.831 |
+| City | Control | 60.6, 60.6, 60.6 | 8.034 | 1.554 | 5.388 |
+| City | First bounds | 60.9, 60.9 | 7.998 | 1.502 | 5.298 |
+| City | Final bounds | 60.6, 60.7 | 8.009 | 1.513 | 5.262 |
+
+Kept the corrected bounds. The tavern saved 0.718 GPU ms per eye (1.436 ms across both eyes) and 0.342 ms of stereo CPU recording. City GPU time changed by 0.025 ms per eye and fps was effectively flat. Final runs ended at 92% battery and 40–41 °C with the app stopped. These checks do not cover every camera position or light in the game.
