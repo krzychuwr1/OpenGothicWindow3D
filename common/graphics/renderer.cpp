@@ -1,6 +1,5 @@
 #include "renderer.h"
 
-#include <Tempest/VulkanInterop>
 #include <cstring>
 
 #include "commandline.h"
@@ -1972,7 +1971,7 @@ void Renderer::drawLights(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
 
   // Only lights that reach the view: the world holds thousands, each drawn as a cube
   wview.lights().visibleLights(frustrum[SceneGlobals::V_Main], visibleLights);
-  if(Tempest::vulkanGpuProfiling()) {
+  if(CommandLine::inst().isGpuProfile()) {
     static uint64_t last = 0;
     if(Application::tickCount()-last>3000) {
       last = Application::tickCount();

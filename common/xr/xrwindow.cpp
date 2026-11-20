@@ -1653,7 +1653,7 @@ bool      XrWindow::preInit()  { return false; }
 XrWindow* XrWindow::inst()     { return nullptr; }
 void      XrWindow::pollEvents() {}
 void      XrWindow::attach(Tempest::Device&) {}
-Tempest::Size XrWindow::resolution() const { return {}; }
+Tempest::Size XrWindow::resolution() const { return Tempest::Size(0,0); }
 bool      XrWindow::beginFrame() { return false; }
 bool      XrWindow::submit(bool) { return false; }
 bool      XrWindow::isSpaceWarpSupported() const { return false; }

@@ -29,7 +29,9 @@
 #include "xr/xrwindow.h"
 #include "marvin.h"
 
-#include <Tempest/VulkanInterop>
+#if defined(OPENGOTHIC_XR)
+#include <Tempest/VulkanApi>
+#endif
 
 #include <chrono>
 
@@ -1304,6 +1306,7 @@ static uint64_t nowUs() {
   }
 
 void MainWindow::FrameTiming::report() {
+#if defined(OPENGOTHIC_XR)
   if(!Tempest::vulkanGpuProfiling())
     return; // timing is logged only while profiling (-gpuprofile)
   frames++;
@@ -1331,6 +1334,7 @@ void MainWindow::FrameTiming::report() {
     }
   *this = FrameTiming();
   last  = t;
+#endif
   }
 
 void MainWindow::runStartupCommands() {

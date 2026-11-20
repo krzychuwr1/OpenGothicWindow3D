@@ -5,9 +5,6 @@
 #include <zenkit/Logger.hh>
 
 #include <Tempest/VulkanApi>
-#if !defined(__APPLE__)
-#include <Tempest/VulkanInterop>
-#endif
 
 #if defined(_MSC_VER)
 #include <Tempest/DirectX12Api>
