@@ -19,7 +19,7 @@ class XrFrameClock final {
       const int64_t period = nominal>0 ? nominal : estimate;
       const int64_t error = target-logical-period;
       const int64_t old = logical;
-      logical += period+std::clamp(error/12,-period/2,period);
+      logical += std::max(period/2,period+error/12);
       return uint64_t(logical/1000000-old/1000000);
       }
 
