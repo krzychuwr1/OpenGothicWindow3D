@@ -119,6 +119,8 @@ struct XrWindow::Impl {
   PFN_xrCreateVulkanDeviceKHR           xrCreateVulkanDevice        = nullptr;
   PFN_xrGetVulkanGraphicsRequirements2KHR xrGetVulkanRequirements   = nullptr;
   PFN_xrPassthroughStartFB              xrStartPassthrough          = nullptr;
+  PFN_xrGetSwapchainStateFB             xrGetSwapchainState         = nullptr;
+  PFN_xrUpdateSwapchainFB               xrUpdateSwapchain           = nullptr;
   PFN_xrPassthroughPauseFB              xrPausePassthrough          = nullptr;
   PFN_xrCreatePassthroughFB             xrCreatePassthrough         = nullptr;
   PFN_xrDestroyPassthroughFB            xrDestroyPassthrough        = nullptr;
@@ -334,6 +336,12 @@ bool XrWindow::Impl::createInstance() {
       }
   hasEquirect2       = has(XR_KHR_COMPOSITION_LAYER_EQUIRECT2_EXTENSION_NAME);
   hasPanorama        = hasEquirect2 || has(XR_KHR_COMPOSITION_LAYER_EQUIRECT_EXTENSION_NAME);
+  const bool canSetSkySampler = hasPanorama && has(XR_FB_SWAPCHAIN_UPDATE_STATE_EXTENSION_NAME) &&
+                                has(XR_FB_SWAPCHAIN_UPDATE_STATE_VULKAN_EXTENSION_NAME);
+  if(canSetSkySampler) {
+    ext.push_back(XR_FB_SWAPCHAIN_UPDATE_STATE_EXTENSION_NAME);
+    ext.push_back(XR_FB_SWAPCHAIN_UPDATE_STATE_VULKAN_EXTENSION_NAME);
+    }
   if(hasPanorama)
     ext.push_back(hasEquirect2 ? XR_KHR_COMPOSITION_LAYER_EQUIRECT2_EXTENSION_NAME : XR_KHR_COMPOSITION_LAYER_EQUIRECT_EXTENSION_NAME);
   hasPassthrough     = has(XR_FB_PASSTHROUGH_EXTENSION_NAME);
@@ -380,6 +388,10 @@ bool XrWindow::Impl::createInstance() {
     return false;
   if(hasPerfSettings)
     hasPerfSettings = fn("xrPerfSettingsSetPerformanceLevelEXT", xrSetPerfLevel);
+  if(canSetSkySampler) {
+    fn("xrGetSwapchainStateFB", xrGetSwapchainState);
+    fn("xrUpdateSwapchainFB", xrUpdateSwapchain);
+    }
   if(hasPassthrough) {
     hasPassthrough = fn("xrPassthroughStartFB",        xrStartPassthrough)       &&
                      fn("xrPassthroughPauseFB",        xrPausePassthrough)       &&
@@ -578,6 +590,16 @@ void XrWindow::Impl::createSwapchains() {
     info.arraySize = 1;
     info.usageFlags |= XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
     if(ok(xrCreateSwapchain(session, &info, &panorama), "static environment swapchain")) {
+      if(xrGetSwapchainState && xrUpdateSwapchain) {
+        XrSwapchainStateSamplerVulkanFB sampler = {XR_TYPE_SWAPCHAIN_STATE_SAMPLER_VULKAN_FB};
+        auto* state = reinterpret_cast<XrSwapchainStateBaseHeaderFB*>(&sampler);
+        if(ok(xrGetSwapchainState(panorama, state), "read sky sampler")) {
+          // Longitude wraps at the panorama seam; each pole uses its edge texel.
+          sampler.wrapModeS = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+          sampler.wrapModeT = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+          ok(xrUpdateSwapchain(panorama, state), "set sky sampler");
+          }
+        }
       info.width = ButtonW;
       info.height = ButtonH;
       info.arraySize = 4; // room / sky icons, each idle or hovered
