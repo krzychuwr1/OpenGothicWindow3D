@@ -257,3 +257,13 @@ A host fixture ran 1,000 cycles with controlled completion racing late resource 
 Counted each light’s horizontal span with a start and end marker. The existing pass over the tile table accumulates the markers; the shader receives identical offsets, counts and ordered light IDs. The host fixture compared complete buffers at three projection offsets and checked all 106,553 positive contributors across 210,000 surface samples.
 
 Four low-clock tavern runs on the same release and waypoint used control, candidate, candidate, control order. Over the last four complete reports in each run, preparing and recording lighting for both eyes cost 0.887, 0.791, 0.799 and 0.899 ms/frame respectively (elapsed phase time divided by rendered frames). Total CPU recording averaged 6.554, 6.346, 6.501 and 6.606 ms. GPU time stayed between 9.58 and 9.60 ms per eye on average; delivered fps was 51.5, 51.3, 51.2 and 51.2. Kept the change for the repeatable 0.10 ms/frame reduction in CPU lighting work. Each run used CPU/GPU levels 1/0 and stopped the app. Post-run battery ranged from 81–82% at 41–43 °C.
+
+### Quest Home and SpaceWarp resume
+
+On the low-clock city street with SpaceWarp enabled, Android Home put the Quest shell’s FocusPlaceholderActivity in front for five seconds. The game’s same PID (8233) reported VISIBLE → SYNCHRONIZED → STOPPING → IDLE. Bringing its NativeActivity forward produced READY → SYNCHRONIZED → VISIBLE → FOCUSED, followed by two full update/record/submit intervals at 36.15 and 35.99 app fps. VrApi averaged 36.6 fps over 14 samples at levels 1/0. The app was force-stopped afterward, battery 81% at 42 °C. This verifies a real Home/return cycle; physical headset removal and a user-triggered recenter remain untested.
+
+### Keep the benchmark lease during capture retrieval
+
+Two local checkouts could run back-to-back benchmarks on the same headset while the first was still copying and removing eye PNGs. The script now stops the app, allows sleep and restores the clocks before copying, and releases the per-headset mutex after capture retrieval. It copies the full set of eye files before removing any of them from the headset.
+
+A mocked ADB run launched a separate PowerShell process to acquire the named mutex during screenshot transfer. It acquired the old script’s lease too early. With the fix the second process saw the lease held during transfer, and could acquire it after both a successful pull and an injected failed pull. Both paths stopped the mock app and released its wake request before the transfer.

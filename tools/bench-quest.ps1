@@ -43,6 +43,37 @@ function Invoke-BenchAdb {
   $output
 }
 
+function Copy-BenchCaptures {
+  if ($eyeFiles.Count -gt 0 -or $shots.Count -gt 0) {
+    New-Item -ItemType Directory -Force $dir | Out-Null
+  }
+  foreach ($f in $eyeFiles) {
+    $dst = Join-Path $dir "$stamp-$Waypoint-$Scenario-$f"
+    $info = [Diagnostics.ProcessStartInfo]::new()
+    $info.FileName = 'adb'
+    $info.UseShellExecute = $false
+    $info.RedirectStandardOutput = $true
+    foreach ($arg in 'exec-out','run-as',$Package,'cat',"files/$f") { $info.ArgumentList.Add($arg) }
+    $proc = [Diagnostics.Process]::Start($info)
+    try {
+      $out = [IO.File]::Create($dst)
+      try { $proc.StandardOutput.BaseStream.CopyTo($out) } finally { $out.Dispose() }
+      $proc.WaitForExit()
+      if ($proc.ExitCode -ne 0) { throw "Could not pull $f" }
+    } finally { $proc.Dispose() }
+    "eye capture: $dst"
+  }
+  # Leave complete pairs on the headset if any local eye transfer fails.
+  foreach ($f in $eyeFiles) {
+    Invoke-BenchAdb shell run-as $Package rm -f "files/$f"
+  }
+  foreach ($f in $shots) {
+    $dst = Join-Path $dir "$stamp-$Waypoint-$Scenario-$f"
+    Invoke-BenchAdb pull "/sdcard/Oculus/Screenshots/$f" $dst | Out-Null
+    "capture: $dst"
+  }
+}
+
 $remoteArgs = '/sdcard/OpenGothic/args.txt'
 $commands = @("goto waypoint $Waypoint","set time $Time")
 switch ($Scenario) {
@@ -65,6 +96,7 @@ $forcedClocks = $false
 $wakeRequested = $false
 $launched = $false
 $gamePid = $null
+$capturesReady = $false
 $shots = @()
 $eyeFiles = @()
 $eyesBefore = @()
@@ -141,24 +173,29 @@ try {
     }
     if ($eyeFiles.Count -eq 0) { throw 'No complete stereo PNG pair for this run' }
   }
+  $capturesReady = $true
 } finally {
-  # A failing adb call must not prevent the remaining cleanup attempts.
-  if ($launched) {
-    $currentPid = & adb shell pidof $Package
-    if (-not $gamePid -or $currentPid -eq $gamePid) { & adb shell am force-stop $Package }
+  try {
+    # A failing adb call must not prevent the remaining cleanup attempts.
+    if ($launched) {
+      $currentPid = & adb shell pidof $Package
+      if (-not $gamePid -or $currentPid -eq $gamePid) { & adb shell am force-stop $Package }
+    }
+    if ($wakeRequested) { & adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable | Out-Null }
+    if ($forcedClocks) {
+      & adb shell setprop debug.oculus.cpuLevel "''"
+      & adb shell setprop debug.oculus.gpuLevel "''"
+    }
+    if ($wroteArgs -and (((& adb shell cat $remoteArgs) -join "`n") -ceq $launchArgs)) {
+      & adb shell rm -f $remoteArgs
+    }
+    if ($argsFile) { & adb shell rm -f $remoteStaging }
+    if ($argsFile) { Remove-Item -LiteralPath $argsFile }
+    if ($capturesReady) { Copy-BenchCaptures }
+  } finally {
+    $lease.ReleaseMutex()
+    $lease.Dispose()
   }
-  if ($wakeRequested) { & adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable | Out-Null }
-  if ($forcedClocks) {
-    & adb shell setprop debug.oculus.cpuLevel "''"
-    & adb shell setprop debug.oculus.gpuLevel "''"
-  }
-  if ($wroteArgs -and (((& adb shell cat $remoteArgs) -join "`n") -ceq $launchArgs)) {
-    & adb shell rm -f $remoteArgs
-  }
-  if ($argsFile) { & adb shell rm -f $remoteStaging }
-  if ($argsFile) { Remove-Item -LiteralPath $argsFile }
-  $lease.ReleaseMutex()
-  $lease.Dispose()
 }
 
 $fps = @(); $gpu = @(); $cg = @()
@@ -173,28 +210,3 @@ if ($fps.Count -eq 0) { throw 'No VrApi samples: is the app in front and the hea
   ($cg | Measure-Object -Average).Average, $fps.Count
 if ($vr[-1] -match '(CPU4/GPU=[^,]+,[^,]+)') { "clocks: $($Matches[1])" }
 $cpu | ForEach-Object { ($_ -split 'app\s+:\s+')[-1] }
-if ($eyeFiles.Count -gt 0 -or $shots.Count -gt 0) {
-  New-Item -ItemType Directory -Force $dir | Out-Null
-}
-foreach ($f in $eyeFiles) {
-  $dst = Join-Path $dir "$stamp-$Waypoint-$Scenario-$f"
-  $info = [Diagnostics.ProcessStartInfo]::new()
-  $info.FileName = 'adb'
-  $info.UseShellExecute = $false
-  $info.RedirectStandardOutput = $true
-  foreach ($arg in 'exec-out','run-as',$Package,'cat',"files/$f") { $info.ArgumentList.Add($arg) }
-  $proc = [Diagnostics.Process]::Start($info)
-  try {
-    $out = [IO.File]::Create($dst)
-    try { $proc.StandardOutput.BaseStream.CopyTo($out) } finally { $out.Dispose() }
-    $proc.WaitForExit()
-    if ($proc.ExitCode -ne 0) { throw "Could not pull $f" }
-  } finally { $proc.Dispose() }
-  Invoke-BenchAdb shell run-as $Package rm -f "files/$f"
-  "eye capture: $dst"
-}
-foreach ($f in $shots) {
-  $dst = Join-Path $dir "$stamp-$Waypoint-$Scenario-$f"
-  Invoke-BenchAdb pull "/sdcard/Oculus/Screenshots/$f" $dst | Out-Null
-  "capture: $dst"
-}
