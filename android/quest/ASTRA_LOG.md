@@ -467,3 +467,13 @@ On Quest 3, both waypoints used CPU level 1 / GPU level 0, the same scene argume
 | Tavern | 6.429, 6.464 | 6.137, 6.137 | 9.590, 9.570 → 9.568, 9.590 | 51.1, 51.6 → 51.6, 51.4 |
 
 Kept the change for 0.269 ms less CPU recording per stereo frame in the city and 0.310 ms in the tavern. FPS and GPU timings overlapped across variants. The benchmark stopped the game and released the wake override between runs. Final battery was 88% at 42.0 °C.
+
+### Cancel gameplay keys when the window captures the XR controls
+
+A held XR X button used to produce a Tab release when a handle, bracket or environment button captured the controller. That release could open inventory. Other affected release handlers included modal navigation and key binding. Losing a single runtime action could produce the same false release. Full focus loss could also leave a repeating inventory transfer running after its keyboard or mouse capture disappeared.
+
+The XR input sampler now waits for an active neutral sample before readmitting each interrupted button, trigger or stick. It continues reading the grab stick for window positioning. The game keeps the previous native gamepad contributions and the surviving XR controls so that an overlapping Bluetooth press or a legitimate release on the same frame keeps its normal effect. An interrupted key reaches its original widget through Tempest `44ef8e94`. Android routes simultaneous keys to their individual UI recipients. Cancelling an unrelated key preserves an active melee parry. Losing full focus stops inventory repeat timers.
+
+Host tests exercised grip and drop with X, a displaced stick and a trigger, Return and Up in menu mode, an inactive action alongside a genuine release, a failed sync and recovery, shared Bluetooth and keyboard keys, and an Escape alias handoff. Separate dispatch tests covered modal capture, an expired widget, independent parry and inventory timer ownership.
+
+A diagnostic APK injected controller samples into the focused Quest city scene. The game logged Tab down with inventory closed, then a cancellation when the right hand acquired the handle. Inventory stayed closed through the drop. A fresh X press and release opened inventory, and the next press closed it. The isolated INI run ended at 91% and 39.0 °C. The owner's settings hash matched before and after. The signed release contained neither diagnostic marker and its installed APK hash matched `950723bd542b26c60f1468f9da7c09c87481471efdb1ec152245d70cd679292b`. Physical hand pinches, Bluetooth overlap and held chest transfers still need wearer testing.

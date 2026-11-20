@@ -57,6 +57,11 @@ class InventoryMenu : public Tempest::Widget {
     void  keyRepeatEvent(Tempest::KeyEvent&   e) override;
     void  keyUpEvent    (Tempest::KeyEvent&   e) override;
 
+#if defined(__ANDROID__)
+    void  cancelTaking();
+    void  keyCancelEvent(Tempest::KeyEvent& e) override;
+#endif
+
   protected:
     void  paintEvent     (Tempest::PaintEvent& e) override;
 
@@ -92,6 +97,7 @@ class InventoryMenu : public Tempest::Widget {
 
     uint8_t                   page       =0;
     Tempest::Timer            takeTimer;
+    Tempest::Event::KeyType   takeKey = Tempest::Event::K_NoKey;
     size_t                    takeCount  =0;
     LootMode                  lootMode   =LootMode::Normal;
     InventoryRenderer         renderer;
@@ -115,7 +121,8 @@ class InventoryMenu : public Tempest::Widget {
     void          moveUp();
     void          moveDown();
 
-    void          onItemAction(uint8_t slotHint);
+    void          onItemAction(uint8_t slotHint, Tempest::Event::KeyType key=Tempest::Event::K_NoKey);
+    void          startTaking(LootMode mode, Tempest::Event::KeyType key);
     void          onTakeStuff();
     void          adjustScroll();
     void          drawAll   (Tempest::Painter& p, Npc& player, DrawPass pass);

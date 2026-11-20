@@ -23,6 +23,9 @@ class PlayerControl final {
 
     void  onKeyPressed (KeyCodec::Action a, Tempest::Event::KeyType key, KeyCodec::Mapping mapping);
     void  onKeyReleased(KeyCodec::Action a, KeyCodec::Mapping mapping);
+#if defined(__ANDROID__)
+    void  cancelKey(KeyCodec::Action a, KeyCodec::Mapping mapping);
+#endif
     bool  isPressed(KeyCodec::Action a) const;
     void  onRotateMouse(float dAngleX, float dAngleY);
 
@@ -138,6 +141,9 @@ class PlayerControl final {
     bool           ctrl[Action::Last]={};
     bool           wctrl[WeaponAction::Last]={};
     bool           actrl[7]={};
+#if defined(__ANDROID__)
+    Action         combatAction = Action::Idle;
+#endif
 
     WeaponAction   wctrlLast = WeaponAction::WeaponMele; //!< Reminder for weapon toggle.
 

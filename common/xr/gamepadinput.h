@@ -37,6 +37,8 @@ class GamepadInput final {
 
     void releaseAll();
     void cancel();
+    // Drop only keys that lose their last source when the XR pad is interrupted.
+    void cancelMissing(const PadState& previous, bool previousMenu, const PadState& current, bool currentMenu);
 
   private:
     enum Out : uint8_t {
@@ -47,7 +49,9 @@ class GamepadInput final {
       O_Count
       };
 
-    void set(Out o, bool down);
+    template<class Emit>
+    void map(const PadState& pad, bool menuContext, Emit emit) const;
+    void set(Out o, bool down, bool cancelRelease=false);
 
     static Tempest::Event::KeyType keyOf(Out o);
 

@@ -161,6 +161,9 @@ void PlayerControl::onKeyPressed(KeyCodec::Action a, Tempest::KeyEvent::KeyType 
   if(fk>=0) {
     std::memset(actrl,0,sizeof(actrl));
     actrl[ActGeneric] = ctrl[KeyCodec::ActionGeneric];
+#if defined(__ANDROID__)
+    combatAction = a;
+#endif
     actrl[fk]         = true;
 
     ctrl[a] = true;
@@ -172,6 +175,9 @@ void PlayerControl::onKeyPressed(KeyCodec::Action a, Tempest::KeyEvent::KeyType 
     if(this->wantsToMoveForward())
       fk = ActMove;
     std::memset(actrl,0,sizeof(actrl));
+#if defined(__ANDROID__)
+    combatAction = a;
+#endif
     actrl[fk] = true;
     ctrl[a]   = true;
     return;
@@ -198,6 +204,15 @@ void PlayerControl::onKeyPressed(KeyCodec::Action a, Tempest::KeyEvent::KeyType 
 
   ctrl[a] = true;
   }
+
+#if defined(__ANDROID__)
+void PlayerControl::cancelKey(KeyCodec::Action a, KeyCodec::Mapping mapping) {
+  ctrl[a] = false;
+  handleMovementAction({a,mapping},false);
+  if(a==combatAction || (!g2Ctrl && a==Action::ActionGeneric && actrl[ActGeneric]))
+    std::memset(actrl,0,sizeof(actrl));
+  }
+#endif
 
 void PlayerControl::onKeyReleased(KeyCodec::Action a, KeyCodec::Mapping mapping) {
   ctrl[a] = false;

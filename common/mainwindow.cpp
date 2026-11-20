@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <string>
 #include <thread>
+#include <utility>
 #include "gothic.h"
 #include "xr/xrwindow.h"
 #include "marvin.h"
@@ -443,7 +444,16 @@ void MainWindow::mouseWheelEvent(MouseEvent &event) {
     camera->changeZoom(event.delta);
   }
 
+Tempest::Widget*& MainWindow::keyRecipient(Tempest::Event::KeyType key) {
+#if defined(__ANDROID__)
+  return keyRecipients[key];
+#else
+  return lastKeyRecipient;
+#endif
+  }
+
 void MainWindow::keyDownEvent(KeyEvent &event) {
+  auto& uiKeyUp = keyRecipient(event.key);
   if(video.isActive()){
     event.accept();
     video.keyDownEvent(event);
@@ -512,6 +522,7 @@ void MainWindow::keyDownEvent(KeyEvent &event) {
   }
 
 void MainWindow::keyRepeatEvent(KeyEvent& event) {
+  auto uiKeyUp = keyRecipient(event.key);
   if(uiKeyUp==&video){
     if(event.isAccepted())
       return;
@@ -540,7 +551,18 @@ void MainWindow::keyRepeatEvent(KeyEvent& event) {
     }
   }
 
+#if defined(__ANDROID__)
+void MainWindow::keyCancelEvent(KeyEvent& event) {
+  auto* recipient = std::exchange(keyRecipient(event.key),nullptr);
+  if(recipient==&inventory)
+    inventory.keyCancelEvent(event);
+  else if(recipient==nullptr)
+    player.cancelKey(keycodec.tr(event),keycodec.mapping(event));
+  }
+#endif
+
 void MainWindow::keyUpEvent(KeyEvent &event) {
+  auto uiKeyUp = keyRecipient(event.key);
   if(uiKeyUp==&video){
     video.keyUpEvent(event);
     if(event.isAccepted())
@@ -1303,21 +1325,29 @@ bool MainWindow::padMenuContext() const {
 
 void MainWindow::tickPad(uint64_t dt) {
   PadState state;
+  const bool menu = padMenuContext();
 #if defined(__ANDROID__)
   const auto g = AndroidApi::gamepad();
   state.connected = g.connected;
   state.lx = g.lx; state.ly = g.ly; state.rx = g.rx; state.ry = g.ry; state.lt = g.lt; state.rt = g.rt;
   for(int i=0; i<PadState::Count; ++i)
     state.buttons[i] = g.buttons[i];
+  const PadState native = state;
+  if(auto xr = XrWindow::inst()) {
+    state = PadState::merge(native,xr->pad());
+    PadState releaseSources;
+    if(xr->takePadInterruption(releaseSources))
+      pad.cancelMissing(PadState::merge(previousNativePad,releaseSources),previousPadMenu,state,menu);
+    }
+  previousNativePad = native;
+  previousPadMenu = menu;
 #endif
-  if(auto xr = XrWindow::inst())
-    state = PadState::merge(state, xr->pad());
   if(!state.connected) {
     pad.releaseAll();
     return;
     }
 
-  pad.tick(state, padMenuContext());
+  pad.tick(state, menu);
   if(padMenuContext())
     return;
   // Accumulate fractional stick motion as mouse-look pixels
@@ -1412,6 +1442,10 @@ void MainWindow::render(){
       else {
         if(padTime!=0) {
           pad.cancel();
+#if defined(__ANDROID__)
+          previousNativePad = {};
+          inventory.cancelTaking();
+#endif
           clearInput();
           padLook = {};
           dMouse = {};

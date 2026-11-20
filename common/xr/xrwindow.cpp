@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <chrono>
 #include <cstdio>
 #include <cmath>
@@ -30,6 +31,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace Tempest;
@@ -220,7 +222,10 @@ struct XrWindow::Impl {
   XrAction                 aA = XR_NULL_HANDLE, aB = XR_NULL_HANDLE, aX = XR_NULL_HANDLE, aY = XR_NULL_HANDLE;
   XrAction                 aMenu      = XR_NULL_HANDLE;
   std::array<Hand,2>       hands;
-  PadState                 padState;
+  PadState                 padState, releasePad;
+  enum PadControl : size_t { StickLeft=PadState::Count, StickRight, TriggerLeft, TriggerRight, ControlCount };
+  std::bitset<ControlCount> blockedControls;
+  bool                     padInterrupted = false;
 
   ~Impl();
 
@@ -964,6 +969,9 @@ void XrWindow::Impl::placeWindow() {
   }
 
 void XrWindow::Impl::cancelInput() {
+  padInterrupted = true;
+  blockedControls.set();
+  releasePad = {};
   padState = {};
   grabbedBy = -1;
   grabbed = Grip::None;
@@ -974,7 +982,8 @@ void XrWindow::Impl::cancelInput() {
   }
 
 void XrWindow::Impl::updateInput() {
-  padState = PadState();
+  releasePad = padState;
+  padState = {};
   if(state!=XR_SESSION_STATE_FOCUSED)
     return;
 
@@ -995,20 +1004,24 @@ void XrWindow::Impl::updateInput() {
       return std::nullopt;
     return st.currentState;
     };
-  auto getB = [&](XrAction a, XrPath sub) {
+  auto getB = [&](XrAction a, XrPath sub) -> std::optional<bool> {
     XrActionStateGetInfo gi = {XR_TYPE_ACTION_STATE_GET_INFO};
     gi.action = a; gi.subactionPath = sub;
     XrActionStateBoolean st = {XR_TYPE_ACTION_STATE_BOOLEAN};
-    xrGetActionStateBoolean(session, &gi, &st);
-    return st.isActive && st.currentState;
+    if(xrGetActionStateBoolean(session, &gi, &st)!=XR_SUCCESS || !st.isActive)
+      return std::nullopt;
+    return st.currentState!=XR_FALSE;
     };
-  auto getV = [&](XrAction a, XrPath sub) {
+  auto getV = [&](XrAction a, XrPath sub) -> std::optional<XrVector2f> {
     XrActionStateGetInfo gi = {XR_TYPE_ACTION_STATE_GET_INFO};
     gi.action = a; gi.subactionPath = sub;
     XrActionStateVector2f st = {XR_TYPE_ACTION_STATE_VECTOR2F};
-    xrGetActionStateVector2f(session, &gi, &st);
-    return st.isActive ? st.currentState : XrVector2f{0,0};
+    if(xrGetActionStateVector2f(session, &gi, &st)!=XR_SUCCESS || !st.isActive)
+      return std::nullopt;
+    return st.currentState;
     };
+
+  const std::optional<XrVector2f> sticks[] = {getV(aStick,hands[0].path), getV(aStick,hands[1].path)};
 
   // Pointing at or touching the frame parts: the handle moves the window, the corners resize it.
   // The game image itself is never a grab target, so playing never moves the window by accident.
@@ -1091,7 +1104,7 @@ void XrWindow::Impl::updateInput() {
       const XrPosef& holder = grabNear ? h.nearPose : h.aim;
       if(!grabNear) {
         // Thumbstick pushes a pointed-at window away or pulls it closer
-        const XrVector2f stick = getV(aStick, h.path);
+        const XrVector2f stick = sticks[i].value_or(XrVector2f{});
         const float dt = std::clamp(float(frame.predictedDisplayTime-lastGrabTime)*1e-9f, 0.f, 0.05f);
         lastGrabTime = frame.predictedDisplayTime;
         // Preserve the original 72 Hz speed. A grab that starts outside the
@@ -1137,25 +1150,57 @@ void XrWindow::Impl::updateInput() {
     h.grabHeld = pressed ? true : (released ? false : h.grabHeld);
     }
 
-  if(grabbedBy>=0)
-    return; // the sticks adjust the window while it is held
+  // Losing an action or taking the window interrupts gameplay. Only an active,
+  // neutral sample rearms that control. Other sources can still release normally.
+  const bool captured = grabbedBy>=0;
+  auto admit = [&](size_t control, bool valid, bool held, bool wasHeld) {
+    if(captured || !valid) {
+      padInterrupted |= wasHeld;
+      blockedControls[control] = !valid || held;
+      return false;
+      }
+    if(!held)
+      blockedControls.reset(control);
+    return !blockedControls[control];
+    };
 
-  const XrVector2f ls = getV(aStick, hands[0].path);
-  const XrVector2f rs = getV(aStick, hands[1].path);
   padState.connected = true;
-  padState.lx =  ls.x;
-  padState.ly = -ls.y;
-  padState.rx =  rs.x;
-  padState.ry = -rs.y;
-  padState.lt = getF(aTrigger, hands[0].path).value_or(0.f);
-  padState.rt = getF(aTrigger, hands[1].path).value_or(0.f);
-  padState.buttons[PadState::A]          = getB(aA, XR_NULL_PATH);
-  padState.buttons[PadState::B]          = getB(aB, XR_NULL_PATH);
-  padState.buttons[PadState::X]          = getB(aX, XR_NULL_PATH);
-  padState.buttons[PadState::Y]          = getB(aY, XR_NULL_PATH);
-  padState.buttons[PadState::Start]      = getB(aMenu, XR_NULL_PATH);
-  padState.buttons[PadState::LeftStick]  = getB(aStickClick, hands[0].path);
-  padState.buttons[PadState::RightStick] = getB(aStickClick, hands[1].path);
+  auto button = [&](PadState::Button id, XrAction action, XrPath path) {
+    const auto value = getB(action,path);
+    if(admit(id,value.has_value(),value.value_or(false),releasePad.buttons[id]))
+      padState.buttons[id] = *value;
+    else
+      releasePad.buttons[id] = false;
+    };
+  button(PadState::A, aA, XR_NULL_PATH);
+  button(PadState::B, aB, XR_NULL_PATH);
+  button(PadState::X, aX, XR_NULL_PATH);
+  button(PadState::Y, aY, XR_NULL_PATH);
+  button(PadState::Start, aMenu, XR_NULL_PATH);
+  button(PadState::LeftStick, aStickClick, hands[0].path);
+  button(PadState::RightStick,aStickClick, hands[1].path);
+
+  auto stick = [&](size_t id,const std::optional<XrVector2f>& value,float& x,float& y,float& oldX,float& oldY) {
+    auto displaced = [](float a,float b){ return std::abs(a)>0.15f || std::abs(b)>0.15f; };
+    if(admit(id,value.has_value(),value && displaced(value->x,value->y),displaced(oldX,oldY))) {
+      x = value->x;
+      y = -value->y;
+      } else {
+      oldX = oldY = 0;
+      }
+    };
+  stick(StickLeft, sticks[0],padState.lx,padState.ly,releasePad.lx,releasePad.ly);
+  stick(StickRight,sticks[1],padState.rx,padState.ry,releasePad.rx,releasePad.ry);
+
+  auto trigger = [&](size_t id,XrPath path,float& dst,float& old) {
+    const auto value = getF(aTrigger,path);
+    if(admit(id,value.has_value(),value.value_or(0.f)>0.35f,old>0.35f))
+      dst = *value;
+    else
+      old = 0.f;
+    };
+  trigger(TriggerLeft, hands[0].path,padState.lt,releasePad.lt);
+  trigger(TriggerRight,hands[1].path,padState.rt,releasePad.rt);
   }
 
 V3 XrWindow::Impl::handleCenter() const {
@@ -1872,6 +1917,11 @@ PadState XrWindow::pad() const {
   return impl->padState;
   }
 
+bool XrWindow::takePadInterruption(PadState& releaseSources) {
+  releaseSources = impl->releasePad;
+  return std::exchange(impl->padInterrupted,false);
+  }
+
 bool XrWindow::isFocused() const {
   return AndroidApi::activityResumed() && impl->state==XR_SESSION_STATE_FOCUSED;
   }
@@ -1908,6 +1958,7 @@ bool      XrWindow::eyeView(uint8_t, float, Camera::EyeView&) const { return fal
 void      XrWindow::setVerticalFov(float) {}
 std::string XrWindow::timingReport() { return ""; }
 PadState  XrWindow::pad() const { return {}; }
+bool XrWindow::takePadInterruption(PadState&) { return false; }
 bool      XrWindow::isFocused() const { return false; }
 bool      XrWindow::isVisible() const { return false; }
 

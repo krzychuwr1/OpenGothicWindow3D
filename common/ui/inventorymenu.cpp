@@ -107,6 +107,7 @@ void InventoryMenu::close() {
     }
   renderer.reset(true);
   takeTimer.stop();
+  takeKey = Event::K_NoKey;
   state  = State::Closed;
   }
 
@@ -310,36 +311,28 @@ void InventoryMenu::keyDownEvent(KeyEvent &e) {
   processMove(e);
 
   if(keycodec.tr(e)==KeyCodec::Jump) {
-    lootMode = LootMode::Stack;
-    takeTimer.start(200);
-    onTakeStuff();
+    startTaking(LootMode::Stack,e.key);
     }
   else if (keycodec.tr(e)==KeyCodec::ActionGeneric || e.key==KeyEvent::K_Return) {
-    onItemAction(Item::NSLOT);
+    onItemAction(Item::NSLOT,e.key);
     }
   else if((KeyEvent::K_3<=e.key && e.key<=KeyEvent::K_9) || e.key==KeyEvent::K_0) {
     uint8_t slot = 10;
     if((KeyEvent::K_3<=e.key && e.key<=KeyEvent::K_9))
       slot = uint8_t(e.key-KeyEvent::K_0);
-    onItemAction(slot);
+    onItemAction(slot,e.key);
     }
   else if(e.key==KeyEvent::K_ESCAPE || keycodec.tr(e)==KeyCodec::Inventory){
     close();
     }
   else if(e.key==KeyEvent::K_Space) {
-    lootMode = LootMode::Normal;
-    takeTimer.start(200);
-    onTakeStuff();
+    startTaking(LootMode::Normal,e.key);
     }
   else if(e.key==KeyEvent::K_Z) {
-    lootMode = LootMode::Ten;
-    takeTimer.start(200);
-    onTakeStuff();
+    startTaking(LootMode::Ten,e.key);
     }
   else if(e.key==KeyEvent::K_X) {
-    lootMode = LootMode::Hundred;
-    takeTimer.start(200);
-    onTakeStuff();
+    startTaking(LootMode::Hundred,e.key);
     }
 
   adjustScroll();
@@ -356,6 +349,7 @@ void InventoryMenu::keyRepeatEvent(KeyEvent& e) {
 
 void InventoryMenu::keyUpEvent(KeyEvent&) {
   takeTimer.stop();
+  takeKey = Event::K_NoKey;
   lootMode = LootMode::Normal;
   }
 
@@ -378,6 +372,7 @@ void InventoryMenu::mouseDownEvent(MouseEvent &e) {
 
 void InventoryMenu::mouseUpEvent(MouseEvent&) {
   takeTimer.stop();
+  takeKey = Event::K_NoKey;
   takeCount=0;
   }
 
@@ -462,7 +457,7 @@ InventoryMenu::PageLocal &InventoryMenu::activePageSel() {
   return pageLocal[1];
   }
   
-void InventoryMenu::onItemAction(uint8_t slotHint) {
+void InventoryMenu::onItemAction(uint8_t slotHint, Event::KeyType key) {
   auto& page = activePage();
   auto& sel  = activePageSel();
 
@@ -482,11 +477,30 @@ void InventoryMenu::onItemAction(uint8_t slotHint) {
       }
     }
   else if(state==State::Chest || state==State::Trade || state==State::Ransack) {
-    lootMode = LootMode::Normal;
-    takeTimer.start(200);
-    onTakeStuff();
+    startTaking(LootMode::Normal,key);
     }
   }
+
+void InventoryMenu::startTaking(LootMode mode, Event::KeyType key) {
+  lootMode = mode;
+  takeKey = key;
+  takeTimer.start(200);
+  onTakeStuff();
+  }
+
+#if defined(__ANDROID__)
+void InventoryMenu::cancelTaking() {
+  takeTimer.stop();
+  takeKey = Event::K_NoKey;
+  takeCount = 0;
+  lootMode = LootMode::Normal;
+  }
+
+void InventoryMenu::keyCancelEvent(KeyEvent& e) {
+  if(e.key==takeKey)
+    cancelTaking();
+  }
+#endif
 
 void InventoryMenu::onTakeStuff() { 
   size_t itemCount = 0;

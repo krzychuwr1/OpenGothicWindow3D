@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <future>
 
 #include "camera.h"
@@ -67,6 +68,10 @@ class MainWindow : public Tempest::Window {
     void keyDownEvent   (Tempest::KeyEvent&   event) override;
     void keyRepeatEvent (Tempest::KeyEvent&   event) override;
     void keyUpEvent     (Tempest::KeyEvent&   event) override;
+
+#if defined(__ANDROID__)
+    void keyCancelEvent (Tempest::KeyEvent& event) override;
+#endif
 
     void focusEvent     (Tempest::FocusEvent&  event) override;
 
@@ -143,6 +148,10 @@ class MainWindow : public Tempest::Window {
     Tempest::Matrix4x4    prevEyeViewProject[2];
     bool                  eyeHistoryValid = false;
     GamepadInput          pad;
+#if defined(__ANDROID__)
+    PadState              previousNativePad;
+    bool                  previousPadMenu = false;
+#endif
     Tempest::PointF       padLook;
     uint64_t              padTime = 0;
     Tempest::TextureAtlas atlas;
@@ -192,7 +201,12 @@ class MainWindow : public Tempest::Window {
 #endif
     RuntimeMode               runtimeMode = R_Normal;
 
-    Tempest::Widget*          uiKeyUp=nullptr;
+    Tempest::Widget*&         keyRecipient(Tempest::Event::KeyType key);
+#if defined(__ANDROID__)
+    std::array<Tempest::Widget*,Tempest::Event::K_Last> keyRecipients = {};
+#else
+    Tempest::Widget*          lastKeyRecipient=nullptr;
+#endif
     Tempest::Point            dMouse;
     PlayerControl             player;
     uint64_t                  lastTick=0;

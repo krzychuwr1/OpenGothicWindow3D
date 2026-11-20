@@ -1,6 +1,7 @@
 #include "gamepadinput.h"
 
 #include <algorithm>
+#include <bitset>
 #include <cmath>
 
 using namespace Tempest;
@@ -55,7 +56,7 @@ Event::KeyType GamepadInput::keyOf(Out o) {
   return Event::K_NoKey;
   }
 
-void GamepadInput::set(Out o, bool down) {
+void GamepadInput::set(Out o, bool down, bool cancelRelease) {
   if(cancelled[o]) {
     cancelled[o] = down; // Wait for release before treating this as a new press.
     return;
@@ -67,11 +68,13 @@ void GamepadInput::set(Out o, bool down) {
   for(int i=0; i<O_Count; ++i)
     if(i!=o && state[i] && keyOf(Out(i))==keyOf(o))
       return;
-  KeyEvent e(keyOf(o), Event::M_NoModifier, down ? Event::KeyDown : Event::KeyUp);
+  const auto type = cancelRelease ? Event::KeyCancel : (down ? Event::KeyDown : Event::KeyUp);
+  KeyEvent e(keyOf(o), Event::M_NoModifier, type);
   sink(e,down);
   }
 
-void GamepadInput::tick(const PadState& p, bool menuContext) {
+template<class Emit>
+void GamepadInput::map(const PadState& p, bool menuContext, Emit emit) const {
   // Hysteresis keeps a stick resting near the threshold from chattering
   auto neg = [this](Out o, float v) { return state[o] ? v<-0.35f : v<-0.55f; };
   auto pos = [this](Out o, float v) { return state[o] ? v> 0.35f : v> 0.55f; };
@@ -80,31 +83,62 @@ void GamepadInput::tick(const PadState& p, bool menuContext) {
   if(menuContext) {
     // Menus, dialogs and documents navigate with arrow keys
     for(Out o:{O_Forward,O_Back,O_StrafeL,O_StrafeR,O_Action,O_Walk,O_Jump,O_Weapon,O_Sneak})
-      set(o,false);
-    set(O_Up,      neg(O_Up,p.ly)    || b[PadState::DpadUp]);
-    set(O_Down,    pos(O_Down,p.ly)  || b[PadState::DpadDown]);
-    set(O_Left,    neg(O_Left,p.lx)  || b[PadState::DpadLeft]);
-    set(O_Right,   pos(O_Right,p.lx) || b[PadState::DpadRight]);
-    set(O_Confirm, b[PadState::A] || p.rt>0.6f || b[PadState::RightShoulder]);
-    set(O_Cancel,  b[PadState::B]);
+      emit(o,false);
+    emit(O_Up,      neg(O_Up,p.ly)    || b[PadState::DpadUp]);
+    emit(O_Down,    pos(O_Down,p.ly)  || b[PadState::DpadDown]);
+    emit(O_Left,    neg(O_Left,p.lx)  || b[PadState::DpadLeft]);
+    emit(O_Right,   pos(O_Right,p.lx) || b[PadState::DpadRight]);
+    emit(O_Confirm, b[PadState::A] || p.rt>0.6f || b[PadState::RightShoulder]);
+    emit(O_Cancel,  b[PadState::B]);
     } else {
     for(Out o:{O_Up,O_Down,O_Left,O_Right,O_Confirm,O_Cancel})
-      set(o,false);
-    set(O_Forward, neg(O_Forward,p.ly) || b[PadState::DpadUp]);
-    set(O_Back,    pos(O_Back,p.ly)    || b[PadState::DpadDown]);
-    set(O_StrafeL, neg(O_StrafeL,p.lx) || b[PadState::DpadLeft]);
-    set(O_StrafeR, pos(O_StrafeR,p.lx) || b[PadState::DpadRight]);
-    set(O_Action,  p.rt>0.6f || b[PadState::RightShoulder]);
-    set(O_Walk,    p.lt>0.6f || b[PadState::LeftShoulder]);
-    set(O_Jump,    b[PadState::A]);
-    set(O_Weapon,  b[PadState::B]);
-    set(O_Sneak,   b[PadState::Y]);
+      emit(o,false);
+    emit(O_Forward, neg(O_Forward,p.ly) || b[PadState::DpadUp]);
+    emit(O_Back,    pos(O_Back,p.ly)    || b[PadState::DpadDown]);
+    emit(O_StrafeL, neg(O_StrafeL,p.lx) || b[PadState::DpadLeft]);
+    emit(O_StrafeR, pos(O_StrafeR,p.lx) || b[PadState::DpadRight]);
+    emit(O_Action,  p.rt>0.6f || b[PadState::RightShoulder]);
+    emit(O_Walk,    p.lt>0.6f || b[PadState::LeftShoulder]);
+    emit(O_Jump,    b[PadState::A]);
+    emit(O_Weapon,  b[PadState::B]);
+    emit(O_Sneak,   b[PadState::Y]);
     }
-  set(O_Inventory, p.buttons[PadState::X]);
-  set(O_Menu,      p.buttons[PadState::Start]);
-  set(O_Log,       p.buttons[PadState::Back]);
-  set(O_Status,    p.buttons[PadState::LeftStick]);
-  set(O_Map,       p.buttons[PadState::RightStick]);
+  emit(O_Inventory, p.buttons[PadState::X]);
+  emit(O_Menu,      p.buttons[PadState::Start]);
+  emit(O_Log,       p.buttons[PadState::Back]);
+  emit(O_Status,    p.buttons[PadState::LeftStick]);
+  emit(O_Map,       p.buttons[PadState::RightStick]);
+  }
+
+void GamepadInput::tick(const PadState& p, bool menuContext) {
+  map(p,menuContext,[this](Out o,bool down){ set(o,down); });
+  }
+
+void GamepadInput::cancelMissing(const PadState& previous, bool previousMenu, const PadState& current, bool currentMenu) {
+  std::bitset<Event::K_Last> retained;
+  auto keep = [&](Out o,bool down) {
+    if(down)
+      retained.set(keyOf(o));
+    };
+  map(previous,previousMenu,keep);
+  map(current,currentMenu,[&](Out o,bool down) {
+    if(!down || cancelled[o])
+      return;
+    keep(o,true);
+    // Transfer an existing capture before tick releases its old alias.
+    if(!state[o]) {
+      for(int i=0; i<O_Count; ++i)
+        if(state[i] && keyOf(Out(i))==keyOf(o)) {
+          state[o] = true;
+          break;
+          }
+      }
+    });
+  for(int i=0; i<O_Count; ++i) {
+    const auto o = Out(i);
+    if(state[o] && !retained[keyOf(o)])
+      set(o,false,true);
+    }
   }
 
 PointF GamepadInput::look(const PadState& p, uint64_t dtMs) const {
