@@ -1736,6 +1736,8 @@ void MainWindow::renderFrame(bool xr) {
     timing.encStart += nowUs()-ts;
     renderer.draw(backbuf,enc,cmdId,uiMesh[cmdId],numMesh[cmdId],camera!=nullptr ? &eyeMesh[cmdId] : nullptr,inventory,video);
 #ifdef OPENGOTHIC_XR
+    if(xr && view==0)
+      XrWindow::inst()->drawSurfaceLight(renderer,enc,stereo && !video.isActive() && Gothic::inst().worldView()!=nullptr);
     if(stereo) {
       auto* motion = XrWindow::inst()->motionTarget(uint8_t(view));
       auto* depth  = XrWindow::inst()->depthTarget (uint8_t(view));

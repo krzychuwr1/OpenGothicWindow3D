@@ -13,6 +13,8 @@
 // Presents the game as a floating window in the user's room (passthrough around it)
 // through OpenXR. Only available in Android builds with OPENGOTHIC_XR; elsewhere
 // XrWindow::inst() is always null and the game uses its normal window.
+class Renderer;
+
 class XrWindow final {
   public:
     ~XrWindow();
@@ -51,6 +53,8 @@ class XrWindow final {
     bool              isSpaceWarpSupported() const;
 #ifdef OPENGOTHIC_XR
     bool              isFoveationSupported() const;
+    bool              isSurfaceLightSupported() const;
+    void              drawSurfaceLight(Renderer& renderer, Tempest::Encoder<Tempest::CommandBuffer>& cmd, bool sceneReady);
     void              prepareLightingRate(Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t slot,
                                           uint8_t eye, uint32_t width, uint32_t height);
 #endif

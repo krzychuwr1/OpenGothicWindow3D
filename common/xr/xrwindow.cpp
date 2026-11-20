@@ -6,6 +6,10 @@
 #include "gothic.h"
 #include "resources.h"
 #include "shadingrate.h"
+#include "envdepth.h"
+#include "surfacelight.h"
+#include "spatialpermission.h"
+#include "graphics/renderer.h"
 
 #include <Tempest/VulkanInterop>
 #include <Tempest/AndroidApi>
@@ -118,6 +122,15 @@ struct XrWindow::Impl {
   bool                     hasPanorama = false;
   bool                     hasEquirect2 = false;
   bool                     hasPassthrough     = false;
+  bool                     hasDepth = false, hasAlphaBlend = false;
+  bool                     lightEnabled = false, probePending = true, depthReady = false;
+  bool                     permissionAsked = false, permissionGranted = false;
+  XrTime                   nextPermissionCheck = 0;
+  int64_t                  eyeColorFormat = VK_FORMAT_UNDEFINED;
+  EnvironmentDepth         environmentDepth;
+  SurfaceLight             surfaceLight;
+  void invalidateSurface();
+  void updateSurface();
   bool                     hasHandInteraction = false;
   bool                     hasPerfSettings    = false;
   bool                     hasSpaceWarp       = false;
@@ -310,6 +323,8 @@ XrWindow::Impl::~Impl() {
       targets[eye].clear();
       }
     }
+  environmentDepth.reset();
+  surfaceLight.reset();
   destroyPassthrough();
   if(panorama!=XR_NULL_HANDLE)
     xrDestroySwapchain(panorama);
@@ -388,6 +403,13 @@ bool XrWindow::Impl::createInstance() {
   hasPassthrough     = has(XR_FB_PASSTHROUGH_EXTENSION_NAME);
   hasHandInteraction = has(XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
   hasPerfSettings    = has(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
+  hasDepth = has(XR_META_ENVIRONMENT_DEPTH_EXTENSION_NAME);
+  hasAlphaBlend = has(XR_FB_COMPOSITION_LAYER_ALPHA_BLEND_EXTENSION_NAME);
+  if(hasDepth) {
+    ext.push_back(XR_META_ENVIRONMENT_DEPTH_EXTENSION_NAME);
+    if(hasAlphaBlend)
+      ext.push_back(XR_FB_COMPOSITION_LAYER_ALPHA_BLEND_EXTENSION_NAME);
+    }
   const bool hasRefreshRate = has(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
   if(hasRefreshRate)
     ext.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
@@ -424,6 +446,11 @@ bool XrWindow::Impl::createInstance() {
   if(!ok(xrGetSystem(instance, &sys, &system), "xrGetSystem"))
     return false;
 
+  if(hasDepth) {
+    XrSystemEnvironmentDepthPropertiesMETA depthProps = {XR_TYPE_SYSTEM_ENVIRONMENT_DEPTH_PROPERTIES_META};
+    XrSystemProperties props = {XR_TYPE_SYSTEM_PROPERTIES,&depthProps};
+    hasDepth = XR_SUCCEEDED(xrGetSystemProperties(instance,system,&props)) && depthProps.supportsEnvironmentDepth;
+    }
   auto fn = [this](const char* name, auto& out) {
     PFN_xrVoidFunction proc = nullptr;
     if(!ok(xrGetInstanceProcAddr(instance, name, &proc), name) || proc==nullptr)
@@ -634,6 +661,7 @@ void XrWindow::Impl::createSwapchains() {
   // The renderer and static uploads both require four RGBA8 channels.
   auto supported = [&](int64_t f) { return std::find(formats.begin(), formats.end(), f)!=formats.end(); };
   const int64_t format = supported(VK_FORMAT_R8G8B8A8_SRGB) ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+  eyeColorFormat = format;
   if(!supported(format))
     throw std::runtime_error("OpenXR requires an RGBA8 window swapchain");
 
@@ -1156,9 +1184,11 @@ void XrWindow::Impl::placeWindow() {
   windowPose.position    = toXr(pos);
   windowPose.orientation = facing(headPos - pos);
   placed = true;
+  invalidateSurface();
   }
 
 void XrWindow::Impl::cancelInput() {
+  invalidateSurface();
   saveDim();
   lastDimHover = 0;
   padInterrupted = true;
@@ -1551,6 +1581,69 @@ bool XrWindow::pollInputFocus(bool nativeFocusLost) {
   return !interrupted && isFocused();
   }
 
+void XrWindow::Impl::invalidateSurface() {
+  if(!probePending) {
+    environmentDepth.cancel();
+    surfaceLight.invalidate();
+    probePending = true;
+    }
+  }
+
+void XrWindow::Impl::updateSurface() {
+  const bool enabled = hasDepth && Gothic::settingsGetI("INTERNAL","xrSurfaceLight")!=0;
+  if(!enabled) {
+    if(lightEnabled) {
+      invalidateSurface();
+      permissionAsked = permissionGranted = false;
+      nextPermissionCheck = 0;
+      }
+    lightEnabled = false;
+    return;
+    }
+  lightEnabled = true;
+  const bool moving = grabbed==Grip::Handle || grabbed==Grip::CornerLeft || grabbed==Grip::CornerRight;
+  if(!placed || !headValid || moving || state!=XR_SESSION_STATE_FOCUSED || !AndroidApi::activityFocused()) {
+    invalidateSurface();
+    return;
+    }
+  if(!permissionGranted) {
+    if(frame.predictedDisplayTime<nextPermissionCheck)
+      return;
+    permissionGranted = xrSpatialPermission(!permissionAsked);
+    permissionAsked = true;
+    nextPermissionCheck = frame.predictedDisplayTime+2000000000;
+    if(!permissionGranted)
+      return;
+    }
+  if(probePending) {
+    probePending = false;
+    depthReady = environmentDepth.initialize(instance,system,session,*device);
+    if(depthReady)
+      environmentDepth.request(windowPose,{windowWidth,windowHeight()});
+    }
+  if(depthReady)
+    environmentDepth.update(localSpace,frame.predictedDisplayTime);
+  }
+
+bool XrWindow::isSurfaceLightSupported() const {
+  return impl->hasDepth;
+  }
+
+void XrWindow::drawSurfaceLight(Renderer& renderer, Encoder<CommandBuffer>& cmd, bool sceneReady) {
+  auto& s = *impl;
+  if(!s.lightEnabled || !s.environmentDepth.surface())
+    return;
+  if(!sceneReady) {
+    s.surfaceLight.invalidate();
+    return;
+    }
+  const auto& plane = *s.environmentDepth.surface();
+  if(auto* target = s.surfaceLight.target(*s.device,s.session,s.eyeColorFormat,*s.vk.queueLock,s.frame.predictedDisplayTime)) {
+    s.surfaceLight.recorded(renderer.drawSurfaceLight(cmd,*target,{plane.uvOffset.x,plane.uvOffset.y},
+                            {plane.uvScale.x,plane.uvScale.y},s.passthroughDim,plane.drop,s.eyeColorFormat==VK_FORMAT_R8G8B8A8_SRGB));
+    }
+  }
+
 int64_t XrWindow::nominalFramePeriod() const {
   if(!(impl->refreshRate>=30.f && impl->refreshRate<=240.f))
     return 0;
@@ -1584,6 +1677,7 @@ bool XrWindow::beginFrame() {
     s.placeWindow();
     // A focused game keeps ticking even when the runtime requests zero layers.
     s.updateInput();
+    s.updateSurface();
     if(s.frame.shouldRender) {
       s.locateEyes();
       return true;
@@ -2057,6 +2151,7 @@ bool XrWindow::submit(bool rendered) {
   bool hasImage = rendered && s.acquired[0]>=0 && s.acquired[1]>=0;
   bool warp = hasImage && s.spaceWarpWanted &&
                         s.mvAcquired[0]>=0 && s.mvAcquired[1]>=0 && s.depthAcquired[0]>=0 && s.depthAcquired[1]>=0;
+  s.surfaceLight.finish(hasImage);
   const bool eyesReleased = s.releaseEyes();
   const bool warpReleased = s.releaseSpaceWarp();
   if(!eyesReleased || !warpReleased) {
@@ -2065,7 +2160,7 @@ bool XrWindow::submit(bool rendered) {
     }
 
   // Background, eyes, button, slider rail and thumb, handle and corner brackets.
-  std::array<const XrCompositionLayerBaseHeader*,9> layers;
+  std::array<const XrCompositionLayerBaseHeader*,10> layers;
   uint32_t layerCount = 0;
   auto addLayer = [&](const auto& layer) {
     layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer);
@@ -2101,6 +2196,11 @@ bool XrWindow::submit(bool rendered) {
     addLayer(pt);
     }
 
+  if(hasImage && s.lightEnabled && s.environmentDepth.surface()) {
+    const auto& surface = *s.environmentDepth.surface();
+    if(auto* layer = s.surfaceLight.layer(s.localSpace,surface.pose,surface.size,s.hasAlphaBlend))
+      addLayer(*layer);
+    }
   // The same rectangle in the room for both eyes, each showing its own view through it
   XrCompositionLayerQuad quad[2] = {{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
   // SpaceWarp: the window as a projection layer with motion vectors and depth
@@ -2338,6 +2438,8 @@ bool      XrWindow::submit(bool) { return false; }
 bool      XrWindow::isSpaceWarpSupported() const { return false; }
 #ifdef OPENGOTHIC_XR
 bool      XrWindow::isFoveationSupported() const { return false; }
+bool      XrWindow::isSurfaceLightSupported() const { return false; }
+void      XrWindow::drawSurfaceLight(Renderer&, Tempest::Encoder<Tempest::CommandBuffer>&, bool) {}
 void      XrWindow::prepareLightingRate(Tempest::Encoder<Tempest::CommandBuffer>&, uint8_t, uint8_t, uint32_t, uint32_t) {}
 #endif
 bool      XrWindow::prepareSpaceWarp(bool, bool) { return false; }

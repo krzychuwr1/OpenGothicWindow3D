@@ -16,6 +16,7 @@
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
 
     <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
+    <uses-permission android:name="com.oculus.permission.USE_SCENE" />
     <!-- Game files live in /sdcard/OpenGothic; the install script grants this over adb -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />

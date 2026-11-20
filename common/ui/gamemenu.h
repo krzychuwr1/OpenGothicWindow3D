@@ -87,7 +87,7 @@ class GameMenu : public Tempest::Widget {
     KeyCodec::Action                      kClose = KeyCodec::Escape;
 
 #ifdef OPENGOTHIC_XR
-    void                                  addFoveationChoice();
+    void                                  addXrVideoChoices(bool foveation, bool surfaceLight);
 #endif
     void                                  drawItem(Tempest::Painter& p, Item& it);
     void                                  drawSlider(Tempest::Painter& p, Item& it, int x, int y, int w, int h);

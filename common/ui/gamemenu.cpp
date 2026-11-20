@@ -390,50 +390,70 @@ void GameMenu::initItems() {
     updateItem(hItems[i]);
     }
 #ifdef OPENGOTHIC_XR
-  if(auto* xr = XrWindow::inst(); xr && xr->isFoveationSupported())
-    addFoveationChoice();
+  if(auto* xr = XrWindow::inst())
+    addXrVideoChoices(xr->isFoveationSupported(),xr->isSurfaceLightSupported());
 #endif
   }
 
 #ifdef OPENGOTHIC_XR
-void GameMenu::addFoveationChoice() {
-  // Stock Video leaves one row between Resolution and Brightness. Preserve a mod's
-  // layout if it lacks those cells, their spacing, or two free slots at the end.
+void GameMenu::addXrVideoChoices(bool foveation, bool surfaceLight) {
   const auto end = std::end(hItems);
   auto row = std::find_if(std::begin(hItems),end,[](const Item& i){ return i.handle && i.name=="MENUITEM_VID_RESOLUTION"; });
   if(end-row<5 || !row[1].handle || row[1].name!="MENUITEM_VID_RESOLUTION_CHOICE" ||
-     !row[2].handle || row[2].name!="MENUITEM_VID_BRIGHTNESS" || end[-1].handle || end[-2].handle)
+     !row[2].handle || row[2].name!="MENUITEM_VID_BRIGHTNESS")
     return;
   const int spacing = (row[2].handle->pos_y-row[0].handle->pos_y)/2;
   if(spacing<=0 || row[1].handle->pos_y+spacing>=row[2].handle->pos_y)
     return;
-  std::move_backward(row+2,end-2,end);
-  for(int i=0;i<2;++i) {
-    auto& src = row[i];
-    auto& dst = row[i+2];
-    dst = Item{};
-    dst.name = i==0 ? "MENUITEM_XR_FOVEATION" : "MENUITEM_XR_FOVEATION_CHOICE";
-    dst.img = src.img;
-    dst.handle = std::make_shared<zenkit::IMenuItem>();
-    const auto& style = *src.handle;
-    auto& cell = *dst.handle;
-    cell.type = i==0 ? zenkit::MenuItemType::TEXT : zenkit::MenuItemType::CHOICEBOX;
-    cell.pos_x = style.pos_x;
-    cell.pos_y = style.pos_y+spacing;
-    cell.dim_x = style.dim_x;
-    cell.dim_y = style.dim_y;
-    cell.fontname = style.fontname;
-    cell.flags = i==0 ? zenkit::MenuItemFlag::SELECTABLE | zenkit::MenuItemFlag::EFFECTS : zenkit::MenuItemFlag::CENTERED;
-    if(i==0) {
-      cell.text[0] = "Foveation";
-      cell.text[1] = "Shades peripheral lighting at lower detail around the direction your head faces";
-      } else {
-      cell.text[0] = "Off|On";
-      cell.on_chg_set_option = "xrFoveation";
-      cell.on_chg_set_option_section = "INTERNAL";
-      updateItem(dst);
+  auto add = [&](Item* insert, int y, const char* id, const char* title, const char* help, const char* option) {
+    std::move_backward(insert,end-2,end);
+    for(int i=0;i<2;++i) {
+      const auto& src = row[i];
+      auto& dst = insert[i];
+      dst = Item{};
+      dst.name = id;
+      if(i==1)
+        dst.name += "_CHOICE";
+      dst.img = src.img;
+      dst.handle = std::make_shared<zenkit::IMenuItem>();
+      const auto& style = *src.handle;
+      auto& cell = *dst.handle;
+      cell.type = i==0 ? zenkit::MenuItemType::TEXT : zenkit::MenuItemType::CHOICEBOX;
+      cell.pos_x = style.pos_x;
+      cell.pos_y = y+(style.pos_y-row[0].handle->pos_y);
+      cell.dim_x = style.dim_x;
+      cell.dim_y = style.dim_y;
+      cell.fontname = style.fontname;
+      cell.flags = i==0 ? zenkit::MenuItemFlag::SELECTABLE | zenkit::MenuItemFlag::EFFECTS : zenkit::MenuItemFlag::CENTERED;
+      if(i==0) {
+        cell.text[0] = title;
+        cell.text[1] = help;
+        } else {
+        cell.text[0] = "Off|On";
+        cell.on_chg_set_option = option;
+        cell.on_chg_set_option_section = "INTERNAL";
+        updateItem(dst);
+        }
       }
-    }
+    };
+  if(foveation && !end[-2].handle && !end[-1].handle)
+    add(row+2,row[0].handle->pos_y+spacing,"MENUITEM_XR_FOVEATION","Foveation",
+        "Shades peripheral lighting at lower detail around the direction your head faces","xrFoveation");
+
+  // Stock Video has space below Gamma for another option and Back. Leave
+  // custom menu layouts alone if the expected ordering or space is missing.
+  auto back = std::find_if(row+2,end,[](const Item& i){ return i.handle && i.name=="MENUITEM_VID_BACK"; });
+  if(!surfaceLight || back==end || back-row<4 || back[-1].name!="MENUITEM_VID_GAMMA_SLIDER" ||
+     back[-2].name!="MENUITEM_VID_GAMMA" || !back[-2].handle || end-back<3 ||
+     std::any_of(back+1,end,[](const Item& i){ return i.handle!=nullptr; }))
+    return;
+  const int y = back[-2].handle->pos_y+spacing;
+  const int backY = y+spacing;
+  if(back->handle->pos_y<=y || backY+spacing>=int(scriptDiv))
+    return;
+  add(back,y,"MENUITEM_XR_SURFACE_LIGHT","Surface light",
+      "Spills the game's colours onto the table or floor below the window","xrSurfaceLight");
+  back[2].handle->pos_y = backY;
   }
 #endif
 

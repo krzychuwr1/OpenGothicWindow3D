@@ -2242,6 +2242,65 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
   }
 
 #ifdef OPENGOTHIC_XR
+bool Renderer::drawSurfaceLight(Encoder<CommandBuffer>& cmd, Attachment& target, Vec2 uvOffset, Vec2 uvScale,
+                                float dim, float drop, bool srgbSwapchain) {
+  if(sceneLinear.isEmpty() || target.isEmpty())
+    return false;
+  if(surfacePalette.isEmpty()) {
+    const auto now = Application::tickCount();
+    if(now<surfaceRetryAfter)
+      return false;
+    auto& device = Resources::device();
+    try {
+      const auto vs = GothicShader::get("triangle_uv.vert.sprv");
+      auto vertex = device.shader(vs.data,vs.len);
+      RenderState state;
+      state.setZTestMode(RenderState::ZTestMode::Always);
+      for(auto [pipeline,name] : {std::pair{&surfaceGather,"surface_light_palette.frag.sprv"},
+                                  std::pair{&surfaceSpill,"surface_light.frag.sprv"}}) {
+        if(pipeline->isEmpty()) {
+          const auto fs = GothicShader::get(name);
+          *pipeline = device.pipeline(Triangles,state,vertex,device.shader(fs.data,fs.len));
+          }
+        }
+      surfacePalette = device.attachment(TextureFormat::RGBA8,8,1);
+      }
+    catch(const std::bad_alloc&) {}
+    catch(const std::system_error& e) {
+      if(e.code()!=GraphicsErrc::OutOfVideoMemory && e.code()!=GraphicsErrc::OutOfHostMemory)
+        throw;
+      }
+    if(surfacePalette.isEmpty()) {
+      surfaceRetryAfter = now+3000;
+      Log::e("XR surface light allocation failed, retrying in three seconds");
+      return false;
+      }
+    }
+  const auto sampler = Sampler::bilinear(ClampMode::ClampToEdge);
+  // Match the eye's tonemapping before averaging the emitted display colours.
+  const Vec4 video((settings.zVidBrightness-0.5f)*0.1f, std::max(1.5f-settings.zVidContrast,0.01f),
+                   (1.f/2.2f)/std::max(2.f*settings.zVidGamma,0.01f),1.f);
+  cmd.setDebugMarker("XR surface light palette");
+  cmd.setFramebuffer({{surfacePalette,Tempest::Discard,Tempest::Preserve}});
+  cmd.setBinding(0,sceneLinear,sampler);
+  cmd.setPushData(video);
+  cmd.setPipeline(surfaceGather);
+  cmd.draw(nullptr,0,3);
+
+  struct Push {
+    Vec2 offset, scale;
+    float strength;
+    uint32_t srgb;
+    } push{uvOffset,uvScale,(0.08f+0.12f*dim)/(1.f+drop*drop),srgbSwapchain ? 1u : 0u};
+  cmd.setDebugMarker("XR surface light spill");
+  cmd.setFramebuffer({{target,Tempest::Discard,Tempest::Preserve}});
+  cmd.setBinding(0,surfacePalette,sampler);
+  cmd.setPushData(push);
+  cmd.setPipeline(surfaceSpill);
+  cmd.draw(nullptr,0,3);
+  return true;
+  }
+
 bool Renderer::ensureHudMask(Size size) {
   if(hudTransmittance.size()==size && hudBlend && !hudMotion.isEmpty())
     return true;

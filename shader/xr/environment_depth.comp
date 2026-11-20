@@ -1,0 +1,12 @@
+#version 450
+layout(local_size_x=8,local_size_y=8) in;
+layout(binding=0) uniform sampler2D depthImage;
+layout(binding=1,std430) writeonly buffer DepthSamples { float depth[]; };
+
+void main() {
+  ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 grid = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  ivec2 coord = (2*p+1)*textureSize(depthImage,0)/(2*grid);
+  depth[p.y*grid.x+p.x] = texelFetch(depthImage,coord,0).r;
+  }
+

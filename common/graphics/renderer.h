@@ -58,6 +58,8 @@ class Renderer final {
     // -show motion: the eye's motion vectors painted over its picture (debugging)
     void drawSpaceWarpDebug(Tempest::Encoder<Tempest::CommandBuffer>& cmd, Tempest::Attachment& motion, Tempest::Attachment& result);
 #ifdef OPENGOTHIC_XR
+    bool drawSurfaceLight(Tempest::Encoder<Tempest::CommandBuffer>& cmd, Tempest::Attachment& target,
+                          Tempest::Vec2 uvOffset, Tempest::Vec2 uvScale, float dim, float drop, bool srgbSwapchain);
     void drawSpaceWarp(Tempest::Encoder<Tempest::CommandBuffer>& cmd, WorldView& wview,
                        Tempest::Attachment& motion, Tempest::ZBuffer& depth, const Tempest::VectorImage::Mesh& ui,
                        const Tempest::VectorImage::Mesh* counters, bool& hudReady, Tempest::Attachment* debugOutput);
@@ -68,6 +70,9 @@ class Renderer final {
   private:
     Tempest::Attachment debugMotion;
 #ifdef OPENGOTHIC_XR
+    Tempest::Attachment surfacePalette;
+    Tempest::RenderPipeline surfaceGather, surfaceSpill;
+    uint64_t surfaceRetryAfter = 0;
     int lightingEye = -1;
     bool ensureHudMask(Tempest::Size size);
     uint64_t hudRetryAfter = 0;
