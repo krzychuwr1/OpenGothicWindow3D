@@ -137,3 +137,9 @@ The Android Release APK passed v3 signature verification and the 16 KiB alignmen
 | SpaceWarp, combat, stereo PNG every 3 s, 15 samples | 36.2 | 81% | 26.9 ms | 11.17 ms |
 
 Decoded and inspected all 17 stereo pairs (1600 × 900 per eye, local capture prefix `20261120-031441-319`). Both eyes show the city gate, approaching enemies, melee and the subsequent street scene. Focus names appear over characters in both eyes and the HUD remains visible. These captures contain the application eye images. They do not measure compositor interpolation or confirm disparity quantitatively. The combat run includes readback cost. Battery after the two runs was 77% and 78%, both at 40.0 °C. The app was stopped after each run.
+
+### Dusk compositor and motion overlay on Quest 3
+
+Two further runs forced the dusk environment on the merged APK. The application logged `OpenXR: environment dusk panorama` in both. Meta's 1440 × 1440 screenshots show the star field above the window with SpaceWarp enabled (combat, capture prefix `20261120-031622-356`) and disabled (ordinary stereo quads, `20261120-031817-072`). The upper part of the backdrop is visible from the unattended headset pose. The screenshot framing excludes the physical toggle and the lower horizon. The two runs ended at 78% battery, 40.0 °C, with the app stopped.
+
+For the SpaceWarp run, all 14 stereo pairs with `-show motion` decoded successfully. Both eyes show bright directional colours on moving characters against a darkened street. After combat the static scene goes dark again. The 3% object depth bias was active throughout. These images establish that the merged debug path displays motion. Wearer comfort, physical switch interaction, saved choice across restarts and compositor-only cost remain open.
