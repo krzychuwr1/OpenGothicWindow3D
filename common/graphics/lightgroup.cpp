@@ -338,8 +338,9 @@ bool LightGroup::updateLights() {
   auto& device = Resources::device();
 
   if(lightSourceSsbo.byteSize()<lightSourceData.size()*sizeof(LightSsbo)) {
+    auto replacement = device.ssbo(lightSourceData);
     Resources::recycle(std::move(lightSourceSsbo));
-    lightSourceSsbo = device.ssbo(lightSourceData);
+    lightSourceSsbo = std::move(replacement);
     resetDurty();
     return true;
     }
@@ -377,7 +378,6 @@ void LightGroup::prepareGlobals(Tempest::Encoder<Tempest::CommandBuffer>& cmd, u
 
   if(patchBlock.empty())
     return;
-  resetDurty();
 
   const size_t headerSize = patchBlock.size()*sizeof(Path);
   const size_t dataSize   = patchData .size()*sizeof(LightSsbo);
@@ -397,8 +397,9 @@ void LightGroup::prepareGlobals(Tempest::Encoder<Tempest::CommandBuffer>& cmd, u
   auto& device  = Resources::device();
   auto& patch   = patchSsbo[fId];
   if(patch.byteSize()<headerSize+dataSize) {
+    auto replacement = device.ssbo(Tempest::BufferHeap::Upload, Tempest::Uninitialized, headerSize+dataSize);
     Resources::recycle(std::move(patch));
-    patch = device.ssbo(Tempest::BufferHeap::Upload, Tempest::Uninitialized, headerSize+dataSize);
+    patch = std::move(replacement);
     }
   patch.update(patchBlock.data(), 0,          headerSize);
   patch.update(patchData.data(),  headerSize, dataSize);
@@ -408,4 +409,5 @@ void LightGroup::prepareGlobals(Tempest::Encoder<Tempest::CommandBuffer>& cmd, u
   cmd.setBinding(1, patch);
   cmd.setPipeline(Shaders::inst().patch);
   cmd.dispatch(patchBlock.size());
+  resetDurty();
   }
