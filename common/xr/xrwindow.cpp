@@ -2392,7 +2392,8 @@ bool XrWindow::submit(bool rendered) {
     s.staticImagesAttempted = true;
     s.fillStaticImages();
     }
-  bool hasImage = rendered && s.acquired[0]>=0 && s.acquired[1]>=0;
+  // A LOCAL recenter invalidates the old pose until the next valid placement.
+  bool hasImage = rendered && s.placed && s.acquired[0]>=0 && s.acquired[1]>=0;
   bool warp = hasImage && s.spaceWarpWanted &&
                         s.mvAcquired[0]>=0 && s.mvAcquired[1]>=0 && s.depthAcquired[0]>=0 && s.depthAcquired[1]>=0;
   s.surfaceLight.finish(hasImage);
