@@ -527,3 +527,9 @@ A host fixture ran the production update methods against two disjoint dirty rang
 ### Build the light tree from the current eye's light data
 
 Path tracing and irradiance caching could build their acceleration tree before pending changes to the light buffer were recorded. The second eye then saw updates the first eye had missed. The tree build now follows the light patch in the same command buffer and still precedes both optional consumers. A host command-order check modeled a two-light update across two eyes. Originally only the second eye saw both new values. Both eyes now see them, and the default renderer records no tree build. Android Release linked. These optional ray-query paths were checked from code and have not been run on Quest.
+
+### Release partially initialized OpenAL effects
+
+The sampled and streaming sound constructors could abandon an OpenAL buffer when its data or callback registration failed. They also returned a source after an unsuccessful attachment. Tempest `5e2c4c20` gives both constructors a common cleanup path, deletes a source before its attached buffer, and checks setup before playback. A null producer yields an empty effect.
+
+A host fixture ran the production constructors and destructor against a counting OpenAL adapter. It injected errors at buffer creation, sample/callback setup, source creation, attachment and reference-distance setup, and checked success and empty sample destruction. The old code failed six checks, the change passed them all and Android Release linked. No native audio initialization failure was induced on Quest.
