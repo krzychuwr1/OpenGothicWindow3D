@@ -393,7 +393,7 @@ void MainWindow::mouseMoveEvent(MouseEvent &event) {
 void MainWindow::processMouse(MouseEvent& event, bool enable) {
   auto center = Point(w()/2,h()/2);
   if(enable && event.pos()!=center && hasFocus()) {
-    dMouse += (event.pos()-center);
+    dMouse += PointF(float(event.x-center.x),float(event.y-center.y));
     setCursorPosition(center);
     }
   }
@@ -401,19 +401,19 @@ void MainWindow::processMouse(MouseEvent& event, bool enable) {
 void MainWindow::tickMouse(uint64_t dt) {
   auto camera = Gothic::inst().camera();
   if(dialogs.hasContent() || Gothic::inst().isPause() || camera==nullptr || camera->isCutscene()) {
-    dMouse = Point();
+    dMouse = {};
     return;
     }
 
   const bool enableMouse = Gothic::inst().settingsGetI("GAME","enableMouse");
   if(enableMouse==0) {
-    dMouse = Point();
+    dMouse = {};
     return;
     }
 
   const auto& cli = CommandLine::inst();
   const float turn = XrWindow::inst() && (startupDone || cli.startupCommands().empty()) ? cli.xrTurnRate() : 0.f;
-  if(dMouse==Point() && turn==0.f)
+  if(dMouse==PointF() && turn==0.f)
     return;
 
   const bool  camLookaroundInverse = Gothic::inst().settingsGetI("GAME","camLookaroundInverse");
@@ -441,7 +441,7 @@ void MainWindow::tickMouse(uint64_t dt) {
     player.onRotateMouse(-dpScaled.x, -dpScaled.y);
     }
 
-  dMouse = Point();
+  dMouse = {};
   }
 
 void MainWindow::onSettings() {
@@ -642,7 +642,7 @@ void MainWindow::keyUpEvent(KeyEvent &event) {
 void MainWindow::focusEvent(FocusEvent &event) {
   if(!event.in)
     return;
-  dMouse = Point();
+  dMouse = {};
 
   if(SystemApi::isFullscreen(hwnd()))
     setCursorPosition(Point(w()/2,h()/2));
@@ -1239,7 +1239,7 @@ void MainWindow::onStartLoading() {
   }
 
 void MainWindow::onWorldLoaded() {
-  dMouse = Point();
+  dMouse = {};
 
   if(Gothic::inst().isBenchmarkMode()) {
     if(auto world = Gothic::inst().world()) {
@@ -1355,7 +1355,6 @@ void MainWindow::cancelHeldInput() {
   inventory.cancelTaking();
 #endif
   clearInput();
-  padLook = {};
   dMouse = {};
   padTime = 0;
   }
@@ -1398,11 +1397,7 @@ void MainWindow::tickPad(uint64_t dt) {
 #endif
   if(!state.connected || padMenuContext())
     return;
-  // Accumulate fractional stick motion as mouse-look pixels
-  padLook += pad.look(state, dt);
-  const Point whole = Point(int(padLook.x), int(padLook.y));
-  padLook -= PointF(float(whole.x), float(whole.y));
-  dMouse  += whole;
+  dMouse += pad.look(state, dt);
   }
 
 static uint64_t nowUs() {

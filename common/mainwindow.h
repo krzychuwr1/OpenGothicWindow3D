@@ -153,7 +153,6 @@ class MainWindow : public Tempest::Window {
     PadState              previousXrPad;
     bool                  previousPadMenu = false;
 #endif
-    Tempest::PointF       padLook;
     uint64_t              padTime = 0;
     Tempest::TextureAtlas atlas;
     Shaders               shaders;
@@ -213,7 +212,7 @@ class MainWindow : public Tempest::Window {
 #else
     Tempest::Widget*          lastKeyRecipient=nullptr;
 #endif
-    Tempest::Point            dMouse;
+    Tempest::PointF           dMouse;
     PlayerControl             player;
     uint64_t                  lastTick=0;
 
