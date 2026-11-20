@@ -1443,6 +1443,20 @@ void MainWindow::FrameTiming::report() {
   }
 
 void MainWindow::runStartupCommands() {
+#ifdef OPENGOTHIC_XR
+  if(startupDone && CommandLine::inst().debugShow("surfaceclock")) {
+    // Keep the measured plane and headset exposure in one session while the
+    // actual game lighting changes. The test loads a save and never saves it.
+    static const uint64_t start = Application::tickCount();
+    static int previous = -1;
+    const int phase = int(std::min<uint64_t>((Application::tickCount()-start)/8000,2));
+    if(phase!=previous) {
+      previous = phase;
+      const auto command = phase==1 ? "set time 0 0" : "set time 12 0";
+      Log::i("XR surface clock ",phase," ",command," success=",int(Marvin().exec(command)));
+      }
+    }
+#endif
   // "savegame SLOT NAME" from -exec: saved a few seconds later, once the scene has been drawn
   if(!pendingSaveSlot.empty() && Application::tickCount()>=pendingSaveAt &&
      Gothic::inst().checkLoading()==Gothic::LoadState::Idle) {
