@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -95,8 +96,8 @@ struct Hand {
   bool           nearValid   = false;
   XrPosef        aim         = {{0,0,0,1},{0,0,0}};
   XrPosef        nearPose    = {{0,0,0,1},{0,0,0}};
-  float          grab        = 0;
-  bool           grabHeld    = false;
+  std::optional<float> grab; // Only an active action can report a physical release.
+  bool           grabHeld    = true;
   Grip           hover       = Grip::None;
   bool           hoverNear   = false;
   V3             hit;                            // where the hand targets the frame part, local space
@@ -943,12 +944,13 @@ void XrWindow::Impl::updateInput() {
     return;
     }
 
-  auto getF = [&](XrAction a, XrPath sub) {
+  auto getF = [&](XrAction a, XrPath sub) -> std::optional<float> {
     XrActionStateGetInfo gi = {XR_TYPE_ACTION_STATE_GET_INFO};
     gi.action = a; gi.subactionPath = sub;
     XrActionStateFloat st = {XR_TYPE_ACTION_STATE_FLOAT};
-    xrGetActionStateFloat(session, &gi, &st);
-    return st.isActive ? st.currentState : 0.f;
+    if(xrGetActionStateFloat(session, &gi, &st)!=XR_SUCCESS || !st.isActive)
+      return std::nullopt;
+    return st.currentState;
     };
   auto getB = [&](XrAction a, XrPath sub) {
     XrActionStateGetInfo gi = {XR_TYPE_ACTION_STATE_GET_INFO};
@@ -1020,8 +1022,16 @@ void XrWindow::Impl::updateInput() {
 
   for(size_t i=0; i<hands.size(); ++i) {
     auto& h = hands[i];
-    const bool pressed  = h.grab>0.75f;
-    const bool released = h.grab<0.35f;
+    if(!h.grab) {
+      if(grabbedBy==int(i)) {
+        grabbedBy = -1;
+        grabbed = Grip::None;
+        }
+      h.grabHeld = true;
+      continue;
+      }
+    const bool pressed  = *h.grab>0.75f;
+    const bool released = *h.grab<0.35f;
     if(grabbedBy==int(i)) {
       const bool tracked = grabNear ? h.nearValid : h.aimValid;
       if(released || !tracked) {
@@ -1091,8 +1101,8 @@ void XrWindow::Impl::updateInput() {
   padState.ly = -ls.y;
   padState.rx =  rs.x;
   padState.ry = -rs.y;
-  padState.lt = getF(aTrigger, hands[0].path);
-  padState.rt = getF(aTrigger, hands[1].path);
+  padState.lt = getF(aTrigger, hands[0].path).value_or(0.f);
+  padState.rt = getF(aTrigger, hands[1].path).value_or(0.f);
   padState.buttons[PadState::A]          = getB(aA, XR_NULL_PATH);
   padState.buttons[PadState::B]          = getB(aB, XR_NULL_PATH);
   padState.buttons[PadState::X]          = getB(aX, XR_NULL_PATH);
