@@ -15,6 +15,7 @@ class VideoWidget : public Tempest::Widget {
     bool isActive() const;
 
     void tick();
+    void setPaused(bool paused);
     void paint(Tempest::Device& device, uint8_t fId);
     void paintEvent(Tempest::PaintEvent &event) override;
 
@@ -33,7 +34,6 @@ class VideoWidget : public Tempest::Widget {
 
     std::unique_ptr<Context>      ctx;
     Tempest::Texture2d            tex[Resources::MaxFramesInFlight];
-    Tempest::Texture2d*           frame  = nullptr;
     bool                          active = false;
 
     std::atomic_bool              hasPendingVideo{false};

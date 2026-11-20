@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <optional>
 
 #include "bink/video.h"
 #include "graphics/shaders.h"
@@ -118,11 +119,6 @@ struct VideoWidget::Context {
       }
 
     frameTime = Application::tickCount();
-    }
-
-  ~Context() {
-    for(auto& i:sync)
-      i.wait();
     }
 
   void advance(Tempest::Device& device, uint8_t fId) {
@@ -240,6 +236,7 @@ struct VideoWidget::Context {
   Input                         input;
   Bink::Video                   vid;
   uint64_t                      frameTime = 0;
+  std::optional<uint64_t>       pausedAt;
 
   Tempest::Attachment           frameImg;
   Tempest::CommandBuffer        cmd    [Resources::MaxFramesInFlight];
@@ -348,12 +345,27 @@ void VideoWidget::stopVideo() {
   update();
   }
 
+void VideoWidget::setPaused(bool paused) {
+  if(ctx==nullptr || paused==ctx->pausedAt.has_value())
+    return;
+  const auto now = Application::tickCount();
+  if(paused) {
+    ctx->pausedAt = now;
+    for(auto& track:ctx->sndCtx)
+      track->snd.pause();
+    } else {
+    ctx->frameTime += now-*ctx->pausedAt;
+    ctx->pausedAt.reset();
+    for(auto& track:ctx->sndCtx)
+      track->play();
+    }
+  }
+
 void VideoWidget::paint(Tempest::Device& device, uint8_t fId) {
-  if(ctx==nullptr)
+  if(ctx==nullptr || ctx->pausedAt || ctx->isEof())
     return;
   try {
     ctx->advance(device, fId);
-    frame = &textureCast<Texture2d&>(ctx->frameImg);
     update();
     }
   catch(const Bink::VideoDecodingException& e) { // video exception is recoverable
@@ -366,16 +378,17 @@ void VideoWidget::paint(Tempest::Device& device, uint8_t fId) {
   }
 
 void VideoWidget::paintEvent(PaintEvent& e) {
-  if(ctx==nullptr || frame==nullptr)
+  if(ctx==nullptr || ctx->frameImg.isEmpty())
     return;
-  float k  = float(w())/float(frame->w());
-  int   vh = int(k*float(frame->h()));
+  const auto& frame = textureCast<const Texture2d&>(ctx->frameImg);
+  float k  = float(w())/float(frame.w());
+  int   vh = int(k*float(frame.h()));
 
   Painter p(e);
   p.setBrush(Color(0,0,0,1));
   p.drawRect(0,0,w(),h());
 
-  p.setBrush(Brush(*frame,Painter::NoBlend,ClampMode::ClampToEdge));
+  p.setBrush(Brush(frame,Painter::NoBlend,ClampMode::ClampToEdge));
   p.drawRect(0,(h()-vh)/2,w(),vh,
              0,0,p.brush().w(),p.brush().h());
   }

@@ -1434,6 +1434,7 @@ void MainWindow::render(){
       // The game holds still while the headset is off or a system menu has the focus.
       const uint64_t tu = nowUs();
       const bool focused = xr->pollInputFocus();
+      video.setPaused(!focused);
 #if defined(__ANDROID__)
       AndroidApi::setExternalInputFocus(focused);
 #endif
