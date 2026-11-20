@@ -13,6 +13,9 @@
 #include <optional>
 
 #include "bink/video.h"
+#ifdef OPENGOTHIC_XR
+#include "xr/xrwindow.h"
+#endif
 #include "graphics/shaders.h"
 #include "gamemusic.h"
 #include "gothic.h"
@@ -70,6 +73,8 @@ struct VideoWidget::SoundContext {
     }
 
   void pushSamples(const std::vector<float>& s) {
+    if(s.empty())
+      return;
     std::lock_guard<std::mutex> guard(syncSamples);
     size_t sz = samples.size();
     samples.resize(sz+s.size());
@@ -127,7 +132,11 @@ struct VideoWidget::Context {
     for(size_t i=0; i<vid.audioCount(); ++i)
       sndCtx[i]->pushSamples(f.audio(uint8_t(i)).samples);
 
-    const uint64_t destTick = (1000*vid.fps().den*vid.currentFrame())/vid.fps().num;
+#ifdef OPENGOTHIC_XR
+    if(XrWindow::inst()!=nullptr)
+      return;
+#endif
+    const uint64_t destTick = frameTimestamp(vid.currentFrame());
     const uint64_t tickVis  = Application::tickCount() - frameTime;
     const uint64_t tickSnd  = tickSound();
     const uint64_t tick     = std::min(tickVis, tickSnd);
@@ -138,9 +147,28 @@ struct VideoWidget::Context {
       }
     }
 
+  uint64_t frameTimestamp(size_t frame) const {
+    return uint64_t(1000)*vid.fps().den*frame/vid.fps().num;
+    }
+
+  bool frameDue() const {
+#ifdef OPENGOTHIC_XR
+    if(XrWindow::inst()!=nullptr) {
+      const auto elapsed = Application::tickCount()-frameTime;
+      const auto frame   = vid.currentFrame();
+      const auto target  = frameTimestamp(frame);
+      if(elapsed<target)
+        return false;
+      // Give lagging audio up to one movie frame. A drained track can stay
+      // silent to EOF while OpenXR continues presenting the current picture.
+      return elapsed>=frameTimestamp(frame+1) || tickSound()>=target;
+      }
+#endif
+    return true;
+    }
+
   uint64_t tickSound() const {
     uint64_t tickSnd = uint64_t(-1);
-    // return tickSnd;
 
     for(size_t i=0; i<vid.audioCount(); ++i)
       tickSnd = std::min(tickSnd, sndCtx[i]->tickCount());
@@ -268,7 +296,7 @@ bool VideoWidget::isActive() const {
   }
 
 void VideoWidget::tick() {
-  if(ctx!=nullptr && ctx->isEof()) {
+  if(ctx!=nullptr && ctx->isEof() && ctx->frameDue()) {
     stopVideo();
     }
 
@@ -362,7 +390,7 @@ void VideoWidget::setPaused(bool paused) {
   }
 
 void VideoWidget::paint(Tempest::Device& device, uint8_t fId) {
-  if(ctx==nullptr || ctx->pausedAt || ctx->isEof())
+  if(ctx==nullptr || ctx->pausedAt || ctx->isEof() || !ctx->frameDue())
     return;
   try {
     ctx->advance(device, fId);
