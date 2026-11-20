@@ -55,6 +55,7 @@ class XrWindow final {
     bool              isFoveationSupported() const;
     bool              isWindowFilterSupported() const;
     bool              isSurfaceLightSupported() const;
+    void              drawWindowEdges(Tempest::Encoder<Tempest::CommandBuffer>& cmd, bool motion = false);
     void              drawSurfaceLight(Renderer& renderer, Tempest::Encoder<Tempest::CommandBuffer>& cmd, bool sceneReady);
     void              prepareLightingRate(Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t slot,
                                           uint8_t eye, uint32_t width, uint32_t height);

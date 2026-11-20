@@ -2417,6 +2417,7 @@ void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
     cmd.setPipeline(hudMotion);
     cmd.draw(nullptr, 0, 3);
     }
+  XrWindow::inst()->drawWindowEdges(cmd,true);
   if(debugOutput) {
     cmd.setFramebuffer({{motion, Tempest::Discard, Tempest::Preserve}});
     cmd.setBinding(0, target, Sampler::nearest());

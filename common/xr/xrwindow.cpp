@@ -9,6 +9,7 @@
 #include "envdepth.h"
 #include "surfacelight.h"
 #include "spatialpermission.h"
+#include "shader.h"
 #include "graphics/renderer.h"
 
 #include <Tempest/VulkanInterop>
@@ -235,6 +236,8 @@ struct XrWindow::Impl {
   // Window placement (local space)
   XrPosef                  windowPose = {{0,0,0,1},{0,0,-1.5f}};
   float                    windowWidth = 2.4f, physicalHeight = 1.35f;
+  int                      edgeStyle = 0;
+  RenderPipeline           edgeOpaque, edgeCoverage, edgeMotion;
   float                    verticalFov = 67.5f;
   bool                     placed      = false;
   std::vector<XrTime>      recenterTimes;
@@ -300,6 +303,9 @@ struct XrWindow::Impl {
     return ok(xrStringToPath(instance,name,&value),name) ? value : XR_NULL_PATH;
     }
   float  windowHeight() const { return physicalHeight; }
+  float  edgeRadius() const { return edgeStyle==0 ? 0.f : 0.05f*std::min(windowWidth,physicalHeight); }
+  float  edgeFeather() const { return edgeStyle==2 ? 0.026f*std::min(windowWidth,physicalHeight) : 0.f; }
+  float  cornerInset() const { return 0.2928932f*edgeRadius()+0.3535534f*edgeFeather(); } // diagonal at 50% coverage
   static float portalDistance(float fov) {
     return 0.675f/std::tan(fov*float(M_PI)/360.f); // half the reference window height, in metres
     }
@@ -1548,7 +1554,7 @@ void XrWindow::Impl::updateInput() {
   }
 
 V3 XrWindow::Impl::handleCenter() const {
-  return V3{0, -windowHeight()*0.5f - 0.05f, 0};
+  return V3{0, -windowHeight()*0.5f + edgeFeather()*0.5f - 0.05f, 0};
   }
 
 Grip XrWindow::Impl::targetAt(float x, float y) const {
@@ -1556,10 +1562,11 @@ Grip XrWindow::Impl::targetAt(float x, float y) const {
   const float halfH = windowHeight()*0.5f;
   // Corners: a hand-sized zone around each bottom corner, mostly outside the image
   const float zone = 0.10f;
-  if(cornersReady && std::abs(y+halfH)<zone) {
-    if(std::abs(x-halfW)<zone)
+  const float inset = cornerInset();
+  if(cornersReady && std::abs(y+halfH-inset)<zone) {
+    if(std::abs(x-halfW+inset)<zone)
       return Grip::CornerRight;
-    if(std::abs(x+halfW)<zone)
+    if(std::abs(x+halfW-inset)<zone)
       return Grip::CornerLeft;
     }
   const V3 hc = handleCenter();
@@ -1807,6 +1814,49 @@ bool XrWindow::beginFrame() {
     }
   submit(false);
   return false;
+  }
+
+void XrWindow::drawWindowEdges(Encoder<CommandBuffer>& cmd, bool motion) {
+  auto& s = *impl;
+  if(s.edgeStyle==0)
+    return;
+  if(s.edgeCoverage.isEmpty()) {
+    auto shader = [&](const char* name) {
+      const auto code = GothicShader::get(name);
+      return s.device->shader(code.data,code.len);
+      };
+    RenderState state;
+    state.setZWriteEnabled(false);
+    state.setCullFaceMode(RenderState::CullMode::NoCull);
+    state.setBlendSource(RenderState::BlendMode::OneMinusDstColor);
+    state.setBlendDest(RenderState::BlendMode::One);
+    s.edgeOpaque = s.device->pipeline(Triangles,state,shader("triangle.vert.sprv"),shader("window_opaque.frag.sprv"));
+    state.setBlendSource(RenderState::BlendMode::Zero);
+    state.setBlendDest(RenderState::BlendMode::SrcColor);
+    auto border = shader("window_edge.vert.sprv");
+    s.edgeCoverage = s.device->pipeline(Triangles,state,border,shader("window_edge.frag.sprv"));
+    state.setBlendSource(RenderState::BlendMode::One);
+    state.setBlendDest(RenderState::BlendMode::Zero);
+    state.setZWriteEnabled(true);
+    s.edgeMotion = s.device->pipeline(Triangles,state,border,shader("window_edge_motion.frag.sprv"));
+    }
+  // Both draws stay in the active eye colour pass. With source (0,0,0,1)
+  // the first blend gives RGB = dst.rgb and A = 1 - dst.a + dst.a.
+  cmd.setDebugMarker(motion ? "XR window edge motion" : "XR window edges");
+  if(!motion) {
+    cmd.setPipeline(s.edgeOpaque);
+    cmd.draw(nullptr,0,3);
+    }
+  const auto w = motion ? s.mvWidth : s.width;
+  const auto h = motion ? s.mvHeight : s.height;
+  struct Push {
+    Vec2 size, metresPerPixel;
+    float radius, feather;
+    } push{{s.windowWidth,s.windowHeight()},{s.windowWidth/float(w),s.windowHeight()/float(h)},
+           s.edgeRadius(),s.edgeFeather()};
+  cmd.setPipeline(motion ? s.edgeMotion : s.edgeCoverage);
+  cmd.setPushData(push);
+  cmd.draw(nullptr,0,6,0,4);
   }
 
 // Store straight RGB so the compositor applies coverage after decoding the sRGB swapchain.
@@ -2329,6 +2379,12 @@ bool XrWindow::submit(bool rendered) {
   XrCompositionLayerQuad quad[2] = {{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
   // SpaceWarp: the window as a projection layer with motion vectors and depth
   XrCompositionLayerProjection      proj = {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+  if(s.edgeStyle!=0) {
+    // The sRGB swapchain stores straight colour. Premultiply after the compositor's sRGB decode.
+    proj.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT | XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+    for(auto& q:quad)
+      q.layerFlags = proj.layerFlags;
+    }
   XrCompositionLayerSettingsFB filter = {XR_TYPE_COMPOSITION_LAYER_SETTINGS_FB};
   if(hasImage && s.hasWindowFilter && Gothic::settingsGetI("INTERNAL","xrWindowFilter")==1) {
     filter.layerFlags = XR_COMPOSITION_LAYER_SETTINGS_NORMAL_SUPER_SAMPLING_BIT_FB |
@@ -2446,7 +2502,8 @@ bool XrWindow::submit(bool rendered) {
       // The bracket's inner corner sits just outside the window corner
       const float sx = c==0 ? -1.f : 1.f;
       const float k  = sz*(44.f/64.f - 0.5f);   // bracket corner offset from the quad centre
-      const V3 at{sx*(halfW + 0.012f - k), -halfH - 0.012f + k, 0.002f};
+      const float inset = s.cornerInset();
+      const V3 at{sx*(halfW - inset + 0.012f - k), -halfH + inset - 0.012f + k, 0.002f};
       auto& q = corners[size_t(c)];
       q = {XR_TYPE_COMPOSITION_LAYER_QUAD};
       q.layerFlags               = chromeFlags;
@@ -2579,6 +2636,7 @@ bool      XrWindow::isSpaceWarpSupported() const { return false; }
 bool      XrWindow::isFoveationSupported() const { return false; }
 bool      XrWindow::isWindowFilterSupported() const { return false; }
 bool      XrWindow::isSurfaceLightSupported() const { return false; }
+void      XrWindow::drawWindowEdges(Tempest::Encoder<Tempest::CommandBuffer>&, bool) {}
 void      XrWindow::drawSurfaceLight(Renderer&, Tempest::Encoder<Tempest::CommandBuffer>&, bool) {}
 void      XrWindow::prepareLightingRate(Tempest::Encoder<Tempest::CommandBuffer>&, uint8_t, uint8_t, uint32_t, uint32_t) {}
 #endif

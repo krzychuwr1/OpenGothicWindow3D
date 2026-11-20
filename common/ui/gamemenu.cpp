@@ -410,6 +410,7 @@ void GameMenu::addXrVideoChoices(bool foveation, bool surfaceLight, bool windowF
     };
   const Choice choices[] = {
     {true,"MENUITEM_XR_RESIZE","Window resize","Scale picture|Show more","Choose what happens to the game view when resizing the window","xrResizeMode"},
+    {true,"MENUITEM_XR_EDGES","Window edges","Square|Rounded corners|Rounded, soft edge","Choose the outline of the game window","xrWindowEdges"},
     {true,"MENUITEM_XR_AA","Anti-aliasing","Off|CMAA2","Smooths edges in the game scene before drawing the interface","xrCmaa2"},
     {windowFilter,"MENUITEM_XR_FILTER","Window filtering","Default|Enhanced","Asks the headset to supersample and sharpen the window","xrWindowFilter"},
     {foveation,"MENUITEM_XR_FOVEATION","Foveation","Off|On","Shades peripheral lighting at lower detail around the direction your head faces","xrFoveation"},

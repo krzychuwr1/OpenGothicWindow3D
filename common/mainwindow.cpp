@@ -1736,6 +1736,8 @@ void MainWindow::renderFrame(bool xr) {
     timing.encStart += nowUs()-ts;
     renderer.draw(backbuf,enc,cmdId,uiMesh[cmdId],numMesh[cmdId],camera!=nullptr ? &eyeMesh[cmdId] : nullptr,inventory,video);
 #ifdef OPENGOTHIC_XR
+    if(xr)
+      XrWindow::inst()->drawWindowEdges(enc);
     if(xr && view==0)
       XrWindow::inst()->drawSurfaceLight(renderer,enc,stereo && !video.isActive() && Gothic::inst().worldView()!=nullptr);
     if(stereo) {
@@ -1743,8 +1745,10 @@ void MainWindow::renderFrame(bool xr) {
       auto* depth  = XrWindow::inst()->depthTarget (uint8_t(view));
       if(motion!=nullptr && depth!=nullptr) {
         const auto* counters = inventory.isOpen()!=InventoryMenu::State::Closed ? &numMesh[cmdId] : nullptr;
-        renderer.drawSpaceWarp(enc, *Gothic::inst().worldView(), *motion, *depth, uiMesh[cmdId], counters, hudReady,
-                               CommandLine::inst().debugShow("motion") ? &backbuf : nullptr);
+        auto* debug = CommandLine::inst().debugShow("motion") ? &backbuf : nullptr;
+        renderer.drawSpaceWarp(enc, *Gothic::inst().worldView(), *motion, *depth, uiMesh[cmdId], counters, hudReady,debug);
+        if(debug)
+          XrWindow::inst()->drawWindowEdges(enc);
         }
       }
 #endif
