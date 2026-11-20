@@ -180,3 +180,9 @@ Repeated the measurement in `NW_TAVERNE` at noon using the same two APKs and CPU
 When the runtime reported invalid eye positions, both eyes used the base game camera. The marker path depended on valid stereo and suppressed the name and melee bracket. The XR window now paints the overlay whenever it has a game camera and uses the second eye's shared render work even in the centered fallback.
 
 Tested a temporary Android build that forced eye position validity false, with SpaceWarp requested and combat active. Inspected 18 stereo PNG pairs (prefix `20261120-033348-006`). In pair 001 the centered "Wolf" label was visible in both eyes. RGB comparison showed identical pixels at its location and across the rest of the lower image. The frame used quads during the forced loss. The test switch is absent from the release source. No physical tracking interruption or held-input melee bracket was tested.
+
+### Failure handling in the owner's multiview measurement tool
+
+The optional `-skip mvtest` setup ignored image binding, command-buffer, fence and queue submission errors. A failed submission could leave the render thread waiting on a fence forever. Removed the setup submission. The measurement's first render clears colour and depth, so Tempest transitions all array layers from undefined layout on that clear. A failed bind now releases the image and memory. Borrowing failures release partial views before the native images. Device loss still propagates.
+
+A host harness injected 18 failures across three target allocations, heap selection, memory binding, view creation and device-loss exceptions. It checked release order and counts, retry, same-size reuse and shutdown. On Quest the existing experiment recorded repeated `GBuffer-multiview` GPU timestamps and completed the combat run; after cleanup the headset was 79% at 42.0 °C. The two offscreen array layers were not read back. Ordinary stereo rendering remains the default.

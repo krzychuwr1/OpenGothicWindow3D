@@ -2,12 +2,11 @@
 
 #include <Tempest/Log>
 
-#include <mutex>
-
 using namespace Tempest;
 
 #if defined(__ANDROID__) && defined(OPENGOTHIC_XR)
 #include <Tempest/VulkanInterop>
+#include <Tempest/Except>
 
 static VkFormat vkFormat(TextureFormat f) {
   switch(f) {
@@ -27,7 +26,7 @@ static bool isDepth(TextureFormat f) {
   return f==TextureFormat::Depth16 || f==TextureFormat::Depth24x8 || f==TextureFormat::Depth32F;
   }
 
-// Creates a two-layer image and moves it into the layout Tempest expects of lent images
+// The first pass clears all layers. Tempest transitions them from UNDEFINED on that clear.
 static bool create(const VulkanNativeContext& c, TextureFormat frm, uint32_t w, uint32_t h,
                    VkImage& img, VkDeviceMemory& mem) {
   const VkFormat f     = vkFormat(frm);
@@ -68,47 +67,11 @@ static bool create(const VulkanNativeContext& c, TextureFormat frm, uint32_t w, 
     img = VK_NULL_HANDLE;
     return false;
     }
-  vkBindImageMemory(c.device, img, mem, 0);
-
-  VkCommandPoolCreateInfo pi = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-  pi.queueFamilyIndex = c.queueFamily;
-  VkCommandPool pool = VK_NULL_HANDLE;
-  vkCreateCommandPool(c.device, &pi, nullptr, &pool);
-  VkCommandBufferAllocateInfo cai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-  cai.commandPool        = pool;
-  cai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  cai.commandBufferCount = 1;
-  VkCommandBuffer cb = VK_NULL_HANDLE;
-  vkAllocateCommandBuffers(c.device, &cai, &cb);
-  VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-  bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  vkBeginCommandBuffer(cb, &bi);
-  VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-  b.srcAccessMask       = 0;
-  b.dstAccessMask       = depth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-  b.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
-  b.newLayout           = depth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.image               = img;
-  b.subresourceRange    = {VkImageAspectFlags(depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, 1, 0, 2};
-  vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
-                       0, nullptr, 0, nullptr, 1, &b);
-  vkEndCommandBuffer(cb);
-
-  VkFenceCreateInfo fi = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-  VkFence fence = VK_NULL_HANDLE;
-  vkCreateFence(c.device, &fi, nullptr, &fence);
-  VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-  si.commandBufferCount = 1;
-  si.pCommandBuffers    = &cb;
-  {
-  std::lock_guard<std::mutex> guard(*c.queueLock);
-  vkQueueSubmit(c.queue, 1, &si, fence);
-  }
-  vkWaitForFences(c.device, 1, &fence, VK_TRUE, UINT64_MAX);
-  vkDestroyFence(c.device, fence, nullptr);
-  vkDestroyCommandPool(c.device, pool, nullptr);
+  if(vkBindImageMemory(c.device, img, mem, 0)!=VK_SUCCESS) {
+    vkDestroyImage(c.device, img, nullptr);
+    vkFreeMemory(c.device, mem, nullptr);
+    return false;
+    }
   return true;
   }
 
@@ -119,7 +82,8 @@ LayeredTargets::~LayeredTargets() {
 void LayeredTargets::release() {
   if(dev==nullptr)
     return;
-  dev->waitIdle();
+  if(w!=0)
+    dev->waitIdle();
   diffuse = Attachment();
   normal  = Attachment();
   depth   = ZBuffer();
@@ -131,6 +95,7 @@ void LayeredTargets::release() {
       vkFreeMemory(c.device, VkDeviceMemory(i.memory), nullptr);
     i = Img();
     }
+  dev = nullptr;
   w = h = 0;
   }
 
@@ -138,8 +103,8 @@ bool LayeredTargets::resize(Device& device, uint32_t nw, uint32_t nh, TextureFor
   if(nw==w && nh==h && frm[0]==d && frm[1]==n && frm[2]==z && dev==&device)
     return true;
   release();
-  dev = &device;
   auto c = vulkanNativeContext(device);
+  dev = &device;
   const TextureFormat f[3] = {d, n, z};
   for(int i=0; i<3; ++i) {
     VkImage        image  = VK_NULL_HANDLE;
@@ -152,9 +117,20 @@ bool LayeredTargets::resize(Device& device, uint32_t nw, uint32_t nh, TextureFor
     img[i].image  = uint64_t(image);
     img[i].memory = uint64_t(memory);
     }
-  diffuse = vulkanBorrowLayeredAttachment(device, VkImage(img[0].image), nw, nh, d, 2);
-  normal  = vulkanBorrowLayeredAttachment(device, VkImage(img[1].image), nw, nh, n, 2);
-  depth   = vulkanBorrowLayeredDepth     (device, VkImage(img[2].image), nw, nh, z, 2);
+  try {
+    diffuse = vulkanBorrowLayeredAttachment(device, VkImage(img[0].image), nw, nh, d, 2);
+    normal  = vulkanBorrowLayeredAttachment(device, VkImage(img[1].image), nw, nh, n, 2);
+    depth   = vulkanBorrowLayeredDepth     (device, VkImage(img[2].image), nw, nh, z, 2);
+    }
+  catch(const DeviceLostException&) {
+    release();
+    throw;
+    }
+  catch(const std::exception& e) {
+    Log::e("multiview: cannot borrow a two-layer target: ", e.what());
+    release();
+    return false;
+    }
   w = nw;
   h = nh;
   frm[0] = d; frm[1] = n; frm[2] = z;
