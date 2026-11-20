@@ -1,6 +1,8 @@
 # Quest audit on astra-audit
 
-## Ready for the owner
+## Owner test 1 (build 451b1154)
+
+The owner still saw substantial jitter during mouse turns with SpaceWarp, even though the app's camera-step measurements had improved. Enlarging the portal showed more scenery; the owner wanted the option to enlarge the picture at the same field of view. Surface light produced no visible illumination after being enabled. The owner also saw aliasing and asked for scene resolution, anti-aliasing and compositor filtering controls.
 
 The combined Quest build is installed. Load slot 10 and enable SpaceWarp in Video to try the changes.
 
