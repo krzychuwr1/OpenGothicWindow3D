@@ -61,13 +61,12 @@ Vertex pullVertex(uint bucketId, uint id) {
   }
 
 #if (MESH_TYPE==T_MORPH)
-vec3 morphOffset(uint bucketId, uint animPtr, uint vertexIndex) {
+vec3 morphOffset(uint bucketId, MorphDesc md, uint vertexIndex) {
 #if defined(BINDLESS)
   nonuniformEXT uint i = bucketId;
 #else
   const         uint i = 0;
 #endif
-  MorphDesc md        = pullMorphDesc(animPtr);
   vec2      ai        = unpackUnorm2x16(md.alpha16_intensity16);
   float     alpha     = ai.x;
   float     intensity = ai.y;
@@ -111,7 +110,7 @@ vec3 processVertexCommon(out Varyings shOut, in Vertex v, uint bucketId, uint in
   // Position offsets
 #if (MESH_TYPE==T_MORPH)
   for(int i=0; i<MAX_MORPH_LAYERS; ++i)
-    v.pos += morphOffset(bucketId, obj.animPtr+i, vboOffset);
+    v.pos += morphOffset(bucketId, pullMorphDesc(obj.animPtr+i), vboOffset);
 #endif
 
   // Normals
@@ -189,9 +188,12 @@ vec3 processVertexPrev(in Vertex v, uint bucketId, uint instanceId, uint vboOffs
 #endif
 
 #if (MESH_TYPE==T_MORPH)
-  // morph targets follow absolute time; the current offsets are used for both frames
-  for(int i=0; i<MAX_MORPH_LAYERS; ++i)
-    v.pos += morphOffset(bucketId, animPtr+i, vboOffset);
+  for(uint i=0; i<MAX_MORPH_LAYERS; ++i) {
+    const uint offset = (animPtr+i)*4;
+    const MorphDesc md = MorphDesc(instanceMemPrev[offset],   instanceMemPrev[offset+1],
+                                   instanceMemPrev[offset+2], instanceMemPrev[offset+3]);
+    v.pos += morphOffset(bucketId, md, vboOffset);
+    }
 #endif
   const vec3 normal = objMat*vec4(v.normal,0);
 #if (MESH_TYPE==T_SKINING)
