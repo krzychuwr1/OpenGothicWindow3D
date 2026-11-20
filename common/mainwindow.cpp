@@ -1403,8 +1403,7 @@ void MainWindow::render(){
       // only recording the eyes waits for the runtime's frame timing.
       // The game holds still while the headset is off or a system menu has the focus.
       const uint64_t tu = nowUs();
-      xr->pollEvents();
-      const bool focused = xr->isFocused();
+      const bool focused = xr->pollInputFocus();
 #if defined(__ANDROID__)
       AndroidApi::setExternalInputFocus(focused);
 #endif

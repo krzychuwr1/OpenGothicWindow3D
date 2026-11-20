@@ -361,3 +361,9 @@ The uninstrumented foveation release also completed a low-clock city combat run 
 ### Reserve the upload command before GPU submission
 
 Tempest’s asynchronous upload path grew its command recycling vector after the GPU accepted the submit. Allocation failure could destroy the command pool while its copy was pending. Tempest `ca6351ed` reserves capacity under the same lock as the insertion before submitting. A host harness injected the next allocation failure into the actual UploadEngine template. Old code submitted once and prematurely destroyed one command pool. New code failed before submit, accepted the next upload and recorded no early destruction. Android Release linked. Memory pressure was simulated on the host.
+
+### Retain a focus interruption across a single XR event drain
+
+If FOCUSED → VISIBLE → FOCUSED arrived before the next update, the old poller cleared the XR pad but reported only its final state. The game could treat a held control as physically released. The event drain now reports an interrupted focus interval, so the normal input cancellation runs once before a fresh sample. Frame begin/end and visibility still follow the actual session state.
+
+A host queue reproduced the lost interruption on old code and verified the corrected batched transition, ordinary loss/restore, and the next uninterrupted sample. A Quest probe injected both session events into the same poll while X was held. The game suppressed that update, inventory remained closed through release, and two fresh presses opened and closed inventory. The same run exercised the previous tracking fix with a synthetic pinch on the actual environment button: room → dusk, action/pose loss during the pinch, no change on reacquisition, then dusk → room on a fresh press. The isolated INI ended at `xrEnvironment=0`, the owner’s hash matched and the test file was removed. The game stopped at 87%, 40.0°C. No wearer or physical controller was involved.

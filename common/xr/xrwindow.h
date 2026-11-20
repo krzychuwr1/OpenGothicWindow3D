@@ -32,7 +32,8 @@ class XrWindow final {
     // Time spent waiting inside submit() since the previous report
     static std::string timingReport();
 
-    void              pollEvents();
+    // Poll session events. A focus interruption suppresses input for this update, even if focus returned.
+    bool              pollInputFocus();
     // Waits for the next display frame.
     // Returns true when the application should render and then call submit().
     bool              beginFrame();

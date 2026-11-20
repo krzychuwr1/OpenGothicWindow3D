@@ -228,7 +228,7 @@ struct XrWindow::Impl {
   void createSwapchains();
   void createPassthrough();
   void createActions();
-  void pollEvents();
+  bool pollEvents();
   void stopSession();
   bool sessionResult(XrResult result, const char* operation);
   void updateInput();
@@ -835,18 +835,20 @@ bool XrWindow::Impl::sessionResult(XrResult result, const char* operation) {
   return ok(result, operation);
   }
 
-void XrWindow::Impl::pollEvents() {
+bool XrWindow::Impl::pollEvents() {
+  bool interrupted = false;
   while(state!=XR_SESSION_STATE_EXITING) {
     XrEventDataBuffer ev = {XR_TYPE_EVENT_DATA_BUFFER};
     const XrResult result = xrPollEvent(instance, &ev);
     if(result!=XR_SUCCESS) {
       if(result!=XR_EVENT_UNAVAILABLE)
         sessionResult(result, "xrPollEvent");
-      return;
+      break;
       }
     switch(ev.type) {
       case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED: {
         auto& e = *reinterpret_cast<XrEventDataSessionStateChanged*>(&ev);
+        interrupted |= (state==XR_SESSION_STATE_FOCUSED && e.state!=XR_SESSION_STATE_FOCUSED);
         state = e.state;
         if(state!=XR_SESSION_STATE_FOCUSED)
           cancelInput();
@@ -886,6 +888,7 @@ void XrWindow::Impl::pollEvents() {
         break;
       }
     }
+  return interrupted;
   }
 
 void XrWindow::Impl::placeWindow() {
@@ -1218,10 +1221,11 @@ void XrWindow::prepareLightingRate(Encoder<CommandBuffer>& cmd, uint8_t slot, ui
   vulkanSetNextShadingRate(cmd,map.rate);
   }
 
-void XrWindow::pollEvents() {
-  impl->pollEvents();
+bool XrWindow::pollInputFocus() {
+  const bool interrupted = impl->pollEvents();
   if(!AndroidApi::activityResumed())
     impl->cancelInput();
+  return !interrupted && isFocused();
   }
 
 bool XrWindow::beginFrame() {
@@ -1822,7 +1826,7 @@ XrWindow::~XrWindow() = default;
 
 bool      XrWindow::preInit()  { return false; }
 XrWindow* XrWindow::inst()     { return nullptr; }
-void      XrWindow::pollEvents() {}
+bool      XrWindow::pollInputFocus() { return false; }
 void      XrWindow::attach(Tempest::Device&) {}
 Tempest::Size XrWindow::resolution() const { return Tempest::Size(0,0); }
 bool      XrWindow::beginFrame() { return false; }
