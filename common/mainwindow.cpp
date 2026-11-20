@@ -1716,12 +1716,15 @@ void MainWindow::renderFrame(bool xr) {
   const auto& cli = CommandLine::inst();
   const bool probeReady = xr && Gothic::inst().camera()!=nullptr && (startupDone || cli.startupCommands().empty());
   const bool frameMarker = probeReady && cli.debugShow("frameid");
+  static const bool traceFrameTiming = cli.debugShow("frametiming");
   if(probeReady && (cli.xrCaptureBurst()>0 || cli.xrTurnRate()!=0 || cli.xrWalkForward() ||
-                    cli.xrMouseRate()!=0.f || cli.xrStickX()!=0.f || frameMarker)) {
+                    cli.xrMouseRate()!=0.f || cli.xrStickX()!=0.f || frameMarker || traceFrameTiming)) {
     ++captureFrame;
-    if(captureFrame<=150) {
+    if(captureFrame<=150 || traceFrameTiming) {
       const auto v = Gothic::inst().camera()->view();
-      Log::i("XR trajectory ",captureFrame," gameMs=",lastTick," heading=",v.at(0,2),",",v.at(2,2)," displayMs=",XrWindow::inst()->predictedDisplayTime()/1000000," simMs=",frameClock.simulationMillis());
+      const auto target = XrWindow::inst()->predictedDisplayTime();
+      Log::i("XR trajectory ",captureFrame," gameMs=",lastTick," heading=",v.at(0,2),",",v.at(2,2),
+             " displayMs=",target/1000000," simMs=",frameClock.simulationMillis()," targetNs=",target);
       if(cli.xrWalkForward()) {
         if(auto* hero=Gothic::inst().player()) {
           const auto pos = hero->position();

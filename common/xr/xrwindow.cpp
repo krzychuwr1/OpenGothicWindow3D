@@ -129,6 +129,7 @@ struct XrWindow::Impl {
   bool                     permissionAsked = false, permissionGranted = false;
   bool                     permissionHintShown = false;
   bool                     traceSurface = CommandLine::inst().debugShow("surfacelight");
+  bool                     traceFrameTiming = CommandLine::inst().debugShow("frametiming");
   int                      tracedSurfaceSetting = -1;
   unsigned                 tracedProbeGate = ~0u;
   XrTime                   nextPermissionCheck = 0;
@@ -1840,9 +1841,12 @@ void XrWindow::drawSurfaceLight(Renderer& renderer, Encoder<CommandBuffer>& cmd,
   }
 
 int64_t XrWindow::nominalFramePeriod() const {
-  if(!(impl->refreshRate>=30.f && impl->refreshRate<=240.f))
-    return 0;
-  return int64_t(std::llround((impl->spaceWarpWanted ? 2e9 : 1e9)/double(impl->refreshRate)));
+  if(impl->refreshRate>=30.f && impl->refreshRate<=240.f)
+    return int64_t(std::llround((impl->spaceWarpWanted ? 2e9 : 1e9)/double(impl->refreshRate)));
+  // Core OpenXR reports the application frame period, including any runtime throttling.
+  // For a missing prediction the frame clock can still estimate from consecutive targets.
+  const auto period = impl->frame.predictedDisplayPeriod;
+  return period>0 && period<=100000000 ? period : 0;
   }
 
 int64_t XrWindow::predictedDisplayTime() const {
@@ -2605,6 +2609,17 @@ bool XrWindow::submit(bool rendered) {
   const uint64_t t0 = xrUs();
   const bool ended = s.sessionResult(xrEndFrame(s.session, &end), "xrEndFrame");
   tEndFrame += xrUs()-t0;
+  if(s.traceFrameTiming) {
+    const char* gameLayer = "none";
+    if(!ended)
+      gameLayer = "rejected";
+    else if(end.layerCount!=0 && hasImage)
+      gameLayer = warp ? "projection" : "quad";
+    Log::i("XR frame timing targetNs=",end.displayTime," displayMs=",end.displayTime/1000000,
+           " periodNs=",s.frame.predictedDisplayPeriod," refreshHz=",s.refreshRate," gameLayer=",gameLayer,
+           " layers=",end.layerCount," requestedWarp=",int(rendered && s.spaceWarpWanted),
+           " skip=",int(ended && end.layerCount!=0 && warp && s.skipExtrapolation));
+    }
   if(s.traceSurface && spill!=nullptr) {
     const auto& p=spill->pose.position;
     const auto& q=spill->pose.orientation;
