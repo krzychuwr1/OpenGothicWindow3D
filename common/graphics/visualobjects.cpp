@@ -543,7 +543,7 @@ void VisualObjects::preFrameUpdateMorph() {
       auto&    anim = (*bk.staticMesh->morph.anim)[ani.id];
       uint64_t time = (scene.tickCount-ani.timeStart);
 
-      float    alpha     = float(time%anim.tickPerFrame)/float(anim.tickPerFrame);
+      float    alpha     = anim.numFrames>1 ? float(time%anim.tickPerFrame)/float(anim.tickPerFrame) : 0.f;
       float    intensity = ani.intensity;
 
       if(scene.tickCount>ani.timeUntil) {
@@ -551,7 +551,7 @@ void VisualObjects::preFrameUpdateMorph() {
         continue;
         }
 
-      if(anim.numFrames>1)
+      if(anim.numFrames>1 || ani.timeUntil!=uint64_t(-1))
         reschedule = true;
 
       const uint32_t samplesPerFrame = uint32_t(anim.samplesPerFrame);
