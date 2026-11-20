@@ -391,12 +391,12 @@ void GameMenu::initItems() {
     }
 #ifdef OPENGOTHIC_XR
   if(auto* xr = XrWindow::inst())
-    addXrVideoChoices(xr->isFoveationSupported(),xr->isSurfaceLightSupported());
+    addXrVideoChoices(xr->isFoveationSupported(),xr->isSurfaceLightSupported(),xr->isWindowFilterSupported());
 #endif
   }
 
 #ifdef OPENGOTHIC_XR
-void GameMenu::addXrVideoChoices(bool foveation, bool surfaceLight) {
+void GameMenu::addXrVideoChoices(bool foveation, bool surfaceLight, bool windowFilter) {
   const auto end = std::end(hItems);
   auto device = std::find_if(std::begin(hItems),end,[](const Item& i){ return i.handle && i.name=="MENUITEM_VID_DEVICE"; });
   static const char* stock[] = {"MENUITEM_VID_DEVICE","MENUITEM_VID_DEVICE_CHOICE",
@@ -410,6 +410,8 @@ void GameMenu::addXrVideoChoices(bool foveation, bool surfaceLight) {
     };
   const Choice choices[] = {
     {true,"MENUITEM_XR_RESIZE","Window resize","Scale picture|Show more","Choose what happens to the game view when resizing the window","xrResizeMode"},
+    {true,"MENUITEM_XR_AA","Anti-aliasing","Off|CMAA2","Smooths edges in the game scene before drawing the interface","xrCmaa2"},
+    {windowFilter,"MENUITEM_XR_FILTER","Window filtering","Default|Enhanced","Asks the headset to supersample and sharpen the window","xrWindowFilter"},
     {foveation,"MENUITEM_XR_FOVEATION","Foveation","Off|On","Shades peripheral lighting at lower detail around the direction your head faces","xrFoveation"},
     {surfaceLight,"MENUITEM_XR_SURFACE_LIGHT","Surface light","Off|On","Spills the game's colours onto the table or floor below the window","xrSurfaceLight"},
     };
@@ -430,6 +432,10 @@ void GameMenu::addXrVideoChoices(bool foveation, bool surfaceLight) {
   // Insert each label directly before its choice for the normal EFFECTS
   // action and touch handling. Keep the stock heading, Back and help positions.
   Item* row = device+2;
+  row[0].handle->text[1] = "Sets the game scene resolution relative to the window resolution";
+  row[1].handle->on_chg_set_option_section = "INTERNAL";
+  row[1].handle->on_chg_set_option = "vidResIndex";
+  updateItem(row[1]);
   Item* insert = row+2;
   std::move_backward(insert,back+1,back+1+2*count);
   for(auto& choice:choices) {
@@ -1237,8 +1243,9 @@ void GameMenu::updateSavThumb(GameMenu::Item &sel) {
   }
 
 void GameMenu::updateVideo() {
-  set("MENUITEM_VID_RESOLUTION_CHOICE", "full|upscale(75%)|upscale(half)");
 #if defined(OPENGOTHIC_XR)
+  set("MENUITEM_VID_RESOLUTION", "Scene resolution");
+  set("MENUITEM_VID_RESOLUTION_CHOICE", "100%|75%|50%|125%|150%");
   if(auto* xr = XrWindow::inst(); xr!=nullptr && xr->isSpaceWarpSupported()) {
     for(auto& it:hItems) {
       if(it.handle==nullptr)
@@ -1256,6 +1263,8 @@ void GameMenu::updateVideo() {
       }
     return;
     }
+#else
+  set("MENUITEM_VID_RESOLUTION_CHOICE", "full|upscale(75%)|upscale(half)");
 #endif
   set("MENUITEM_VID_DEVICE_CHOICE", Resources::renderer());
   }

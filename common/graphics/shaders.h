@@ -82,6 +82,9 @@ class Shaders {
     Tempest::RenderPipeline  waterReflection, waterReflectionSSR;
 
     Tempest::RenderPipeline  tonemapping, tonemappingUpscale;
+#ifdef OPENGOTHIC_XR
+    Tempest::RenderPipeline  tonemappingDownscale, xrAaResolve;
+#endif
 
     // AA
     Tempest::ComputePipeline cmaa2EdgeColor2x2Presets[uint32_t(AaPreset::PRESETS_COUNT)];

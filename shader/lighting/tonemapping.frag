@@ -74,10 +74,30 @@ float luminance(vec3 rgb) {
   return dot(rgb, W);
   }
 
-void main() {
-  float exposure   = scene.exposure;
+#if defined(XR_DOWNSCALE) || defined(XR_AA_RESOLVE)
+vec3 downsampleWindow(vec2 uv) {
+  // Integrate four bilinear samples across the output pixel's footprint.
+  // The largest supported reduction is 1.5 scene texels per output pixel.
+  vec2 d = 0.25 * fwidth(uv);
+  return 0.25 * (textureLod(textureD, uv + vec2(-d.x, -d.y), 0).rgb +
+                 textureLod(textureD, uv + vec2( d.x, -d.y), 0).rgb +
+                 textureLod(textureD, uv + vec2(-d.x,  d.y), 0).rgb +
+                 textureLod(textureD, uv + vec2( d.x,  d.y), 0).rgb);
+  }
+#endif
 
-#if defined(UPSCALE)
+void main() {
+#if defined(XR_AA_RESOLVE)
+  // CMAA2 already tone-mapped each corrected scene pixel.
+  if(fwidth(uv.x) * float(textureSize(textureD, 0).x) > 1.0)
+    outColor = vec4(downsampleWindow(uv), 1);
+  else
+    outColor = vec4(lanczosUpscale(textureD, uv), 1);
+#else
+  float exposure   = scene.exposure;
+#if defined(XR_DOWNSCALE)
+  vec3  color      = downsampleWindow(uv);
+#elif defined(UPSCALE)
   vec3  color      = lanczosUpscale(textureD, uv).rgb;
 #else
   vec3  color      = textureLod(textureD, uv, 0).rgb;
@@ -106,4 +126,5 @@ void main() {
   color    = gameTonemap(color, push.settings);
   color   += dither(gl_FragCoord.xy, TONEMAP_DITHER_TARGET_BITS); 
   outColor = vec4(color, 1.0);
+#endif
   }

@@ -223,6 +223,10 @@ void Shaders::compileShaders() noexcept {
 
   tonemapping        = postEffect("triangle_uv", "tonemapping",    RenderState::ZTestMode::Always);
   tonemappingUpscale = postEffect("triangle_uv", "tonemapping_up", RenderState::ZTestMode::Always);
+#ifdef OPENGOTHIC_XR
+  tonemappingDownscale = postEffect("triangle_uv", "tonemapping_down", RenderState::ZTestMode::Always);
+  xrAaResolve = postEffect("triangle_uv", "xr_aa_resolve", RenderState::ZTestMode::Always);
+#endif
 
   cmaa2EdgeColor2x2Presets[uint32_t(AaPreset::OFF)]    = Tempest::ComputePipeline();
   cmaa2EdgeColor2x2Presets[uint32_t(AaPreset::MEDIUM)] = computeShader("cmaa2_edges_color2x2_quality_0.comp.sprv");

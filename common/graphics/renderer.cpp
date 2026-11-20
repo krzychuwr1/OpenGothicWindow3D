@@ -190,6 +190,9 @@ void Renderer::setupSettings() {
 
   settings.vidResIndex = Gothic::settingsGetF("INTERNAL","vidResIndex");
   settings.aaEnabled   = (Shaders::options().aaPreset>0) && (settings.vidResIndex==0);
+#ifdef OPENGOTHIC_XR
+  settings.aaEnabled |= Gothic::settingsGetI("INTERNAL","xrCmaa2")!=0;
+#endif
 
   // direct lighting
   if(settings.rtsmEnabled)
@@ -422,6 +425,10 @@ Renderer::ViewportBuffers Renderer::makeViewport(Size res, Size fullRes, bool aa
   out.linear = device.attachment(TextureFormat::R11G11B10UF,w,h);
 
   if(aa) {
+#ifdef OPENGOTHIC_XR
+    if(res!=fullRes)
+      out.aa.resolved = device.attachment(TextureFormat::RGBA8,w,h);
+#endif
     out.aa.workingEdges               = device.image2d(TextureFormat::R8, (w + 1) / 2, h);
     out.aa.shapeCandidates            = device.ssbo(Tempest::Uninitialized, w * h / 4 * sizeof(uint32_t));
     out.aa.deferredBlendLocationList  = device.ssbo(Tempest::Uninitialized, (w * h + 3) / 6 * sizeof(uint32_t));
@@ -758,7 +765,7 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
   shaders.waitCompiler();
 
   const auto res = internalResolution(result.size());
-  if(res!=zbuffer.size()) {
+  if(res!=zbuffer.size() || settings.aaEnabled!=!cmaa2.workingEdges.isEmpty()) {
     resetViewport(res, result.size());
     }
 
@@ -950,21 +957,26 @@ void Renderer::drawTonemapping(Attachment& result, Encoder<CommandBuffer>& cmd, 
   if(mul>0)
     p.mul = mul;
 
-  auto& pso = (settings.vidResIndex==0) ? shaders.tonemapping : shaders.tonemappingUpscale;
+  const bool scaled = sceneLinear.size()!=result.size();
+  auto* pso = scaled ? &shaders.tonemappingUpscale : &shaders.tonemapping;
+#ifdef OPENGOTHIC_XR
+  if(sceneLinear.w()>result.w())
+    pso = &shaders.tonemappingDownscale;
+#endif
   cmd.setFramebuffer({ {result, Tempest::Discard, Tempest::Preserve} });
   cmd.setBinding(0, wview.sceneGlobals().uboGlobal[SceneGlobals::V_Main]);
   // This Lanczos implementation pairs adjacent weights using bilinear sampling.
   // Keep nearest sampling at native resolution.
-  const auto sampler = settings.vidResIndex==0 ? Sampler::nearest(ClampMode::ClampToEdge) :
-                                               Sampler::bilinear(ClampMode::ClampToEdge);
+  const auto sampler = scaled ? Sampler::bilinear(ClampMode::ClampToEdge) : Sampler::nearest(ClampMode::ClampToEdge);
   cmd.setBinding(1, sceneLinear, sampler);
   cmd.setPushData(p);
-  cmd.setPipeline(pso);
+  cmd.setPipeline(*pso);
   cmd.draw(nullptr, 0, 3);
   }
 
 void Renderer::drawCMAA2(Tempest::Attachment& result, Tempest::Encoder<Tempest::CommandBuffer>& cmd, const WorldView& wview) {
-  auto&          pso             = shaders.cmaa2EdgeColor2x2Presets[Shaders::options().aaPreset];
+  const uint32_t preset          = std::max(uint32_t(AaPreset::MEDIUM), Shaders::options().aaPreset);
+  auto&          pso             = shaders.cmaa2EdgeColor2x2Presets[preset];
   const IVec3    inputGroupSize  = pso.workGroupSize();
   const IVec3    outputGroupSize = inputGroupSize - IVec3(2, 2, 0);
   const uint32_t groupCountX     = uint32_t((sceneLinear.w() + outputGroupSize.x * 2 - 1) / (outputGroupSize.x * 2));
@@ -1005,12 +1017,18 @@ void Renderer::drawCMAA2(Tempest::Attachment& result, Tempest::Encoder<Tempest::
   if(mul>0)
     p.mul = mul;
 
-  auto& psoTone = (settings.vidResIndex==0) ? shaders.tonemapping : shaders.tonemappingUpscale;
-  cmd.setFramebuffer({{result, Tempest::Discard, Tempest::Preserve}});
+  // The deferred point pass addresses exact scene pixels. Apply it at scene
+  // resolution before sampling the finished image into the eye swapchain.
+  auto* target = &result;
+#ifdef OPENGOTHIC_XR
+  if(!cmaa2.resolved.isEmpty())
+    target = &cmaa2.resolved;
+#endif
+  cmd.setFramebuffer({{*target, Tempest::Discard, Tempest::Preserve}});
   cmd.setBinding(0, wview.sceneGlobals().uboGlobal[SceneGlobals::V_Main]);
   cmd.setBinding(1, sceneLinear, Sampler::nearest());
   cmd.setPushData(&p, sizeof(p));
-  cmd.setPipeline(psoTone);
+  cmd.setPipeline(shaders.tonemapping);
   cmd.draw(nullptr, 0, 3);
 
   cmd.setBinding(0, sceneLinear);
@@ -1023,6 +1041,15 @@ void Renderer::drawCMAA2(Tempest::Attachment& result, Tempest::Encoder<Tempest::
   cmd.setPushData(&p, sizeof(p));
   cmd.setPipeline(shaders.cmaa2DeferredColorApply2x2);
   cmd.drawIndirect(cmaa2.indirectBuffer, 3*sizeof(uint32_t));
+#ifdef OPENGOTHIC_XR
+  if(target!=&result) {
+    cmd.setFramebuffer({{result, Tempest::Discard, Tempest::Preserve}});
+    cmd.setBinding(0, wview.sceneGlobals().uboGlobal[SceneGlobals::V_Main]);
+    cmd.setBinding(1, *target, Sampler::bilinear(ClampMode::ClampToEdge));
+    cmd.setPipeline(shaders.xrAaResolve);
+    cmd.draw(nullptr, 0, 3);
+    }
+#endif
   }
 
 void Renderer::drawFog(Tempest::Encoder<Tempest::CommandBuffer>& cmd, const WorldView& wview) {
@@ -3310,6 +3337,12 @@ Tempest::Attachment Renderer::screenshoot(uint8_t frameId, Tempest::Size size) {
   }
 
 float Renderer::internalResolutionScale() const {
+#ifdef OPENGOTHIC_XR
+  if(settings.vidResIndex==3)
+    return 1.25f;
+  if(settings.vidResIndex==4)
+    return 1.5f;
+#endif
   if(settings.vidResIndex==0)
     return 1;
   if(settings.vidResIndex==1)
@@ -3318,10 +3351,7 @@ float Renderer::internalResolutionScale() const {
   }
 
 Size Renderer::internalResolution(Tempest::Size src) const {
-  if(settings.vidResIndex==0)
-     return src;
-  if(settings.vidResIndex==1)
-    return Size(3*src.w/4, 3*src.h/4);
-  return Size(src.w/2, src.h/2);
+  const float scale = internalResolutionScale();
+  return Size(std::max(1,int(float(src.w)*scale)), std::max(1,int(float(src.h)*scale)));
   }
 

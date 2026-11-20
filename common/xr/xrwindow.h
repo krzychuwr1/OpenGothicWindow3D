@@ -53,6 +53,7 @@ class XrWindow final {
     bool              isSpaceWarpSupported() const;
 #ifdef OPENGOTHIC_XR
     bool              isFoveationSupported() const;
+    bool              isWindowFilterSupported() const;
     bool              isSurfaceLightSupported() const;
     void              drawSurfaceLight(Renderer& renderer, Tempest::Encoder<Tempest::CommandBuffer>& cmd, bool sceneReady);
     void              prepareLightingRate(Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t slot,

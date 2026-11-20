@@ -139,6 +139,7 @@ struct XrWindow::Impl {
   bool                     hasHandInteraction = false;
   bool                     hasPerfSettings    = false;
   bool                     hasSpaceWarp       = false;
+  bool                     hasWindowFilter    = false;
   float                    refreshRate = 0.f;
   PFN_xrGetDisplayRefreshRateFB xrGetRate = nullptr;
   PFN_xrPerfSettingsSetPerformanceLevelEXT xrSetPerfLevel = nullptr;
@@ -426,6 +427,9 @@ bool XrWindow::Impl::createInstance() {
   hasSpaceWarp       = has(XR_FB_SPACE_WARP_EXTENSION_NAME);
   if(hasSpaceWarp)
     ext.push_back(XR_FB_SPACE_WARP_EXTENSION_NAME);
+  hasWindowFilter = has(XR_FB_COMPOSITION_LAYER_SETTINGS_EXTENSION_NAME);
+  if(hasWindowFilter)
+    ext.push_back(XR_FB_COMPOSITION_LAYER_SETTINGS_EXTENSION_NAME);
   if(hasPerfSettings)
     ext.push_back(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
   if(hasPassthrough)
@@ -1633,6 +1637,10 @@ bool XrWindow::eyeView(uint8_t eye, float verticalFovDeg, Camera::EyeView& out) 
   return true;
   }
 
+bool XrWindow::isWindowFilterSupported() const {
+  return impl->hasWindowFilter;
+  }
+
 bool XrWindow::isFoveationSupported() const {
   return impl->rateTexel.width!=0;
   }
@@ -2321,6 +2329,14 @@ bool XrWindow::submit(bool rendered) {
   XrCompositionLayerQuad quad[2] = {{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
   // SpaceWarp: the window as a projection layer with motion vectors and depth
   XrCompositionLayerProjection      proj = {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+  XrCompositionLayerSettingsFB filter = {XR_TYPE_COMPOSITION_LAYER_SETTINGS_FB};
+  if(hasImage && s.hasWindowFilter && Gothic::settingsGetI("INTERNAL","xrWindowFilter")==1) {
+    filter.layerFlags = XR_COMPOSITION_LAYER_SETTINGS_NORMAL_SUPER_SAMPLING_BIT_FB |
+                        XR_COMPOSITION_LAYER_SETTINGS_NORMAL_SHARPENING_BIT_FB;
+    proj.next = &filter;
+    for(auto& q:quad)
+      q.next = &filter;
+    }
   XrCompositionLayerProjectionView  pv[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
   XrCompositionLayerSpaceWarpInfoFB sw[2] = {{XR_TYPE_COMPOSITION_LAYER_SPACE_WARP_INFO_FB},{XR_TYPE_COMPOSITION_LAYER_SPACE_WARP_INFO_FB}};
   if(warp) {
@@ -2561,6 +2577,7 @@ bool      XrWindow::submit(bool) { return false; }
 bool      XrWindow::isSpaceWarpSupported() const { return false; }
 #ifdef OPENGOTHIC_XR
 bool      XrWindow::isFoveationSupported() const { return false; }
+bool      XrWindow::isWindowFilterSupported() const { return false; }
 bool      XrWindow::isSurfaceLightSupported() const { return false; }
 void      XrWindow::drawSurfaceLight(Renderer&, Tempest::Encoder<Tempest::CommandBuffer>&, bool) {}
 void      XrWindow::prepareLightingRate(Tempest::Encoder<Tempest::CommandBuffer>&, uint8_t, uint8_t, uint32_t, uint32_t) {}

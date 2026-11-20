@@ -270,6 +270,9 @@ class Renderer final {
       } ssao;
 
     struct Cmaa2 {
+#ifdef OPENGOTHIC_XR
+      Tempest::Attachment       resolved;
+#endif
       Tempest::StorageImage     workingEdges;
       Tempest::StorageBuffer    shapeCandidates;
       Tempest::StorageBuffer    deferredBlendLocationList;
