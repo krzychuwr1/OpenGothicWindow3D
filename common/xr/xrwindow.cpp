@@ -1667,6 +1667,13 @@ void XrWindow::Impl::locateEyes() {
   const XrQuaternionf inv = conjugate(windowPose.orientation);
   for(int i=0; i<2; ++i)
     eyeInWindow[i] = rotate(inv, toV3(views[i].pose.position) - toV3(windowPose.position));
+  // Inject a known render-to-present position difference on a stationary headset.
+  // The runtime still tracks the real eyes, and the window stays anchored in LOCAL.
+  static const float testOffsetX = float(std::clamp(Gothic::settingsGetI("BENCHMARK","xrEyeOffsetMm"),-30,30))*0.001f;
+  if(testOffsetX!=0.f) {
+    for(auto& eye:eyeInWindow)
+      eye.x += testOffsetX;
+    }
 
   // The same view as a projection layer: from the eye, facing the window plane, with an
   // asymmetric field of view that frames exactly the window rectangle (used with SpaceWarp)
