@@ -94,6 +94,24 @@ static V3 toWorld(const XrPosef& pose, const V3& p) {
   return toV3(pose.position) + rotate(pose.orientation, p);
   }
 
+// Minimum signed distance in metres from the rectangular aperture to each native
+// FOV side plane (left, right, down, up). All four margins >= 0 means fully inside.
+static std::array<float,4> windowFovMargins(const XrView& view, const XrPosef& window, float w, float h) {
+  const auto& f = view.fov;
+  const V3 normals[] = {{std::cos(f.angleLeft), 0, std::sin(f.angleLeft)},
+                        {-std::cos(f.angleRight), 0, -std::sin(f.angleRight)},
+                        {0, std::cos(f.angleDown), std::sin(f.angleDown)},
+                        {0, -std::cos(f.angleUp), -std::sin(f.angleUp)}};
+  const V3 eye = toLocal(window,toV3(view.pose.position));
+  std::array<float,4> margins;
+  for(size_t i=0; i<margins.size(); ++i) {
+    const V3 n = rotate(conjugate(window.orientation),rotate(view.pose.orientation,normals[i]));
+    // In window space the corner furthest outside minimizes the dot product with n.
+    margins[i] = -dot(eye,n) - 0.5f*(w*std::abs(n.x) + h*std::abs(n.y));
+    }
+  return margins;
+  }
+
 // Parts of the window frame a hand can grab
 enum class Grip : uint8_t { None, Handle, CornerLeft, CornerRight, Environment, Dim };
 
@@ -130,6 +148,7 @@ struct XrWindow::Impl {
   bool                     permissionHintShown = false;
   bool                     traceSurface = CommandLine::inst().debugShow("surfacelight");
   bool                     traceFrameTiming = CommandLine::inst().debugShow("frametiming");
+  bool                     traceWindowTracking = CommandLine::inst().debugShow("windowtracking");
   int                      tracedSurfaceSetting = -1;
   unsigned                 tracedProbeGate = ~0u;
   XrTime                   nextPermissionCheck = 0;
@@ -1660,8 +1679,23 @@ void XrWindow::Impl::locateEyes() {
   XrViewState st = {XR_TYPE_VIEW_STATE};
   XrView      views[2] = {{XR_TYPE_VIEW},{XR_TYPE_VIEW}};
   uint32_t    count = 0;
-  eyesValid = XR_SUCCEEDED(xrLocateViews(session, &info, &st, 2, &count, views)) && count==2 &&
+  const XrResult result = xrLocateViews(session, &info, &st, 2, &count, views);
+  eyesValid = XR_SUCCEEDED(result) && count==2 &&
               (st.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT);
+  if(traceWindowTracking) {
+    const auto flags = XR_SUCCEEDED(result) ? st.viewStateFlags : XrViewStateFlags(0);
+    Log::i("XR window tracking targetNs=",info.displayTime," result=",int(result)," flags=",uint32_t(flags),
+           " views=",XR_SUCCEEDED(result) ? count : 0u," placed=",int(placed));
+    if(eyesValid && (flags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) && placed) {
+      for(uint32_t i=0; i<count; ++i) {
+        const auto& p = views[i].pose.position;
+        const auto& q = views[i].pose.orientation;
+        const auto m = windowFovMargins(views[i],windowPose,windowWidth,windowHeight());
+        Log::i("XR window eye targetNs=",info.displayTime," eye=",i," localM=",p.x,",",p.y,",",p.z,
+               " quatXYZW=",q.x,",",q.y,",",q.z,",",q.w," marginsLRDUM=",m[0],",",m[1],",",m[2],",",m[3]);
+        }
+      }
+    }
   if(!eyesValid)
     return;
   const XrQuaternionf inv = conjugate(windowPose.orientation);
