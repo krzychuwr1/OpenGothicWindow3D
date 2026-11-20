@@ -113,6 +113,7 @@ InstanceStorage::InstanceStorage() {
   }
 
 InstanceStorage::~InstanceStorage() {
+  join();
   {
     std::unique_lock<std::mutex> lck(sync);
     uploadFId = Resources::MaxFramesInFlight;
@@ -221,11 +222,8 @@ bool InstanceStorage::commit(Encoder<CommandBuffer>& cmd, uint8_t fId) {
   }
 
 void InstanceStorage::join() {
-  while(true) {
-    std::unique_lock<std::mutex> lck(sync);
-    if(uploadFId<0)
-      break;
-    }
+  std::unique_lock<std::mutex> lck(sync);
+  uploadCnd.wait(lck, [this] { return uploadFId<0; });
   }
 
 InstanceStorage::Id InstanceStorage::alloc(const size_t size) {
@@ -321,13 +319,12 @@ void InstanceStorage::uploadMain() {
   Workers::setThreadName("InstanceStorage upload");
   while(true) {
     std::unique_lock<std::mutex> lck(sync);
-    uploadCnd.wait(lck);
+    uploadCnd.wait(lck, [this] { return uploadFId>=0; });
     if(uploadFId==Resources::MaxFramesInFlight)
       break;
-    if(uploadFId<0)
-      continue;
 
     patchGpu[uploadFId].update(patchCpu);
     uploadFId = -1;
+    uploadCnd.notify_all();
     }
   }

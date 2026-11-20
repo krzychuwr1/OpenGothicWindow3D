@@ -30,6 +30,8 @@ The far shadow cascade baked movable props into a cache keyed only by the light 
 
 The fence, command buffer, particle, UI, light-list, instance patch and deferred-release arrays examined use `Resources::MaxFramesInFlight`. The fence precedes slot reuse. The second eye still runs shadow visibility work for cascades it does not draw. Skipping those dispatches is an unmeasured optimisation candidate.
 
+The instance upload worker, used by the stereo frame loop, could sleep past a queued frame slot or shutdown request if the notification arrived before its first wait. Its caller then spun or hung while joining. Both sides now wait on the slot state under the same mutex, and destruction finishes a pending upload before requesting exit. A host harness ran the production synchronization methods with a gated worker and mock upload buffers. It completed 4,097 uploads across four slots, including an upload queued before the worker started and another pending at destruction. It also completed shutdown requested before the worker's first wait. The Quest APK linked successfully.
+
 ## NPC animation
 
 The world stores NPCs in a vector which it sorts by handle and erases from during play. Its separate array of accumulated animation times stayed in the old order. A removal or sort could give one character another character's elapsed time. Quest now keeps the accumulator on the NPC itself and staggers distant updates by stable NPC handle. Non-XR builds use the original per-frame update. Save formats are unchanged.
