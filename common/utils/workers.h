@@ -39,7 +39,12 @@ class Workers final {
     static uint8_t maxThreads();
 
   private:
+#if defined(__ANDROID__) && defined(OPENGOTHIC_XR)
+    // The Quest job limit also bounds how many waiting threads a job wakes.
+    enum { MAX_THREADS=3 };
+#else
     enum { MAX_THREADS=16 };
+#endif
 
     void            threadFunc(size_t id);
     void            execWork(uint32_t& minWorkSize);

@@ -684,3 +684,18 @@ A failed optional action creation left its handle in both binding lists. An inva
 A host runtime injected errors into action creation, path conversion, attachment and one hand's pose space, including failed calls that modified their output. The previous code failed 27 of 75 checks. The new code passed all 75. Android and Windows Release linked.
 
 On Quest a diagnostic build rejected only the near-touch action at startup. The real runtime accepted 15 Touch bindings and four hand bindings, created both aim spaces and completed all five sampled action syncs. The SpaceWarp city run reported 36.7 fps at CPU 1 / GPU 0. A separate ordinary stereo run rejected action-set attachment in the process. The log recorded zero sync calls and three compositor captures showed native gamepad X opening and closing inventory. It ended at 97% and 42.0 °C, stopped and released to sleep. The failure injection did not simulate a physical user's aim or pinch.
+
+### Match the Quest worker pool to its existing three-worker limit
+
+Quest reported a three-worker limit but still created sixteen threads and woke the full pool when dispatching jobs. The Android XR pool now starts three. Its job partitioning and the desktop pool size are unchanged. A host fixture running the production worker code counted sixteen versus three OS threads and passed all 656 job and shutdown checks on each build, including explicit tasks outnumbering the pool.
+
+City main street, ordinary stereo, CPU 1 / GPU 0, 14 VrApi samples and the last four complete CPU/GPU reports per run.
+
+| Run | Update ms | Animation ms | Game tick ms | Stereo record ms | GPU ms/eye | FPS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Control 1 | 4.787 | 1.590 | 3.127 | 5.476 | 7.980 | 60.7 |
+| Trial 1 | 4.567 | 1.409 | 3.096 | 5.485 | 7.975 | 61.1 |
+| Trial 2 | 4.580 | 1.433 | 3.084 | 5.521 | 7.983 | 61.0 |
+| Control 2 | 4.761 | 1.576 | 3.114 | 5.520 | 8.003 | 60.7 |
+
+Mean CPU update fell by 0.201 ms/frame, including 0.162 ms in animation. Mean recording rose by 0.005 ms. Both trials beat both controls on update time. This comparison covers the city at low clocks. The final control ended stopped and released to sleep at 95% and 42.0 °C.
