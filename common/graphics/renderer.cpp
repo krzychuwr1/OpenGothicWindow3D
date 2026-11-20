@@ -2115,17 +2115,22 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
     return true;
 
   // tile table: (offset, count), offsets past the table
-  lightTiles.assign(tiles*2, 0);
+  // Count a whole horizontal interval with two endpoints. The extra cell
+  // holds the closing endpoint of a span that reaches the final tile.
+  lightTiles.assign((tiles+1)*2, 0);
   for(const auto& r:rects)
     for(uint32_t z=r.z0; z<=r.z1; ++z)
-      for(uint32_t y=r.y0; y<=r.y1; ++y)
-        for(uint32_t x=r.x0; x<=r.x1; ++x)
-          lightTiles[(z*sliceStride+y*tilesX+x)*2+1]++;
+      for(uint32_t y=r.y0; y<=r.y1; ++y) {
+        const uint32_t row = z*sliceStride+y*tilesX;
+        ++lightTiles[(row+r.x0)*2+1];
+        --lightTiles[(row+r.x1+1)*2+1];
+        }
 
-  uint32_t at = uint32_t(tiles*2);
+  uint32_t at = uint32_t(tiles*2), count = 0;
   for(size_t t=0; t<tiles; ++t) {
+    count += lightTiles[t*2+1];
     lightTiles[t*2+0] = at;
-    at += lightTiles[t*2+1];
+    at += count;
     lightTiles[t*2+1] = 0;
     }
   lightTiles.resize(at);
