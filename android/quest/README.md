@@ -66,6 +66,11 @@ The Quest build starts with lighter graphics than the PC version (3D at 75% reso
 sunshafts, screen-space reflections or SSAO, 1024 shadow maps); the in-game video options still
 change them. Settings and saves stay in the app's own storage.
 
+**Application SpaceWarp** (Video settings, experimental, Off by default): the game renders every
+other display frame and the headset synthesises the rest from motion vectors and depth, so motion
+in the window looks like 72 fps while the game runs at 36. Details and limitations are in
+[EXPERIMENTS.md](EXPERIMENTS.md).
+
 ## Build from source
 
 Requirements: Android SDK with build-tools and a platform of API 34 or newer, NDK 27 or newer,
@@ -94,6 +99,7 @@ Arguments for the Quest build are read from `/sdcard/OpenGothic/args.txt` (white
 | `-gpuprofile` | Log GPU time per render pass and CPU time per frame phase every 3 s |
 | `-perf low` | Request the lowest CPU/GPU levels (unattended tests) |
 | `-skip sun,ambient,lights,sky,tiled` | Leave lighting parts out, or use per-light volumes instead of tiles (profiling) |
+| `-setting SECTION KEY VALUE` | Override a setting for this run only, e.g. `-setting INTERNAL xrSpaceWarp 1` |
 
 `tools/bench-quest.ps1 -Waypoint <name>` runs a repeatable scene with these options and prints the
 runtime's frame statistics and the game's breakdown.
