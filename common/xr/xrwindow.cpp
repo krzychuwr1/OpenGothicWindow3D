@@ -251,6 +251,20 @@ struct XrWindow::Impl {
   bool                     curveReady = false, curved = false;
   int                      curveLevel = 0;               // 0 flat, 1 slight, 2 strong
   bool                     sceneShown = false;
+  // The buttons below the handle appear when the handle (or one of them) is pointed at, and
+  // fade out five seconds after the last time anything there was pointed at
+  bool                     hasColorScale = false;
+  XrTime                   lastChromeHover = 0;
+  static constexpr XrTime  ChromeLinger = 5000000000, ChromeFade = 500000000;
+  float chromeReveal() const {
+    if(lastChromeHover==0)
+      return 0.f;
+    const XrTime age = frame.predictedDisplayTime-lastChromeHover;
+    if(age<=ChromeLinger-ChromeFade)
+      return 1.f;
+    return std::clamp(float(ChromeLinger-age)/float(ChromeFade), 0.f, 1.f);
+    }
+  bool chromeShown() const { return chromeReveal()>0.f; }
   // Ghost hands and pointer rays
   bool                     hasHandTracking = false;
   PFN_xrCreateHandTrackerEXT  xrCreateHandTracker = nullptr;
@@ -561,6 +575,9 @@ bool XrWindow::Impl::createInstance() {
     ext.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
   if(hasHandInteraction)
     ext.push_back(XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
+  hasColorScale = has(XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME);
+  if(hasColorScale)
+    ext.push_back(XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME);
   hasHandTracking = has(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
   if(hasHandTracking)
     ext.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
@@ -1105,7 +1122,7 @@ void XrWindow::Impl::saveDim() {
 
 int XrWindow::Impl::sliderRow() const {
   // Dimming applies to passthrough only: hidden in VR mode
-  if(!sliderReady || !dimStyleAvailable || !roomAvailable() || immersive || lastDimHover==0)
+  if(!sliderReady || !dimStyleAvailable || !roomAvailable() || immersive || lastDimHover==0 || !chromeShown())
     return -1;
   // Keep the slider within reach when a ray crosses the gap beside the button.
   const XrDuration age = frame.predictedDisplayTime-lastDimHover;
@@ -1799,6 +1816,14 @@ void XrWindow::Impl::updateInput() {
       }
     }
 
+  for(size_t i=0; i<hands.size(); ++i) {
+    const Grip g = hands[i].hover;
+    if(g==Grip::Handle || g==Grip::Environment || g==Grip::Dim || g==Grip::Aspect || g==Grip::Curve || g==Grip::Hands)
+      lastChromeHover = frame.predictedDisplayTime;
+    }
+  if(grabbed!=Grip::None && grabbed!=Grip::CornerLeft && grabbed!=Grip::CornerRight)
+    lastChromeHover = frame.predictedDisplayTime;
+
   // Ghost hands and rays: always, or (auto) after three quiet seconds of keyboard, mouse and
   // pad with a hand raised above table height
   handCapsules.clear();
@@ -1941,6 +1966,8 @@ Grip XrWindow::Impl::targetAt(float x, float y) const {
   const V3 hc = handleCenter();
   if(handleReady && std::abs(x-hc.x)<0.16f*k && std::abs(y-hc.y)<0.045f*k)
     return Grip::Handle;
+  if(!chromeShown())
+    return Grip::None;
   const V3 palm = handsCenter();
   if(handsButtonReady && std::abs(x-palm.x)<0.05f*k && std::abs(y-palm.y)<0.04f*k)
     return Grip::Hands;
@@ -3170,8 +3197,14 @@ bool XrWindow::submit(bool rendered) {
   // Frame parts: the grab handle, and the resize bracket of a corner a hand is reaching for
   constexpr XrCompositionLayerFlags chromeFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
                                                XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+  const float reveal = s.chromeReveal();
+  XrCompositionLayerColorScaleBiasKHR fade = {XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR};
+  fade.colorScale = {1.f,1.f,1.f,reveal};
+  const void* fadeNext = s.hasColorScale && reveal<1.f ? &fade : nullptr;
+  const bool showButtons = hasImage && reveal>0.f;
   XrCompositionLayerQuad button = {XR_TYPE_COMPOSITION_LAYER_QUAD};
-  if(s.buttonReady && s.roomAvailable() && hasImage) {
+  button.next = fadeNext;
+  if(s.buttonReady && s.roomAvailable() && showButtons) {
     const bool hover = s.grabbed==Grip::Environment || s.hands[0].hover==Grip::Environment || s.hands[1].hover==Grip::Environment;
     button.layerFlags = chromeFlags;
     button.space = s.localSpace;
@@ -3185,7 +3218,8 @@ bool XrWindow::submit(bool rendered) {
     addLayer(button);
     }
   XrCompositionLayerQuad lockButton = {XR_TYPE_COMPOSITION_LAYER_QUAD};
-  if(s.aspectReady && hasImage) {
+  lockButton.next = fadeNext;
+  if(s.aspectReady && showButtons) {
     const bool hover = s.grabbed==Grip::Aspect || s.hands[0].hover==Grip::Aspect || s.hands[1].hover==Grip::Aspect;
     lockButton.layerFlags = chromeFlags;
     lockButton.space = s.localSpace;
@@ -3199,7 +3233,8 @@ bool XrWindow::submit(bool rendered) {
     addLayer(lockButton);
     }
   XrCompositionLayerQuad palmButton = {XR_TYPE_COMPOSITION_LAYER_QUAD};
-  if(s.handsButtonReady && hasImage) {
+  palmButton.next = fadeNext;
+  if(s.handsButtonReady && showButtons) {
     const bool hover = s.grabbed==Grip::Hands || s.hands[0].hover==Grip::Hands || s.hands[1].hover==Grip::Hands;
     palmButton.layerFlags = chromeFlags;
     palmButton.space = s.localSpace;
@@ -3213,7 +3248,8 @@ bool XrWindow::submit(bool rendered) {
     addLayer(palmButton);
     }
   XrCompositionLayerQuad bendButton = {XR_TYPE_COMPOSITION_LAYER_QUAD};
-  if(s.curveReady && hasImage) {
+  bendButton.next = fadeNext;
+  if(s.curveReady && showButtons) {
     const bool hover = s.grabbed==Grip::Curve || s.hands[0].hover==Grip::Curve || s.hands[1].hover==Grip::Curve;
     bendButton.layerFlags = chromeFlags;
     bendButton.space = s.localSpace;
@@ -3233,6 +3269,7 @@ bool XrWindow::submit(bool rendered) {
     for(unsigned part=0; part<2; ++part) {
       const bool knob = part==1;
       auto& q = slider[part];
+      q.next = fadeNext;
       q.layerFlags = chromeFlags;
       q.space = s.localSpace;
       q.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
