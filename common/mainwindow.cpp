@@ -1897,6 +1897,7 @@ void MainWindow::renderFrame(bool xr) {
       }
 #ifdef OPENGOTHIC_XR
     renderer.setLightingEye(foveate && stereo ? view : -1);
+    renderer.setUiViewport(xr ? XrWindow::inst()->uiViewport(uint8_t(view)) : Tempest::Rect());
 #endif
     renderer.setSecondView(camera!=nullptr && view==1);
     CommandBuffer& cmd = commands[cmdId];

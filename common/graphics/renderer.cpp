@@ -742,6 +742,9 @@ void Renderer::draw(Attachment& result, Encoder<CommandBuffer>& cmd, uint8_t fId
     cmd.setDebugMarker("UI-eye");
     eyeLayer->draw(cmd);
     }
+  const bool uiInset = uiViewport.w>0 && uiViewport.h>0;
+  if(uiInset)
+    cmd.setViewport(uiViewport);
   cmd.setDebugMarker("UI");
   uiLayer.draw(cmd);
 
@@ -750,6 +753,8 @@ void Renderer::draw(Attachment& result, Encoder<CommandBuffer>& cmd, uint8_t fId
       zbufferUi = Resources::device().zbuffer(zBufferFormat, result.size());
     auto& zb = (zbufferUi.isEmpty() ? zbuffer : zbufferUi);
     cmd.setFramebuffer({{result, Tempest::Preserve, Tempest::Preserve}},{zb, 1.f, Tempest::Preserve});
+    if(uiInset)
+      cmd.setViewport(uiViewport);
     cmd.setDebugMarker("Inventory");
 #ifdef OPENGOTHIC_XR
     if(XrWindow::inst())
@@ -759,9 +764,13 @@ void Renderer::draw(Attachment& result, Encoder<CommandBuffer>& cmd, uint8_t fId
       inventory.draw(cmd);
 
     cmd.setFramebuffer({{result, Tempest::Preserve, Tempest::Preserve}});
+    if(uiInset)
+      cmd.setViewport(uiViewport);
     cmd.setDebugMarker("Inventory-counters");
     numOverlay.draw(cmd);
     }
+  if(uiInset)
+    cmd.setViewport(0,0,int(result.w()),int(result.h()));
   }
 
 void Renderer::dbgDraw(Tempest::Painter& p) {
