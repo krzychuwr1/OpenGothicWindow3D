@@ -1,6 +1,9 @@
 #include "menuroot.h"
 
 #include <Tempest/Log>
+#if defined(__ANDROID__)
+#include <Tempest/AndroidApi>
+#endif
 
 #include "ui/gamemenu.h"
 #include "gothic.h"
@@ -127,8 +130,20 @@ bool MenuRoot::hasVersionLine() const {
   }
 
 void MenuRoot::mouseDownEvent(MouseEvent& event) {
-  // Only the first pointer interacts; ignoring others keeps their drag and up events away.
-  if(current==nullptr || event.mouseID!=0) {
+  if(current==nullptr) {
+    event.ignore();
+    return;
+    }
+#if defined(__ANDROID__)
+  if(event.mouseID==AndroidApi::MousePointerId) {
+    if(event.button==Event::ButtonLeft)
+      current->onKeyboard(KeyCodec::ActionGeneric);
+    else if(event.button==Event::ButtonRight)
+      popMenu();
+    return;
+    }
+#endif
+  if(event.mouseID!=0) {
     event.ignore();
     return;
     }
@@ -147,7 +162,7 @@ void MenuRoot::mouseDownEvent(MouseEvent& event) {
 
 void MenuRoot::mouseDragEvent(MouseEvent& event) {
 #if defined(__MOBILE_PLATFORM__)
-  if(current==nullptr)
+  if(current==nullptr || event.mouseID!=0)
     return;
   const int step = std::max(1, int(20.f*Gothic::interfaceScale(this)));
   const auto delta = event.pos()-touchStart;
@@ -160,7 +175,7 @@ void MenuRoot::mouseDragEvent(MouseEvent& event) {
 
 void MenuRoot::mouseUpEvent(MouseEvent& event) {
 #if defined(__MOBILE_PLATFORM__)
-  if(current==nullptr)
+  if(current==nullptr || event.mouseID!=0)
     return;
   mouseDragEvent(event);
   current->onEndTouch(!touchMoved);
