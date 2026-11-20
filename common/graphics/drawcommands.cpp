@@ -1,4 +1,5 @@
 #include "drawcommands.h"
+#include "commandline.h"
 
 #include <Tempest/Log>
 
@@ -294,7 +295,7 @@ void DrawCommands::visibilityPass(Encoder<CommandBuffer>& cmd, int pass) {
     push.znear        = scene.znear;
 
     auto* pso = &Shaders::inst().visibilityPassSh;
-    if(viewport==SceneGlobals::V_Main)
+    if(viewport==SceneGlobals::V_Main && !CommandLine::inst().debugSkip("hizcull"))
       pso = &Shaders::inst().visibilityPassHiZ;
     else if(viewport==SceneGlobals::V_HiZ)
       pso = &Shaders::inst().visibilityPassHiZCr;

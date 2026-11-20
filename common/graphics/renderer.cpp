@@ -722,19 +722,46 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
     return;
     }
 
-  wview.visibilityPass(cmd, 0);
+  // Multiview estimate (-skip eye1cull): the second eye reuses the first eye's culling
+  const bool shareCull = secondView && CommandLine::inst().debugSkip("eye1cull");
+  if(!shareCull)
+    wview.visibilityPass(cmd, 0);
   // Sky, fog and irradiance tables change too little between the eyes to compute twice
   if(!secondView)
     prepareSky(cmd, wview);
 
-  drawHiZ (cmd, wview);
-  buildHiZ(cmd);
-
-  wview.visibilityPass(cmd, 1);
+  if(!shareCull) {
+    drawHiZ (cmd, wview);
+    buildHiZ(cmd);
+    wview.visibilityPass(cmd, 1);
+    }
   cpuPhases.mark("visibility+hiz");
-  // Measurement only (-skip eye1gbuffer): the most a shared multiview G-buffer could save
-  if(!(secondView && CommandLine::inst().debugSkip("eye1gbuffer")))
+  if(shareCull) {
+    cmd.setDebugMarker("GBuffer");
+    cmd.setFramebuffer({{gbufDiffuse, Tempest::Vec4(), Tempest::Preserve},
+                        {gbufNormal,  Tempest::Vec4(), Tempest::Preserve}},
+                       {zbuffer, 1.f, Tempest::Preserve});
+    // -skip eye1gbufps: geometry work only, no pixels (the vertex share of the pass)
+    if(CommandLine::inst().debugSkip("eye1gbufps"))
+      cmd.setScissor(0, 0, 1, 1);
+    wview.drawGBuffer(cmd,fId);
+    if(CommandLine::inst().debugSkip("eye1gbufps"))
+      cmd.setScissor(0, 0, int(zbuffer.w()), int(zbuffer.h()));
+    } else if(!(secondView && CommandLine::inst().debugSkip("eye1gbuffer"))) {
+    // Measurement only (-skip eye1gbuffer): the most a shared multiview G-buffer could save
     drawGBuffer(cmd, fId, wview);
+    }
+  if(!secondView && CommandLine::inst().debugSkip("mvtest") &&
+     mvTest.resize(Resources::device(), uint32_t(zbuffer.w()), uint32_t(zbuffer.h()), TextureFormat::RGBA8, TextureFormat::R32U, zBufferFormat)) {
+    // Timing test: the same G-buffer draws once more, for both views of two-layer targets
+    cmd.setDebugMarker("GBuffer-multiview");
+    vulkanSetViewMask(0x3);
+    cmd.setFramebuffer({{mvTest.diffuse, Tempest::Vec4(), Tempest::Preserve},
+                        {mvTest.normal,  Tempest::Vec4(), Tempest::Preserve}},
+                       {mvTest.depth, 1.f, Tempest::Preserve});
+    vulkanSetViewMask(0);
+    wview.drawGBuffer(cmd,fId);
+    }
   cpuPhases.mark("gbuffer");
 
   if(!secondView)
