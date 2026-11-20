@@ -644,3 +644,18 @@ The renderer used the base camera's underwater flag after applying the tracked e
 A host executable linked the project's Bullet collision library and exercised the production eye override against level and sloped meshes, reversed winding, shared edges, doubled faces, stacked surfaces, exact contact, shake, missing water, repeat frames and restoration. The old flag failed 176 of 608 checks. The new code passed all 608. Windows and Android Release linked.
 
 On Quest at CPU 1 / GPU 0 with SpaceWarp, a diagnostic camera put one eye 7 cm above a loaded city water surface and the other 7 cm below. The base alternated between dry and submerged. Logs recorded the expected zero or one crossing in all four combinations, with fog selected for the upper eye and underwater rendering for the lower one. Four inspected 1600 × 900 stereo pairs showed the distinct shading. The diagnostic used synthetic positions and an earlier build without the final endpoint bias. Exact waterline contact was verified on the host. The uninstrumented release installed with SHA-256 `e76f5704c43f90f1969e5995757cb2896d3f8e8f23654ad99272718e0bafd515`. The game was stopped, sleep released and the owner's INI hash matched at 100% and 37.0 °C. Natural head movement across a shoreline still needs a wearer.
+
+### Rejected selective scene uniform uploads
+
+The default stereo path uploaded and copied all five 1,204-byte view uniforms for each eye. The trial omitted unused virtual-shadow data and the second eye's two raster-shadow views, and removed a duplicate main-view upload. Path tracing, VSM and ray-traced shadows kept the views they read. A host fixture compared the actual uniform bytes, frame-slot writes and dispatch counts across all view selections. All 1,216 checks passed.
+
+City main street at noon, ordinary stereo, no captures, CPU 1 / GPU 0. Each result uses 14 VrApi samples and the last four complete GPU and CPU reports.
+
+| Run | FPS | GPU ms/eye | Record ms/frame | Update globals ms/eye |
+| --- | ---: | ---: | ---: | ---: |
+| Control 1 | 61.0 | 7.975 | 5.319 | 0.080 |
+| Trial 1 | 61.0 | 7.978 | 5.336 | 0.083 |
+| Trial 2 | 60.9 | 7.990 | 5.285 | 0.083 |
+| Control 2 | 60.9 | 8.003 | 5.374 | 0.080 |
+
+The mean recording difference was 0.036 ms/frame, smaller than the 0.055 ms spread between controls. Frame rate was identical and the GPU copy pass remained around 0.08 ms/eye. The trial was reverted. The final control restored the release APK, stopped the game and released sleep at 100% battery and 41.0 °C.
