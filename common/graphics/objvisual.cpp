@@ -146,6 +146,11 @@ void ObjVisual::setVisual(const zenkit::VirtualObject& vob, World& world, bool s
       setType(M_Mesh);
       mesh.proto = view;
       if(vob.show_visual) {
+#if defined(OPENGOTHIC_XR)
+        // Wind changes the instance transform, including its shadow and motion vectors.
+        if(vob.anim_strength>0)
+          staticDraw = false;
+#endif
         mesh.view = world.addStaticView(view,staticDraw);
         mesh.view.setWind(vob.anim_mode,vob.anim_strength);
         }
