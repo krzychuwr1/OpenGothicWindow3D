@@ -1,5 +1,7 @@
 #pragma once
 
+#include <future>
+
 #include "camera.h"
 #include "resources.h"
 
@@ -70,6 +72,8 @@ class MainWindow : public Tempest::Window {
 
     void paintFocus     (Tempest::Painter& p, const Focus& fc, const Tempest::Matrix4x4& vp);
     void paintFocus     (Tempest::Painter& p, Tempest::Rect rect);
+    void paintFocusMarkers(Tempest::Painter& p, const Focus& fc, const Tempest::Matrix4x4& vp);
+    void paintEyeOverlay(const Camera& camera);
 
     void drawBar(Tempest::Painter& p, const Tempest::Texture2d *bar, int x, int y, float v, Tempest::AlignFlag flg);
     void drawMsg(Tempest::Painter& p);
@@ -148,6 +152,12 @@ class MainWindow : public Tempest::Window {
     Tempest::VectorImage  uiLayer, numOverlay;
     Tempest::VectorImage::Mesh uiMesh [Resources::MaxFramesInFlight];
     Tempest::VectorImage::Mesh numMesh[Resources::MaxFramesInFlight];
+    std::future<void>          captureWriter[2];
+    uint64_t                   captureNext = 0;
+    uint32_t                   captureCount = 0;
+    bool                       captureDue = false;
+    Tempest::VectorImage       eyeOverlay; // XR: interface drawn per eye at scene depth
+    Tempest::VectorImage::Mesh eyeMesh[Resources::MaxFramesInFlight];
 
     Tempest::Fence         fence   [Resources::MaxFramesInFlight];
     Tempest::CommandBuffer commands[Resources::MaxFramesInFlight];

@@ -25,6 +25,11 @@
 #include "utils/dbgpainter.h"
 
 #include "commandline.h"
+
+#include <cstdio>
+#include <filesystem>
+#include <string>
+#include <thread>
 #include "gothic.h"
 #include "xr/xrwindow.h"
 #include "marvin.h"
@@ -611,6 +616,18 @@ void MainWindow::paintFocus(Painter& p, const Focus& focus, const Matrix4x4& vp)
   if(!focus || dialogs.isActive())
     return;
 
+  if(focus.npc!=nullptr && !focus.npc->isDead()) {
+    float hp = float(focus.npc->attribute(ATR_HITPOINTS))/float(focus.npc->attribute(ATR_HITPOINTSMAX));
+    drawBar(p,barHp, w()/2,std::max(10,margins().top), hp, AlignHCenter|AlignTop);
+    }
+
+  // In XR the name and the melee bracket belong to the object, not to the window: each eye
+  // paints them with its own projection (paintEyeOverlay), so they appear at the object's depth
+  if(XrWindow::inst()==nullptr)
+    paintFocusMarkers(p,focus,vp);
+  }
+
+void MainWindow::paintFocusMarkers(Painter& p, const Focus& focus, const Matrix4x4& vp) {
   const float scale = Gothic::interfaceScale(this);
   auto        world = Gothic::inst().world();
   auto        pl    = world==nullptr ? nullptr : world->player();
@@ -637,11 +654,6 @@ void MainWindow::paintFocus(Painter& p, const Focus& focus, const Matrix4x4& vp)
   if(iy>h())
     iy = h();
   fnt.drawText(p,ix,iy,focus.displayName());
-
-  if(focus.npc!=nullptr && !focus.npc->isDead()) {
-    float hp = float(focus.npc->attribute(ATR_HITPOINTS))/float(focus.npc->attribute(ATR_HITPOINTSMAX));
-    drawBar(p,barHp, w()/2,std::max(10,margins().top), hp, AlignHCenter|AlignTop);
-    }
 
   const int foc = Gothic::settingsGetI("GAME","highlightMeleeFocus");
   if(focus.npc!=nullptr  &&
@@ -685,6 +697,21 @@ void MainWindow::paintFocus(Painter& p, const Focus& focus, const Matrix4x4& vp)
   if(auto pl = focus.interactive){
     pl->marchInteractives(p,vp,w(),h());
     }*/
+  }
+
+void MainWindow::paintEyeOverlay(const Camera& camera) {
+  eyeOverlay.clear();
+  auto world = Gothic::inst().world();
+  if(world==nullptr || world->view()==nullptr || video.isActive() || dialogs.isActive() ||
+     Gothic::inst().checkLoading()!=Gothic::LoadState::Idle)
+    return;
+  auto focus = world->validateFocus(player.focus());
+  if(!focus)
+    return;
+  PaintEvent e(eyeOverlay,atlas,w(),h());
+  Painter    p(e);
+  p.setBrush(Color(1.0));
+  paintFocusMarkers(p,focus,camera.viewProj());
   }
 
 void MainWindow::paintFocus(Painter& p, Rect rect) {
@@ -1530,7 +1557,6 @@ void MainWindow::renderFrame(bool xr) {
         prevEyeViewProject[view] = camera->viewProj();
       }
     renderer.setSecondView(stereo && view==1);
-
     CommandBuffer& cmd = commands[cmdId];
     {
     struct EndEye {
@@ -1543,15 +1569,23 @@ void MainWindow::renderFrame(bool xr) {
         renderer.setMotionVectors(false,nullptr);
         }
       } endEye{stereo ? camera : nullptr, renderer};
+    if(stereo) {
+      const uint64_t te = nowUs();
+      paintEyeOverlay(*camera);
+      eyeMesh[cmdId].update(device,eyeOverlay);
+      timing.uiMesh += nowUs()-te;
+      }
+
     const uint64_t ts = nowUs();
     auto enc = cmd.startEncoding(device);
     timing.encStart += nowUs()-ts;
-    renderer.draw(backbuf,enc,cmdId,uiMesh[cmdId],numMesh[cmdId],inventory,video);
+    renderer.draw(backbuf,enc,cmdId,uiMesh[cmdId],numMesh[cmdId],stereo ? &eyeMesh[cmdId] : nullptr,inventory,video);
     if(stereo) {
       auto* motion = XrWindow::inst()->motionTarget(uint8_t(view));
       auto* depth  = XrWindow::inst()->depthTarget (uint8_t(view));
       if(motion!=nullptr && depth!=nullptr) {
-        renderer.drawSpaceWarp(enc, *Gothic::inst().worldView(), *motion, *depth);
+        renderer.drawSpaceWarp(enc, *Gothic::inst().worldView(), *motion, *depth,
+                               CommandLine::inst().debugShow("motion") ? &backbuf : nullptr);
         }
       }
     const uint64_t te = nowUs();
@@ -1560,6 +1594,41 @@ void MainWindow::renderFrame(bool xr) {
     const uint64_t tsub = nowUs();
     sync = device.submit(cmd);
     timing.submit += nowUs()-tsub;
+    if(xr && view==0 && CommandLine::inst().xrCaptureInterval()>0) {
+      const uint64_t now = Application::tickCount();
+      captureDue = now>=captureNext && (CommandLine::inst().startupCommands().empty() || startupDone);
+      for(auto& writer:captureWriter)
+        if(writer.valid() && writer.wait_for(std::chrono::seconds(0))!=std::future_status::ready)
+          captureDue = false;
+      if(captureDue)
+        captureNext = now + uint64_t(CommandLine::inst().xrCaptureInterval())*1000;
+      }
+    if(xr && captureDue) {
+      // Development: both eyes exactly as rendered (before the runtime warps them)
+      sync.wait();
+      char name[64] = {};
+      if(view==0) {
+        do {
+          std::snprintf(name, sizeof(name), "eye-%03u-L.png", captureCount);
+          char right[64] = {};
+          std::snprintf(right, sizeof(right), "eye-%03u-R.png", captureCount++);
+          if(!std::filesystem::exists(name) && !std::filesystem::exists(right))
+            break;
+          } while(true);
+        }
+      std::snprintf(name, sizeof(name), "eye-%03u-%c.png", captureCount-1, view==0 ? 'L' : 'R');
+      // Encoding a PNG takes about a second at low clocks: off the render thread
+      captureWriter[view] = std::async(std::launch::async, [pm=device.readPixels(backbuf), file=std::string(name)] {
+        try {
+          const auto tmp = file+".tmp";
+          pm.save(tmp.c_str(), "png");
+          std::filesystem::rename(tmp,file);
+          }
+        catch(const std::exception& e) {
+          Log::e("Eye capture failed: ", e.what());
+          }
+        });
+      }
     timing.record += nowUs()-tr;
     if(!xr)
       device.present(*swapchain);

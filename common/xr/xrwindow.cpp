@@ -314,6 +314,13 @@ bool XrWindow::Impl::createInstance() {
     return false;
     };
 
+  if(CommandLine::inst().isGpuProfile()) {
+    // Foveation building blocks offered by the runtime (logged for profiling sessions)
+    for(auto n:{"XR_FB_foveation", "XR_FB_foveation_vulkan", "XR_FB_foveation_configuration",
+                "XR_META_foveation_eye_tracked", "XR_FB_swapchain_update_state"})
+      Log::i("OpenXR: ", n, has(n) ? " available" : " not available");
+    }
+
   std::vector<const char*> ext = {
     XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,
     XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME,
@@ -414,6 +421,21 @@ bool XrWindow::Impl::createInstance() {
     info.pfnGetInstanceProcAddr = &vkGetInstanceProcAddr;
     info.vulkanPhysicalDevice   = pdev;
     info.vulkanCreateInfo       = ci;
+    if(CommandLine::inst().isGpuProfile()) {
+      // Variable rate shading support (foveation research), logged for profiling sessions
+      VkPhysicalDeviceFragmentShadingRateFeaturesKHR fsr = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR};
+      VkPhysicalDeviceFeatures2 f2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+      f2.pNext = &fsr;
+      vkGetPhysicalDeviceFeatures2(pdev, &f2);
+      VkPhysicalDeviceFragmentShadingRatePropertiesKHR fsrp = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_PROPERTIES_KHR};
+      VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+      p2.pNext = &fsrp;
+      vkGetPhysicalDeviceProperties2(pdev, &p2);
+      Log::i("Vulkan VRS: pipeline ", int(fsr.pipelineFragmentShadingRate), " primitive ", int(fsr.primitiveFragmentShadingRate),
+             " attachment ", int(fsr.attachmentFragmentShadingRate), " texel ", fsrp.minFragmentShadingRateAttachmentTexelSize.width,
+             "..", fsrp.maxFragmentShadingRateAttachmentTexelSize.width, " max fragment ", fsrp.maxFragmentSize.width, "x",
+             fsrp.maxFragmentSize.height);
+      }
     VkResult vr = VK_ERROR_INITIALIZATION_FAILED;
     if(!ok(self.xrCreateVulkanDevice(self.instance, &info, out, &vr), "xrCreateVulkanDeviceKHR"))
       return VK_ERROR_INITIALIZATION_FAILED;
@@ -517,6 +539,8 @@ void XrWindow::Impl::createSwapchains() {
   // Mutable format: the game writes its gamma-encoded RGBA8 through a UNORM view of the sRGB image
   info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT |
                      XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT;
+  if(CommandLine::inst().xrCaptureInterval()>0)
+    info.usageFlags |= XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT; // -capture reads the eye images back
   info.format      = format;
   info.sampleCount = 1;
   info.width       = width;

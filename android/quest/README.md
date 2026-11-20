@@ -99,8 +99,11 @@ Arguments for the Quest build are read from `/sdcard/OpenGothic/args.txt` (white
 | `-exec "cmd1;cmd2"` | Run console commands once the world has loaded, e.g. `goto waypoint NW_CITY_MAINSTREET_02;set time 12 0` |
 | `-gpuprofile` | Log GPU time per render pass and CPU time per frame phase every 3 s |
 | `-perf low` | Request the lowest CPU/GPU levels (unattended tests) |
+| `-capture SECONDS` | Save both eyes' pictures as PNG files in the app's files folder |
 | `-skip sun,ambient,lights,sky,tiled` | Leave lighting parts out, or use per-light volumes instead of tiles (profiling) |
 | `-setting SECTION KEY VALUE` | Override a setting for this run only, e.g. `-setting INTERNAL xrSpaceWarp 1` |
 
 `tools/bench-quest.ps1 -Waypoint <name>` runs a repeatable scene with these options and prints the
-runtime's frame statistics and the game's breakdown.
+runtime's frame statistics and the game's breakdown. `-Scenario combat` or `-Scenario spells` adds
+attackers (weapon swings, spell effects), `-EyeCaptures N` pulls the eyes' pictures every N seconds
+into `captures/` and `-Captures N` saves headset screenshots.

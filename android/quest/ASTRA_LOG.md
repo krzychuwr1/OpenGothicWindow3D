@@ -62,7 +62,7 @@ The world stores NPCs in a vector which it sorts by handle and erases from durin
 
 ## Optimisation trials
 
-The first valid main-street profile showed 2.24 ms/view in the G-buffer, 1.68 ms/view in combined lighting and sky, and 5.46 ms/frame in CPU recording. A candidate replaced five scene-global compute copies per eye with fence-protected host-visible buffers. Both variants compiled. During baseline collection the runtime reported a different waypoint (`NW_TAVERNE`) and unsolicited enemy-spawn commands. The nominal 47.1 fps and 10.59 ms/view from that run are invalid for comparison. The game was force-stopped and the sleep override released, with 59% battery at 42.0 °C. Further device use is paused pending exclusive access. There is no valid paired result, and the candidate was removed from the branch.
+The first valid main-street profile showed 2.24 ms/view in the G-buffer, 1.68 ms/view in combined lighting and sky, and 5.46 ms/frame in CPU recording. A candidate replaced five scene-global compute copies per eye with fence-protected host-visible buffers. Both variants compiled. During baseline collection the runtime reported a different waypoint (`NW_TAVERNE`) and unsolicited enemy-spawn commands. The nominal 47.1 fps and 10.59 ms/view from that run are invalid for comparison. The game was force-stopped and the sleep override released, with 59% battery at 42.0 °C. Device use paused at that point. The owner subsequently confirmed the other workload and handed the headset over for exclusive tests. There is no valid paired result, and the candidate was removed from the branch.
 
 The benchmark used to label any recent VrApi samples with the requested waypoint, overwrite existing developer arguments, and skip cleanup on interruption. It now checks battery, exclusivity among updated host runners, the live process, its reported startup commands and the argument file. Android shell noclobber protects an argument file created after preflight. Cleanup runs in `finally`, compares the entire file before removal and checks the launch PID before stopping the package. Eight host-side mock ADB cases passed (successful report, high temperature, existing arguments, wrong scene, appended arguments, partial clock setup failure, racing file creation and process replacement). Physical verification of the revised harness is pending. Other tools can still access the same device independently.
 
@@ -81,3 +81,59 @@ A host harness compiled the production hit testing, input update, environment sw
 ## Desktop build checks
 
 The common renderer and frame timing code included native Vulkan headers even in Metal builds. Profiler declarations now use Tempest's ordinary Vulkan API header, and the XR report is compiled only for XR. MSVC also rejected the desktop XR stub's implicit return of an explicitly constructed Size. After fixing it, MSVC 2022 passed syntax checks for the window, XR stubs, renderer, world object update and game entry point without Vulkan SDK headers. This was a Windows compilation check, not a linked desktop or Apple run.
+
+
+## Branch handover and carry-over tags
+
+The owner identified overlapping device work between 01:55 and 03:10. Treat earlier device timings as historical observations. The merged build starts its own baseline. The instance-slot history experiment was stashed before merging because its GPU readback check had failed.
+
+These tags describe where the owner can carry each original audit commit. Commits tagged `[all]` that also touch SpaceWarp need only their shared hunks on master. The environment feature is assigned to the combined audit branch. The owner�s earlier commits keep their original subjects.
+
+| OpenGothic commit | Tag | Subject |
+| --- | --- | --- |
+| `017fca32` | `[all]` | Update Tempest for the OpenXR attachment layout handoff |
+| `6bd4bb76` | `[all]` | Pair XR frames across focus changes and release session resources in order |
+| `1f5264f0` | `[all]` | Release stale Android input and honor shared gamepad key bindings |
+| `93207acf` | `[all]` | Validate OpenXR image formats, waits and static uploads |
+| `37e94807` | `[spacewarp]` | Use submitted eye projections and valid scene depth for SpaceWarp |
+| `075e06b6` | `[astra]` | Add a persistent passthrough and procedural dusk environment switch |
+| `986e425a` | `[all]` | Deliver Quest controller navigation to modal widgets |
+| `5409f50e` | `[all]` | Verify the benchmark scene and clean up failed Quest runs |
+| `0ec8d74f` | `[all]` | Keep deferred Quest animation time with its NPC across reordering |
+| `62b73b63` | `[all]` | Keep moving casters out of static shadows and scope XR eye state to recording |
+| `a1ee8851` | `[all]` | Service XR session transitions while Android is paused |
+| `2aabfbe6` | `[all]` | Restore non-XR compilation without native Vulkan headers |
+| `ff8b2d10` | `[all]` | Clean up incomplete XR targets and suppress failed image submissions |
+| `42a3ad0e` | `[all]` | Protect competing launch arguments and process identity during Quest benchmarks |
+| `16b46a91` | `[all]` | Use corrected Tempest GPU view timings for Quest benchmarks |
+| `e8b48af1` | `[all]` | Observe pending instance uploads and shutdown before waiting |
+| `eb36e314` | `[all]` | Track physical gamepad removal in the Android input backend |
+| `8e984e12` | `[spacewarp]` | Skip SpaceWarp extrapolation across window placement changes |
+| `85e0078b` | `[all]` | Keep pointed window travel consistent across frame rates |
+| `84a1a8e9` | `[all]` | Keep static and moving shadow casters in separate XR draw commands |
+| `d9a0a4e9` | `[spacewarp]` | Respect material cutouts when drawing SpaceWarp object motion |
+| `260568f7` | `[spacewarp]` | Record Vulkan readback checks for SpaceWarp camera motion and depth |
+| `87364e56` | `[all]` | Track wind-animated objects through shadow rendering and removal |
+
+| Tempest commit | Tag | Subject |
+| --- | --- | --- |
+| `2021a6d7` | `[all]` | Honor imported attachment layouts in Vulkan barriers and check profile allocation |
+| `ca58791c` | `[all]` | Reset Android controller and pointer state on focus loss |
+| `2eb0e229` | `[all]` | Route Android controller keys through focused widgets and merge digital axes |
+| `8e97ac98` | `[all]` | Pump external presentation lifecycle events while the Android activity is paused |
+| `05f8b5c9` | `[all]` | Expose Vulkan profiler controls without requiring native Vulkan headers |
+| `4afd54ba` | `[all]` | Count complete render recordings in GPU timing reports |
+| `15c4f519` | `[all]` | Release cached Android gamepad input after device removal |
+
+### Combined branch verification
+
+Merged the owner's combined branch through `e5157773` and Tempest through `6b0ed3fa`. Tempest merge `2e699608` includes both parents. The merged XR frame loop continues pairing hidden frames. Focus markers use each eye's camera before the shared UI. The motion pass retains the owner's 3% depth bias. Ordinary SpaceWarp writes directly to the runtime targets. The motion overlay uses a sampleable scratch attachment and copies its values to the runtime target. The capture path reads a fenced eye image before releasing it, bounds background PNG writers and publishes each completed file by rename. The benchmark checks every requested spawn and collects new, complete stereo pairs.
+
+The Android Release APK passed v3 signature verification and the 16 KiB alignment check. The Windows MSVC desktop syntax check passed for the window, XR stubs, layered targets, renderer, world objects and game entry point.
+
+| Post-handover Quest 3 run, city at noon, CPU 1 / GPU 0 | VrApi fps | GPU busy | CPU & GPU | GPU per eye, last printed sample |
+| --- | ---: | ---: | ---: | ---: |
+| City, default settings, 14 samples | 58.4 | 97% | 23.8 ms | 8.22 ms |
+| SpaceWarp, combat, stereo PNG every 3 s, 15 samples | 36.2 | 81% | 26.9 ms | 11.17 ms |
+
+Decoded and inspected all 17 stereo pairs (1600 × 900 per eye, local capture prefix `20261120-031441-319`). Both eyes show the city gate, approaching enemies, melee and the subsequent street scene. Focus names appear over characters in both eyes and the HUD remains visible. These captures contain the application eye images. They do not measure compositor interpolation or confirm disparity quantitatively. The combat run includes readback cost. Battery after the two runs was 77% and 78%, both at 40.0 °C. The app was stopped after each run.

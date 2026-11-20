@@ -10,6 +10,7 @@
 
 #include "worldview.h"
 #include "shaders.h"
+#include "xr/layeredtargets.h"
 
 class Camera;
 class InventoryMenu;
@@ -29,6 +30,7 @@ class Renderer final {
 
     void draw(Tempest::Attachment& result, Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t fId,
               Tempest::VectorImage::Mesh& uiLayer, Tempest::VectorImage::Mesh& numOverlay,
+              Tempest::VectorImage::Mesh* eyeLayer,
               InventoryMenu &inventory, VideoWidget& video);
     void draw(Tempest::Attachment& result, Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t fId,
               WorldView& view, const Camera& camera);
@@ -43,12 +45,15 @@ class Renderer final {
       if(historyValid)
         prevEye = *previousEye;
       }
+    // -show motion: the eye's motion vectors painted over its picture (debugging)
+    void drawSpaceWarpDebug(Tempest::Encoder<Tempest::CommandBuffer>& cmd, Tempest::Attachment& motion, Tempest::Attachment& result);
     void drawSpaceWarp(Tempest::Encoder<Tempest::CommandBuffer>& cmd, WorldView& wview,
-                       Tempest::Attachment& motion, Tempest::ZBuffer& depth);
+                       Tempest::Attachment& motion, Tempest::ZBuffer& depth, Tempest::Attachment* debugOutput);
 
     Tempest::Attachment screenshoot(uint8_t frameId, Tempest::Size size);
 
   private:
+    Tempest::Attachment debugMotion;
     bool secondView = false;
     bool motionVectors = false, historyValid = false;
     Tempest::Matrix4x4 prevEye;
@@ -202,6 +207,7 @@ class Renderer final {
     Tempest::Attachment       sceneDepth;
 
     Tempest::Attachment       gbufDiffuse;
+    LayeredTargets            mvTest;   // -skip mvtest: two-layer G-buffer for the multiview timing test
     Tempest::Attachment       gbufNormal;
 
     struct Shadow {

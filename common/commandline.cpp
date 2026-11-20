@@ -16,6 +16,7 @@
 #endif
 
 #include <algorithm>
+#include <cstdlib>
 
 #include "utils/installdetect.h"
 #include "utils/fileutil.h"
@@ -132,6 +133,16 @@ CommandLine::CommandLine(int argc, const char** argv) {
       ++i;
       if(i<argc)
         skipPasses = argv[i];
+      }
+    else if(arg=="-capture") {
+      ++i;
+      if(i<argc)
+        captureSec = std::max(1, std::atoi(argv[i]));
+      }
+    else if(arg=="-show") {
+      ++i;
+      if(i<argc)
+        showViews = argv[i];
       }
     else if(arg=="-gpuprofile") {
       gpuProfile = true;

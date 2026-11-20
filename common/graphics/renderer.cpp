@@ -1,5 +1,9 @@
 #include "renderer.h"
 
+#if defined(__ANDROID__) && defined(OPENGOTHIC_XR)
+#include <Tempest/VulkanInterop>
+#endif
+
 #include <cstring>
 
 #include "commandline.h"
@@ -595,7 +599,7 @@ void Renderer::prepareSky(Tempest::Encoder<Tempest::CommandBuffer>& cmd, WorldVi
   }
 
 void Renderer::draw(Attachment& result, Encoder<CommandBuffer>& cmd, uint8_t fId,
-                    VectorImage::Mesh& uiLayer, VectorImage::Mesh& numOverlay,
+                    VectorImage::Mesh& uiLayer, VectorImage::Mesh& numOverlay, VectorImage::Mesh* eyeLayer,
                     InventoryMenu& inventory, VideoWidget& video) {
   auto wview  = Gothic::inst().worldView();
   auto camera = Gothic::inst().camera();
@@ -605,6 +609,10 @@ void Renderer::draw(Attachment& result, Encoder<CommandBuffer>& cmd, uint8_t fId
     cmd.setFramebuffer({{result, Tempest::Preserve, Tempest::Preserve}});
     } else {
     cmd.setFramebuffer({{result, Vec4(), Tempest::Preserve}});
+    }
+  if(eyeLayer!=nullptr) {
+    cmd.setDebugMarker("UI-eye");
+    eyeLayer->draw(cmd);
     }
   cmd.setDebugMarker("UI");
   uiLayer.draw(cmd);
@@ -723,19 +731,48 @@ void Renderer::draw(Tempest::Attachment& result, Encoder<CommandBuffer>& cmd, ui
     return;
     }
 
-  wview.visibilityPass(cmd, 0);
+  // Multiview estimate (-skip eye1cull): the second eye reuses the first eye's culling
+  const bool shareCull = secondView && CommandLine::inst().debugSkip("eye1cull");
+  if(!shareCull)
+    wview.visibilityPass(cmd, 0);
   // Sky, fog and irradiance tables change too little between the eyes to compute twice
   if(!secondView)
     prepareSky(cmd, wview);
 
-  drawHiZ (cmd, wview);
-  buildHiZ(cmd);
-
-  wview.visibilityPass(cmd, 1);
+  if(!shareCull) {
+    drawHiZ (cmd, wview);
+    buildHiZ(cmd);
+    wview.visibilityPass(cmd, 1);
+    }
   cpuPhases.mark("visibility+hiz");
-  // Measurement only (-skip eye1gbuffer): the most a shared multiview G-buffer could save
-  if(!(secondView && CommandLine::inst().debugSkip("eye1gbuffer")))
+  if(shareCull) {
+    cmd.setDebugMarker("GBuffer");
+    cmd.setFramebuffer({{gbufDiffuse, Tempest::Vec4(), Tempest::Preserve},
+                        {gbufNormal,  Tempest::Vec4(), Tempest::Preserve}},
+                       {zbuffer, 1.f, Tempest::Preserve});
+    // -skip eye1gbufps: geometry work only, no pixels (the vertex share of the pass)
+    if(CommandLine::inst().debugSkip("eye1gbufps"))
+      cmd.setScissor(0, 0, 1, 1);
+    wview.drawGBuffer(cmd,fId);
+    if(CommandLine::inst().debugSkip("eye1gbufps"))
+      cmd.setScissor(0, 0, int(zbuffer.w()), int(zbuffer.h()));
+    } else if(!(secondView && CommandLine::inst().debugSkip("eye1gbuffer"))) {
+    // Measurement only (-skip eye1gbuffer): the most a shared multiview G-buffer could save
     drawGBuffer(cmd, fId, wview);
+    }
+#if defined(__ANDROID__) && defined(OPENGOTHIC_XR)
+  if(!secondView && CommandLine::inst().debugSkip("mvtest") &&
+     mvTest.resize(Resources::device(), uint32_t(zbuffer.w()), uint32_t(zbuffer.h()), TextureFormat::RGBA8, TextureFormat::R32U, zBufferFormat)) {
+    // Timing test: the same G-buffer draws once more, for both views of two-layer targets
+    cmd.setDebugMarker("GBuffer-multiview");
+    vulkanSetViewMask(0x3);
+    cmd.setFramebuffer({{mvTest.diffuse, Tempest::Vec4(), Tempest::Preserve},
+                        {mvTest.normal,  Tempest::Vec4(), Tempest::Preserve}},
+                       {mvTest.depth, 1.f, Tempest::Preserve});
+    vulkanSetViewMask(0);
+    wview.drawGBuffer(cmd,fId);
+    }
+#endif
   cpuPhases.mark("gbuffer");
 
   if(!secondView)
@@ -2113,7 +2150,7 @@ bool Renderer::drawLightsTiled(Encoder<CommandBuffer>& cmd, const WorldView& wvi
   }
 
 void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
-                             Attachment& motion, ZBuffer& depth) {
+                             Attachment& motion, ZBuffer& depth, Attachment* debugOutput) {
   struct Push {
     Matrix4x4 prevViewProject;
     Vec4      originLwc;
@@ -2124,8 +2161,11 @@ void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
   push.originLwc       = Vec4(scene.originLwc.x, scene.originLwc.y, scene.originLwc.z, 0);
   push.invSize         = Vec2(1.f/float(motion.w()), 1.f/float(motion.h()));
 
+  // Imported images rest in attachment layout for OpenXR. Sample a regular
+  // attachment for the optional debug overlay and copy its signed values out.
+  auto& target = debugOutput ? usesAttachment(debugMotion, TextureFormat::RGBA16F, motion.size()) : motion;
   cmd.setDebugMarker("SpaceWarp vectors");
-  cmd.setFramebuffer({{motion, Vec4(), Tempest::Preserve}}, {depth, 1.f, Tempest::Preserve});
+  cmd.setFramebuffer({{target, Vec4(), Tempest::Preserve}}, {depth, 1.f, Tempest::Preserve});
   cmd.setBinding(0, scene.uboGlobal[SceneGlobals::V_Main]);
   cmd.setBinding(1, zbuffer, Sampler::nearest());
   cmd.setPushData(&push, sizeof(push));
@@ -2136,6 +2176,24 @@ void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
   cmd.setDebugMarker("SpaceWarp objects");
   if(historyValid)
     wview.drawMotion(cmd);
+  if(debugOutput) {
+    cmd.setFramebuffer({{motion, Tempest::Discard, Tempest::Preserve}});
+    cmd.setBinding(0, target, Sampler::nearest());
+    cmd.setPipeline(shaders.copy);
+    cmd.draw(nullptr, 0, 3);
+    drawSpaceWarpDebug(cmd, target, *debugOutput);
+    }
+  }
+
+void Renderer::drawSpaceWarpDebug(Encoder<CommandBuffer>& cmd, Attachment& motion, Attachment& result) {
+  struct Push { Vec2 invSize; } push;
+  push.invSize = Vec2(1.f/float(result.w()), 1.f/float(result.h()));
+  cmd.setDebugMarker("SpaceWarp debug view");
+  cmd.setFramebuffer({{result, Tempest::Preserve, Tempest::Preserve}});
+  cmd.setBinding(0, motion, Sampler::nearest());
+  cmd.setPushData(&push, sizeof(push));
+  cmd.setPipeline(shaders.spaceWarpDebug);
+  cmd.draw(nullptr, 0, 3);
   }
 
 void Renderer::drawSky(Encoder<CommandBuffer>& cmd, const WorldView& wview) {
