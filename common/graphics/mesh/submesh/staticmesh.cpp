@@ -59,6 +59,9 @@ StaticMesh::StaticMesh(const Material& mat, std::vector<Resources::Vertex> cvbo,
     ibo[at + 2] = uint8_t(prim);
     ibo[at + 3] = uint8_t(vert);
 
+#if defined(OPENGOTHIC_XR)
+    PackedMesh::markDrawableTriangles(ibo.data());
+#endif
     ibo8 = Resources::ssbo(ibo.data(),ibo.size());
     }
   vbo  = Resources::vbo<Vertex>(cvbo.data(),cvbo.size());

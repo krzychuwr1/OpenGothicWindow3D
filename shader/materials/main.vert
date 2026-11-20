@@ -175,7 +175,7 @@ uvec2 processMeshlet(const uint meshletId, const uint bucketId) {
   return uvec2(vertCount, primCount);
   }
 
-uvec3 processPrimitive(const uint meshletId, const uint bucketId, const uint outId) {
+uint primitiveBits(const uint meshletId, const uint bucketId, const uint outId) {
 #if defined(BINDLESS)
   nonuniformEXT uint bId = bucketId;
 #else
@@ -183,7 +183,11 @@ uvec3 processPrimitive(const uint meshletId, const uint bucketId, const uint out
 #endif
 
   const uint iboOffset = meshletId * MaxPrim + outId;
-  const uint bits      = ibo[bId].indexes[iboOffset];
+  return ibo[bId].indexes[iboOffset];
+  }
+
+uvec3 processPrimitive(const uint meshletId, const uint bucketId, const uint outId) {
+  const uint bits = primitiveBits(meshletId, bucketId, outId);
   uvec3 prim;
   prim.x = ((bits >>  0) & 0xFF);
   prim.y = ((bits >>  8) & 0xFF);
@@ -220,12 +224,13 @@ void vertexShader(const uvec4 task) {
     }
 #endif
 
-  const uvec2 mesh       = processMeshlet(meshletId, bucketId);
-  const uint  vertCount  = mesh.x;
-  const uint  primCount  = mesh.y;
-
-  const uint  laneID     = gl_VertexIndex/3;
-  if(laneID>=primCount) {
+  const uint laneID = gl_VertexIndex/3;
+#if defined(PACKED_TRIANGLE_VALID)
+  const uint bits = primitiveBits(meshletId, bucketId, laneID);
+  if((bits & 0x80000000u)==0u) {
+#else
+  if(laneID>=processMeshlet(meshletId, bucketId).y) {
+#endif
     gl_Position = vec4(uintBitsToFloat(0x7fc00000));
     return;
     }
@@ -249,7 +254,11 @@ void vertexShader(const uvec4 task) {
 #endif
 
   Varyings var;
+#if defined(PACKED_TRIANGLE_VALID)
+  uint idx = bitfieldExtract(bits, (gl_VertexIndex%3)*8, 8);
+#else
   uint idx = processPrimitive(meshletId, bucketId, laneID)[gl_VertexIndex%3];
+#endif
   vec4 pos = processVertex(var, instanceId, meshletId, bucketId, idx);
   gl_Position = pos;
 #if defined(MOTION_VECTORS)

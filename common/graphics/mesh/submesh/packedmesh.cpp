@@ -97,6 +97,19 @@ struct PackedMesh::PrimitiveHeap {
     }
   };
 
+#if defined(OPENGOTHIC_XR)
+void PackedMesh::markDrawableTriangles(uint8_t* meshlet) {
+  // The final word is either a triangle or the legacy meshlet count record.
+  const uint8_t* tail = meshlet+(MaxPrim-1)*4;
+  const size_t count = tail[0]==tail[1] ? std::min<size_t>(tail[2],MaxPrim) : size_t(MaxPrim);
+  for(size_t i=0; i<count; ++i) {
+    auto p = meshlet+i*4;
+    if(p[0]!=p[1])
+      p[3] |= 0x80;
+    }
+  }
+#endif
+
 void PackedMesh::Meshlet::flush(std::vector<Vertex>& vertices,
                                 std::vector<uint32_t>& indices,
                                 std::vector<uint8_t>& indices8,
@@ -162,6 +175,9 @@ void PackedMesh::Meshlet::flush(std::vector<Vertex>& vertices,
       indices8[at+2] = indSz/3;
       indices8[at+3] = vertSz;
       }
+#if defined(OPENGOTHIC_XR)
+    markDrawableTriangles(indices8.data()+iboSz8);
+#endif
     }
   }
 
@@ -267,6 +283,9 @@ void PackedMesh::Meshlet::flush(std::vector<Vertex>& vertices, std::vector<Verte
       indices8[at+2] = indSz/3;
       indices8[at+3] = vertSz;
       }
+#if defined(OPENGOTHIC_XR)
+    markDrawableTriangles(indices8.data()+iboSz8);
+#endif
     }
   }
 

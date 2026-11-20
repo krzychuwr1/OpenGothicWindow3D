@@ -84,6 +84,9 @@ class PackedMesh {
     PackedMesh(const zenkit::Mesh& mesh, PkgType type);
     PackedMesh(const zenkit::SoftSkinMesh& mesh);
 
+#if defined(OPENGOTHIC_XR)
+    static void markDrawableTriangles(uint8_t* meshlet);
+#endif
     void debug(std::ostream &out) const;
 
     std::pair<Tempest::Vec3,Tempest::Vec3> bbox() const;

@@ -78,6 +78,9 @@ file(GLOB_RECURSE SPACER_SOURCES "spacer/*.h" "spacer/*.cpp")
 target_sources(${PROJECT_NAME} PRIVATE ${OPENGOTHIC_SOURCES} ${ObjCSOURCES})
 
 # shaders
+if(ANDROID)
+  option(OPENGOTHIC_XR "Present through OpenXR as a window in passthrough" ON)
+endif()
 add_subdirectory(shader)
 target_link_libraries(${PROJECT_NAME} GothicShaders)
 
@@ -217,7 +220,6 @@ target_link_libraries(Spacer PRIVATE OpenGothic SpacerAssets)
 
 # OpenXR window mode (Meta Quest): the game floats in a window with passthrough around it
 if(ANDROID)
-  option(OPENGOTHIC_XR "Present through OpenXR as a window in passthrough" ON)
   set(OPENGOTHIC_OPENXR_DIR "${CMAKE_SOURCE_DIR}/toolchain/openxr-aar" CACHE PATH "Extracted openxr_loader_for_android AAR")
   if(OPENGOTHIC_XR)
     if(NOT EXISTS "${OPENGOTHIC_OPENXR_DIR}/prefab/modules/headers/include/openxr/openxr.h")

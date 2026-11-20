@@ -36,6 +36,10 @@ function(add_shader OUTPUT SOURCE)
     list(SUBLIST ARGV 2 -1 VARS)
   endif()
 
+  if(ANDROID AND OPENGOTHIC_XR AND SOURCE STREQUAL "materials/main.vert" AND OUTPUT MATCHES "[.]vert$")
+    list(APPEND VARS "-DPACKED_TRIANGLE_VALID")
+  endif()
+
   if("${OUTPUT}" MATCHES "\.(mesh)")
     list(APPEND VARS "--target-env" "spirv1.4")
   endif()
