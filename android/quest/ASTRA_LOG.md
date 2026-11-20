@@ -1,5 +1,19 @@
 # Quest audit on astra-audit
 
+## Ready for the owner
+
+The combined Quest build is installed. Load slot 10 and enable SpaceWarp in Video to try the changes.
+
+| Change | How to try it | Evidence |
+| --- | --- | --- |
+| Camera motion | Turn slowly with the mouse or right stick, then walk past nearby objects. | At 18°/s the final Quest run measured 0.022° standard deviation across 53 camera steps. The earlier waypoint baseline measured 0.058° in a different scene. Host Vulkan readbacks covered sky, moving meshes and particle cores. Physical mouse and stick comfort still need a wearer. |
+| HUD square | Look above the health bar during play. | The square disappeared from the normal-colour eye capture and the health bar remained. [Before and after](../../build/captures/u4-20261120-120043-913/hud-before-after.png) |
+| Life-size portal | Drag either lower corner horizontally or vertically. A larger opening shows more of the world. | The smoke enlarged the window from 2.40 × 1.35 m to 3.20 × 1.65 m. Eye targets grew from 1600 × 900 to 1984 × 1028. Host projections preserved scale and stereo disparity across seven aperture shapes. Check menu readability and parallax at the window sizes you use. |
+| Passthrough dimmer | Hover over the environment button below the handle. Pinch or hold the trigger, then drag the slider. | The compositor showed the VR sky and the return to passthrough. At 85% dimming, a matched patch of room in the resized image fell from 114 to 27 median luminance levels. |
+| Surface light | Enable **Video → Surface light**, allow spatial-data access, and place or move the window above a table or floor. The default is Off. | The headset displayed the permission request. It was left unanswered. The fitter and light shaders passed host tests. Real-room plane selection, appearance and Quest GPU cost remain unverified. |
+
+Windows and Quest Release linked. The combined smoke used synthetic gestures, stopped the game, released sleep and cleared its clock overrides and arguments. Slot 10 and the owner's INI retained their original SHA-256 hashes. The installed APK SHA-256 is `d0eb178f8c1d00c6c41cee4887b5208f7d7d1c9d58af9dc2d9fbc7bbe3dcf1d9`. [Local APK](../../build/u4-combined.apk) · [Compositor screenshots](../../build/captures/u4-20261120-120043-913/compositor-overview.jpg)
+
 The starting revisions were OpenGothic `341775f4`, Tempest `a09928eb` and dmusic `7fe15296`. Device checks and source findings below are separate.
 
 ## Vulkan image handoff
@@ -854,3 +868,11 @@ The first plane fixture wrongly chose a broad floor below a nearer tabletop. Wei
 ### Reproduce all owner controls in a single slot-10 smoke
 
 `-save 10 -xrsmoke -setting INTERNAL xrSpaceWarp 1` starts the explicit development sequence after the saved world is ready. Synthetic near and far poses use the production hit-test, capture and release paths to switch environments, drag the dimmer and enlarge the portal. Surface light turns on last. The process uses transient room settings and suppresses INI flushes. Normal launches keep their configured selections. The final slider fixture passed 1,138 checks, including opacity fallback, and the Windows release linked with XR disabled.
+
+### Combined slot-10 Quest smoke, 12:00 CET
+
+The occupancy guard passed before install and before wake. With CPU 1 / GPU 0 requested, the smoke loaded slot 10, recorded two stereo pairs and took five compositor screenshots. A synthetic near press switched to the dusk sky and back. A ray-trigger drag reached 0.85 on the slider. A corner drag changed the eye targets in four steps to 1984 × 1028, with 496 × 257 motion/depth, 41.6% more colour pixels than the default. The surface-light toggle opened the system permission dialog. With the game unfocused, the final diagnostic marker did not run. The bounded smoke stopped the game at 100% battery and 35 °C, compared with 100% and 33 °C before install. [Phase log](../../build/captures/u4-20261120-120043-913/events.txt) · [Permission panel](../../build/captures/u4-20261120-120043-913/surface-light.jpg)
+
+Across frames 25–78, the actual camera turn averaged 0.524° per app frame with 0.022° standard deviation. Display intervals measured 28.60 ± 4.03 ms and simulation steps 29.15 ± 1.11 ms. Across frames 95–150 the camera averaged 0.505 ± 0.011°. App timings before the drag showed 35.8–36.0 fps and 9.78–11.19 GPU ms per eye. The saved game log ends mid-line during resizing, before a complete large-window GPU sample. The retained VrApi buffer covered system processes, so a game ASW/stale count is unavailable for this run. A final plain-stereo movement comparison and controlled large-window cost remain unmeasured. [Game log](../../build/captures/u4-20261120-120043-913/game.txt)
+
+The available game log contained no XR or Vulkan errors. It retained the baseline asset warnings for `INVISIBLE_VOBBOX.3DS`, two missing sound effects and ZenKit section `f590`. The phase log and screenshots cover the later controls. The spatial-data permission panel prevented observing the projected light. After granting access, move the window to sample a surface. If the runtime requires permission at instance creation, restart with Surface light enabled. The smoke performed no permission grant or room scan.
