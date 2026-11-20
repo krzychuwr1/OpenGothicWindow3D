@@ -237,14 +237,24 @@ struct GameMusic::GothicKitMusicProvider : GameMusic::MusicProvider {
     DmPerformance_release(performance);
     }
 
-  void renderSound(int16_t *out, size_t n) override {
-    if(performance==nullptr || !isEnabled()) {
-      std::memset(out, 0, n * sizeof(out[0]) * 2);
-      return;
+  void renderSound(int16_t* out, size_t n) override {
+    const auto format = DmRenderOptions(DmRender_SHORT | DmRender_STEREO);
+    if(performance!=nullptr) {
+      if(isEnabled() && !stopRequested.load())
+        updateTheme();
+
+      if(stopRequested.exchange(false)) {
+        // Consume the queued stop before scheduling another theme on this stream.
+        const auto stop = DmPerformance_playSegment(performance, nullptr, DmTiming_INSTANT);
+        const auto pcm  = DmPerformance_renderPcm(performance, out, n * 2, format);
+        if(stop!=DmResult_SUCCESS || pcm!=DmResult_SUCCESS)
+          stopRequested.store(true);
+        }
+      else if(isEnabled() && DmPerformance_renderPcm(performance, out, n * 2, format)==DmResult_SUCCESS) {
+        return;
+        }
       }
-    updateTheme();
-    if(DmPerformance_renderPcm(performance, out, n * 2, DmRenderOptions(DmRender_SHORT | DmRender_STEREO))!=DmResult_SUCCESS)
-      std::memset(out, 0, n * sizeof(out[0]) * 2);
+    std::memset(out, 0, n * sizeof(out[0]) * 2);
     }
 
   void updateTheme() {
@@ -275,7 +285,7 @@ struct GameMusic::GothicKitMusicProvider : GameMusic::MusicProvider {
 
   void stopTheme() override {
     GameMusic::MusicProvider::stopTheme();
-    DmPerformance_playTransition(performance, nullptr, DmEmbellishment_NONE, DmTiming_INSTANT);
+    stopRequested.store(true);
     }
 
   DmEmbellishmentType computeEmbellishment(Tags nextTags, Tags currTags, zenkit::MusicTransitionEffect transtype) const {
@@ -325,7 +335,8 @@ struct GameMusic::GothicKitMusicProvider : GameMusic::MusicProvider {
     }
 
   private:
-    DmPerformance *performance = nullptr;
+    DmPerformance*    performance = nullptr;
+    std::atomic_bool  stopRequested{false};
   };
 
 static constexpr int PROVIDER_UNINITIALIZED = -1;
