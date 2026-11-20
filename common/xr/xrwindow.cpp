@@ -218,6 +218,8 @@ struct XrWindow::Impl {
   void createPassthrough();
   void createActions();
   void pollEvents();
+  void stopSession();
+  bool sessionResult(XrResult result, const char* operation);
   void updateInput();
   void cancelInput();
   void placeWindow();
@@ -767,9 +769,28 @@ void XrWindow::Impl::createActions() {
   ok(xrAttachSessionActionSets(session, &attach), "attach action sets");
   }
 
+void XrWindow::Impl::stopSession() {
+  state = XR_SESSION_STATE_EXITING;
+  running = false;
+  cancelInput();
+  SystemApi::exit();
+  }
+
+bool XrWindow::Impl::sessionResult(XrResult result, const char* operation) {
+  if(result==XR_ERROR_INSTANCE_LOST || result==XR_ERROR_SESSION_LOST)
+    stopSession();
+  return ok(result, operation);
+  }
+
 void XrWindow::Impl::pollEvents() {
-  XrEventDataBuffer ev = {XR_TYPE_EVENT_DATA_BUFFER};
-  while(xrPollEvent(instance, &ev)==XR_SUCCESS) {
+  while(state!=XR_SESSION_STATE_EXITING) {
+    XrEventDataBuffer ev = {XR_TYPE_EVENT_DATA_BUFFER};
+    const XrResult result = xrPollEvent(instance, &ev);
+    if(result!=XR_SUCCESS) {
+      if(result!=XR_EVENT_UNAVAILABLE)
+        sessionResult(result, "xrPollEvent");
+      return;
+      }
     switch(ev.type) {
       case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED: {
         auto& e = *reinterpret_cast<XrEventDataSessionStateChanged*>(&ev);
@@ -780,7 +801,7 @@ void XrWindow::Impl::pollEvents() {
         if(state==XR_SESSION_STATE_READY) {
           XrSessionBeginInfo begin = {XR_TYPE_SESSION_BEGIN_INFO};
           begin.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-          running = ok(xrBeginSession(session, &begin), "xrBeginSession");
+          running = sessionResult(xrBeginSession(session, &begin), "xrBeginSession");
           if(running && hasPerfSettings) {
             // The game is heavy on both: ask for the highest clocks the headset can sustain,
             // or the lowest ones for unattended test runs (-perf low)
@@ -791,12 +812,11 @@ void XrWindow::Impl::pollEvents() {
             }
           }
         else if(state==XR_SESSION_STATE_STOPPING) {
-          xrEndSession(session);
+          sessionResult(xrEndSession(session), "xrEndSession");
           running = false;
           }
         else if(state==XR_SESSION_STATE_EXITING || state==XR_SESSION_STATE_LOSS_PENDING) {
-          running = false;
-          SystemApi::exit();
+          stopSession();
           }
         break;
         }
@@ -807,13 +827,11 @@ void XrWindow::Impl::pollEvents() {
         break;
         }
       case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
-        running = false;
-        SystemApi::exit();
+        stopSession();
         break;
       default:
         break;
       }
-    ev = {XR_TYPE_EVENT_DATA_BUFFER};
     }
   }
 
@@ -1128,12 +1146,12 @@ bool XrWindow::beginFrame() {
 
   XrFrameWaitInfo wait = {XR_TYPE_FRAME_WAIT_INFO};
   s.frame = {XR_TYPE_FRAME_STATE};
-  if(!ok(xrWaitFrame(s.session, &wait, &s.frame), "xrWaitFrame"))
+  if(!s.sessionResult(xrWaitFrame(s.session, &wait, &s.frame), "xrWaitFrame"))
     return false;
   {
   std::lock_guard<std::mutex> guard(*s.vk.queueLock);
   XrFrameBeginInfo begin = {XR_TYPE_FRAME_BEGIN_INFO};
-  if(!ok(xrBeginFrame(s.session, &begin), "xrBeginFrame"))
+  if(!s.sessionResult(xrBeginFrame(s.session, &begin), "xrBeginFrame"))
     return false;
   }
   s.frameBegun = true;
@@ -1662,7 +1680,7 @@ bool XrWindow::submit(bool rendered) {
   end.layers               = layers.data();
   {
   const uint64_t t0 = xrUs();
-  const bool ended = ok(xrEndFrame(s.session, &end), "xrEndFrame");
+  const bool ended = s.sessionResult(xrEndFrame(s.session, &end), "xrEndFrame");
   tEndFrame += xrUs()-t0;
   return ended && warp;
   }
