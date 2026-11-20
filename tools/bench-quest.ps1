@@ -40,10 +40,12 @@ $lease = [Threading.Mutex]::new($false, "Local\OpenGothicQuestBench-$serial")
 try { $owned = $lease.WaitOne(0) } catch [Threading.AbandonedMutexException] { $owned = $true }
 if (-not $owned) { $lease.Dispose(); throw 'Another benchmark owns the headset' }
 $argsFile = $null
+$remoteStaging = "/data/local/tmp/opengothic-bench-$([Guid]::NewGuid().ToString('N'))"
 $wroteArgs = $false
 $forcedClocks = $false
 $wakeRequested = $false
 $launched = $false
+$gamePid = $null
 try {
   $battery = (Invoke-BenchAdb shell dumpsys battery) -join "`n"
   if ($battery -notmatch '(?m)^\s*level:\s*(\d+)' -or [int]$Matches[1] -lt 25 -or
@@ -58,8 +60,11 @@ try {
 
   $argsFile = [IO.Path]::GetTempFileName()
   [IO.File]::WriteAllText($argsFile, $launchArgs, [Text.Encoding]::ASCII)
+  Invoke-BenchAdb push $argsFile $remoteStaging | Out-Null
+  # A second tool may have written args.txt since the preflight check.
+  # Android shell noclobber creates it only if the path is still free.
+  Invoke-BenchAdb shell "set -C; cat $remoteStaging > $remoteArgs"
   $wroteArgs = $true
-  Invoke-BenchAdb push $argsFile $remoteArgs | Out-Null
   if ($Perf -eq 'low') {
     $forcedClocks = $true
     Invoke-BenchAdb shell setprop debug.oculus.cpuLevel 1
@@ -71,8 +76,13 @@ try {
   $launchTime = (Invoke-BenchAdb shell date '+%s') + '.000'
   $launched = $true
   Invoke-BenchAdb shell am start -n "$Package/android.app.NativeActivity" | Out-Null
+  for ($attempt = 0; $attempt -lt 25 -and -not $gamePid; ++$attempt) {
+    $gamePid = & adb shell pidof $Package
+    if (-not $gamePid) { Start-Sleep -Milliseconds 200 }
+  }
+  if (-not $gamePid) { throw 'Game process did not start' }
   Start-Sleep $LoadSeconds
-  $gamePid = Invoke-BenchAdb shell pidof $Package
+  if ((Invoke-BenchAdb shell pidof $Package) -ne $gamePid) { throw 'Game process changed during loading' }
   $startup = Invoke-BenchAdb logcat -d -T $launchTime "--pid=$gamePid" -s app:*
   if (-not ($startup | Select-String -SimpleMatch "startup command `"goto waypoint $Waypoint`": ok") -or
       -not ($startup | Select-String -SimpleMatch "startup command `"set time $Time`": ok")) {
@@ -82,20 +92,24 @@ try {
   $since = (Invoke-BenchAdb shell date '+%s') + '.000'
   Start-Sleep ($Samples + 1)
   if ((Invoke-BenchAdb shell pidof $Package) -ne $gamePid) { throw 'Game process changed during sampling' }
-  if ((Invoke-BenchAdb shell cat $remoteArgs) -cne $launchArgs) { throw 'Launch arguments changed during sampling' }
+  if (((Invoke-BenchAdb shell cat $remoteArgs) -join "`n") -cne $launchArgs) { throw 'Launch arguments changed during sampling' }
   $vr = @(Invoke-BenchAdb logcat -d -T $since -s VrApi:* | Select-String 'App=')
   $cpu = Invoke-BenchAdb logcat -d -T $since "--pid=$gamePid" -s app:* | Select-String 'Frame CPU ms|Point lights:|Update:|Draw CPU|eye 1|Per frame|XR submit|GPU ms per view|^.*app\s+:\s+[ A-Za-z#0-9&\-]+ [\d.]+;' | Select-Object -Last 8
 } finally {
   # A failing adb call must not prevent the remaining cleanup attempts.
-  if ($launched) { & adb shell am force-stop $Package }
+  if ($launched) {
+    $currentPid = & adb shell pidof $Package
+    if (-not $gamePid -or $currentPid -eq $gamePid) { & adb shell am force-stop $Package }
+  }
   if ($wakeRequested) { & adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable | Out-Null }
   if ($forcedClocks) {
     & adb shell setprop debug.oculus.cpuLevel "''"
     & adb shell setprop debug.oculus.gpuLevel "''"
   }
-  if ($wroteArgs -and ((& adb shell cat $remoteArgs) -ceq $launchArgs)) {
+  if ($wroteArgs -and (((& adb shell cat $remoteArgs) -join "`n") -ceq $launchArgs)) {
     & adb shell rm -f $remoteArgs
   }
+  if ($argsFile) { & adb shell rm -f $remoteStaging }
   if ($argsFile) { Remove-Item -LiteralPath $argsFile }
   $lease.ReleaseMutex()
   $lease.Dispose()
