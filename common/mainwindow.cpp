@@ -1362,9 +1362,15 @@ void MainWindow::render(){
   try {
     if(auto xr = XrWindow::inst()) {
       // The game update runs while the GPU still works on the previous frame;
-      // only recording the eyes waits for the runtime's frame timing
+      // only recording the eyes waits for the runtime's frame timing.
+      // The game holds still while the headset is off or a system menu has the focus.
       const uint64_t tu = nowUs();
-      updateFrame();
+      if(xr->isFocused())
+        updateFrame();
+      if(!xr->isVisible()) {
+        xr->beginFrame();
+        return;
+        }
       const uint64_t t0 = nowUs();
       if(!xr->beginFrame())
         return;

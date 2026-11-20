@@ -1391,6 +1391,10 @@ bool XrWindow::isFocused() const {
   return impl->state==XR_SESSION_STATE_FOCUSED;
   }
 
+bool XrWindow::isVisible() const {
+  return impl->running && (impl->state==XR_SESSION_STATE_VISIBLE || impl->state==XR_SESSION_STATE_FOCUSED);
+  }
+
 #else
 
 struct XrWindow::Impl {};
@@ -1415,5 +1419,6 @@ void      XrWindow::setVerticalFov(float) {}
 std::string XrWindow::timingReport() { return ""; }
 PadState  XrWindow::pad() const { return {}; }
 bool      XrWindow::isFocused() const { return false; }
+bool      XrWindow::isVisible() const { return false; }
 
 #endif

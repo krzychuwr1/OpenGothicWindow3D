@@ -56,6 +56,8 @@ class XrWindow final {
     // Controller state of the XR controllers (empty while the window is grabbed or the app is unfocused).
     PadState          pad() const;
     bool              isFocused() const;
+    // The session shows frames (headset worn and the app in front, possibly under a system menu)
+    bool              isVisible() const;
 
   private:
     XrWindow();
