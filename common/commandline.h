@@ -60,6 +60,8 @@ class CommandLine {
     float               xrWindowWidth() const { return portalWidth; }
     float               xrWindowHeight() const { return portalHeight; }
     float               xrTurnRate() const { return turnRate; }
+    float               xrMouseRate() const { return mouseRate; }
+    float               xrStickX() const { return stickX; }
     bool                xrFaceView() const { return faceView; }
     bool                xrSmokeTest() const { return smokeTest; }
     bool                xrWalkForward() const { return walkForward; }
@@ -89,6 +91,7 @@ class CommandLine {
     std::string         showViews;
     int                 captureSec = 0, captureBurst = 0;
     float               turnRate = 0.f;
+    float               mouseRate = 0.f, stickX = 0.f;
     float               portalWidth = 2.4f, portalHeight = 1.35f;
     bool                walkForward = false;
     bool                smokeTest = false;

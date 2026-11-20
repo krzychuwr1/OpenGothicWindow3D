@@ -78,6 +78,8 @@ class Renderer final {
     uint64_t hudRetryAfter = 0;
     Tempest::Attachment hudTransmittance;
     Tempest::RenderPipeline hudMotion;
+    Tempest::RenderPipeline motionTrial;
+    Tempest::Vec4 motionTrialGain;
     std::optional<Tempest::Builtin::Transmittance> hudBlend;
 #endif
     bool secondView = false;

@@ -219,6 +219,7 @@ class MainWindow : public Tempest::Window {
     Tempest::Widget*          lastKeyRecipient=nullptr;
 #endif
     Tempest::PointF           dMouse;
+    float                     probeMouseRemainder = 0.f;
     PlayerControl             player;
     uint64_t                  lastTick=0;
 

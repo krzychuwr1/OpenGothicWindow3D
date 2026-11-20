@@ -11,7 +11,7 @@ class XrFrameClock final {
       return previous==0 || target<=previous || target-previous>100000000;
       }
 
-    uint64_t advance(int64_t target, int64_t nominal) {
+    uint64_t advance(int64_t target, int64_t nominal, bool useElapsed = false) {
       const int64_t elapsed = target-lastTarget;
       if(discontinuity(lastTarget,target)) {
         lastTarget = logical = target;
@@ -19,6 +19,11 @@ class XrFrameClock final {
         return 0;
         }
       lastTarget = target;
+      if(useElapsed) {
+        const int64_t old = logical;
+        logical = target;
+        return uint64_t(target/1000000-old/1000000);
+        }
       estimate = estimate==0 ? elapsed : estimate+(elapsed-estimate)/12;
       const int64_t period = nominal>0 ? nominal : estimate;
       const int64_t error = target-logical-period;

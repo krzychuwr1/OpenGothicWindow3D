@@ -94,6 +94,23 @@ static Size tileCount(Size sz, int s) {
   }
 
 Renderer::Renderer() {
+#ifdef OPENGOTHIC_XR
+  // Isolate vector format hypotheses without changing the eye, depth or poses.
+  const int trial = Gothic::settingsGetI("BENCHMARK","xrMotionTrial");
+  const Vec4 gains[] = {{1,1,1,0}, {0,0,0,0}, {-1,-1,-1,0}, {.5f,.5f,.5f,0},
+                        {2,2,2,0}, {1,-1,1,0}, {8,8,8,0}, {0,0,0,.04f}, {0,0,0,-.04f},
+                        {1,1,1,1}};
+  if(trial>=1 && size_t(trial)<=std::size(gains)) {
+    auto vs = GothicShader::get("triangle.vert.sprv");
+    auto fs = GothicShader::get("spacewarp_trial.frag.sprv");
+    auto& dev = Resources::device();
+    RenderState state;
+    state.setZTestMode(RenderState::ZTestMode::Always);
+    motionTrial = dev.pipeline(Triangles,state,dev.shader(vs.data,vs.len),dev.shader(fs.data,fs.len));
+    motionTrialGain = gains[trial-1];
+    Log::i("XR motion-vector trial ",trial);
+    }
+#endif
   auto& device = Resources::device();
 
   static const TextureFormat sfrm[] = {
@@ -2392,7 +2409,8 @@ void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
 
   // Imported images rest in attachment layout for OpenXR. Sample a regular
   // attachment for the optional debug overlay and copy its signed values out.
-  auto& target = debugOutput ? usesAttachment(debugMotion, TextureFormat::RGBA16F, motion.size()) : motion;
+  const bool copyMotion = debugOutput!=nullptr || !motionTrial.isEmpty();
+  auto& target = copyMotion ? usesAttachment(debugMotion, TextureFormat::RGBA16F, motion.size()) : motion;
   cmd.setDebugMarker("SpaceWarp vectors");
   cmd.setFramebuffer({{target, Vec4(), Tempest::Preserve}}, {depth, 1.f, Tempest::Preserve});
   cmd.setBinding(0, scene.uboGlobal[SceneGlobals::V_Main]);
@@ -2418,12 +2436,18 @@ void Renderer::drawSpaceWarp(Encoder<CommandBuffer>& cmd, WorldView& wview,
     cmd.draw(nullptr, 0, 3);
     }
   XrWindow::inst()->drawWindowEdges(cmd,true);
-  if(debugOutput) {
+  if(copyMotion) {
     cmd.setFramebuffer({{motion, Tempest::Discard, Tempest::Preserve}});
     cmd.setBinding(0, target, Sampler::nearest());
-    cmd.setPipeline(shaders.copy);
+    if(!motionTrial.isEmpty()) {
+      cmd.setPushData(motionTrialGain);
+      cmd.setPipeline(motionTrial);
+      } else {
+      cmd.setPipeline(shaders.copy);
+      }
     cmd.draw(nullptr, 0, 3);
-    drawSpaceWarpDebug(cmd, target, *debugOutput);
+    if(debugOutput)
+      drawSpaceWarpDebug(cmd, target, *debugOutput);
     }
   }
 

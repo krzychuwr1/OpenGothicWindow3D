@@ -145,6 +145,12 @@ CommandLine::CommandLine(int argc, const char** argv) {
     else if(arg=="-xrturn" && i+1<argc) {
       turnRate = std::clamp(float(std::atof(argv[++i])), -360.f, 360.f);
       }
+    else if(arg=="-xrmouse" && i+1<argc) {
+      mouseRate = std::clamp(float(std::atof(argv[++i])), -8000.f, 8000.f);
+      }
+    else if(arg=="-xrstick" && i+1<argc) {
+      stickX = std::clamp(float(std::atof(argv[++i])), -1.f, 1.f);
+      }
     else if(arg=="-xrsmoke") {
       smokeTest = true;
       }

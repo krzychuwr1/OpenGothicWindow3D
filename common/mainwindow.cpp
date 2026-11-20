@@ -41,6 +41,8 @@
 
 #if defined(OPENGOTHIC_XR)
 #include <Tempest/VulkanApi>
+#include <Tempest/VulkanInterop>
+#include <Tempest/File>
 #endif
 
 #include <algorithm>
@@ -748,10 +750,26 @@ void MainWindow::paintEyeOverlay(const Camera& camera) {
     return;
   auto focus = world->validateFocus(player.focus());
   const bool showBounds = XrWindow::inst() && CommandLine::inst().debugShow("windowbounds");
-  if(!focus && !showBounds)
+#ifdef OPENGOTHIC_XR
+  static const bool showWarpProbe = Gothic::settingsGetI("BENCHMARK","xrMotionTrial")==10;
+#else
+  const bool showWarpProbe = false;
+#endif
+  if(!focus && !showBounds && !showWarpProbe)
     return;
   PaintEvent e(eyeOverlay,atlas,w(),h());
   Painter    p(e);
+  if(showWarpProbe) {
+    // In submitted colour both bars have fixed positions. Only the magenta
+    // bar has artificial velocity in spacewarp_trial.frag; cyan anchors it.
+    const float sx = float(w())/64.f, sy = float(h())/64.f;
+    p.setBrush(Color(0.f,0.f,0.f,1.f));
+    p.drawRect(14*sx,24*sy,9*sx,4*sy,0.f,0.f,1.f,1.f);
+    p.setBrush(Color(0.f,1.f,1.f,1.f));
+    p.drawRect(15*sx,24.5f*sy,sx,3*sy,0.f,0.f,1.f,1.f);
+    p.setBrush(Color(1.f,0.f,1.f,1.f));
+    p.drawRect(19*sx,24.5f*sy,sx,3*sy,0.f,0.f,1.f,1.f);
+    }
   if(showBounds) {
     // Mark the submitted eye boundary without changing the scene depth or its motion vectors.
     const int band = std::max(2, std::min(w(),h())/48);
@@ -1400,9 +1418,15 @@ void MainWindow::tickPad(uint64_t dt) {
       }
     state = PadState::merge(nativePad(native.state),xrState);
     const auto& cli = CommandLine::inst();
-    if(!menu && cli.xrWalkForward() && XrWindow::inst() && (startupDone || cli.startupCommands().empty())) {
-      state.connected = true;
-      state.ly = -1.f;
+    if(!menu && XrWindow::inst() && (startupDone || cli.startupCommands().empty())) {
+      if(cli.xrWalkForward()) {
+        state.connected = true;
+        state.ly = -1.f;
+        }
+      if(cli.xrStickX()!=0.f) {
+        state.connected = true;
+        state.rx = cli.xrStickX();
+        }
       }
     previousXrPad = xrState;
     const bool previousMenu = std::exchange(previousPadMenu,menu);
@@ -1412,6 +1436,14 @@ void MainWindow::tickPad(uint64_t dt) {
     });
   if(!completed)
     return;
+  const auto& cli = CommandLine::inst();
+  if(cli.xrMouseRate()!=0.f && XrWindow::inst() && !padMenuContext() && (startupDone || cli.startupCommands().empty())) {
+    probeMouseRemainder += float(dt)*cli.xrMouseRate()/1000.f;
+    const int pixels = int(probeMouseRemainder);
+    probeMouseRemainder -= float(pixels);
+    MouseEvent move(w()/2+pixels,h()/2);
+    processMouse(move,true);
+    }
 #else
   pad.releaseAll();
 #endif
@@ -1546,18 +1578,28 @@ void MainWindow::render(){
         }
       // Tick while the GPU finishes the last pair. Its display prediction supplies
       // the pacing sample for this update; input does not wait on the next frame.
-      const int64_t display = xr->predictedDisplayTime();
-      if(focused && display>0 && display!=frameClock.lastTarget)
-        updateFrame(frameClock.advance(display,xr->nominalFramePeriod()));
+      static const int predictionMode = Gothic::settingsGetI("BENCHMARK","xrCurrentPrediction");
+      const int64_t previousPrediction = xr->predictedDisplayTime();
+      const auto updateAtPrediction = [&] {
+        const int64_t display = xr->predictedDisplayTime();
+        if(focused && display>0 && display!=frameClock.lastTarget) {
+          const auto dt = frameClock.advance(display,xr->nominalFramePeriod(),predictionMode==2);
+          updateFrame(dt);
+          }
+        };
+      if(predictionMode==0)
+        updateAtPrediction();
       const uint64_t t0 = nowUs();
       const bool renderable = xr->beginFrame();
       const uint64_t t1 = nowUs();
       try {
+        if(predictionMode!=0)
+          updateAtPrediction();
         if(!renderable) {
           eyeHistoryValid = false;
           return;
           }
-        if(XrFrameClock::discontinuity(display,xr->predictedDisplayTime()))
+        if(XrFrameClock::discontinuity(previousPrediction,xr->predictedDisplayTime()))
           eyeHistoryValid = false;
         renderFrame(true);
         }
@@ -1673,7 +1715,9 @@ void MainWindow::renderFrame(bool xr) {
 #endif
   const auto& cli = CommandLine::inst();
   const bool probeReady = xr && Gothic::inst().camera()!=nullptr && (startupDone || cli.startupCommands().empty());
-  if(probeReady && (cli.xrCaptureBurst()>0 || cli.xrTurnRate()!=0 || cli.xrWalkForward())) {
+  const bool frameMarker = probeReady && cli.debugShow("frameid");
+  if(probeReady && (cli.xrCaptureBurst()>0 || cli.xrTurnRate()!=0 || cli.xrWalkForward() ||
+                    cli.xrMouseRate()!=0.f || cli.xrStickX()!=0.f || frameMarker)) {
     ++captureFrame;
     if(captureFrame<=150) {
       const auto v = Gothic::inst().camera()->view();
@@ -1718,8 +1762,24 @@ void MainWindow::renderFrame(bool xr) {
         PaintEvent p(uiLayer,atlas,this->w(),this->h());
         video.paintEvent(p);
         }
-      else if(needToUpdate() || Gothic::inst().checkLoading()!=Gothic::LoadState::Idle) {
+      else if(frameMarker || needToUpdate() || Gothic::inst().checkLoading()!=Gothic::LoadState::Idle) {
         dispatchPaintEvent(uiLayer,atlas);
+        if(frameMarker) {
+          // The normal UI also supplies the static HUD mask to the warp pass.
+          PaintEvent pe(uiLayer,atlas,w(),h());
+          Painter painter(pe);
+          const int cell = std::max(8,w()/48);
+          // Guards distinguish both uniformly coloured codes from a missing window.
+          painter.setBrush(Color(1.f,1.f,1.f,1.f));
+          painter.drawRect(w()/2-3*cell,h()/12,cell,cell);
+          painter.setBrush(Color(0.f,0.f,0.f,1.f));
+          painter.drawRect(w()/2+2*cell,h()/12,cell,cell);
+          for(unsigned bit=0; bit<4; ++bit) {
+            const float c = (captureFrame & (1u<<bit))!=0 ? 1.f : 0.f;
+            painter.setBrush(Color(c,c,c,1.f));
+            painter.drawRect(w()/2-2*cell+int(bit)*cell,h()/12,cell,cell);
+            }
+          }
 
         numOverlay.clear();
         PaintEvent p(numOverlay,atlas,this->w(),this->h());
@@ -1748,6 +1808,10 @@ void MainWindow::renderFrame(bool xr) {
 #endif
     renderer.setSecondView(camera!=nullptr && view==1);
     CommandBuffer& cmd = commands[cmdId];
+#ifdef OPENGOTHIC_XR
+    Attachment* capturedMotion = nullptr;
+    ZBuffer* capturedDepth = nullptr;
+#endif
     {
     struct EndEye {
       Camera* camera;
@@ -1785,6 +1849,10 @@ void MainWindow::renderFrame(bool xr) {
         const auto* counters = inventory.isOpen()!=InventoryMenu::State::Closed ? &numMesh[cmdId] : nullptr;
         auto* debug = CommandLine::inst().debugShow("motion") ? &backbuf : nullptr;
         renderer.drawSpaceWarp(enc, *Gothic::inst().worldView(), *motion, *depth, uiMesh[cmdId], counters, hudReady,debug);
+        if(cli.xrCaptureBurst()>0 && cli.debugShow("warpraw")) {
+          capturedMotion = motion;
+          capturedDepth = depth;
+          }
         if(debug)
           XrWindow::inst()->drawWindowEdges(enc);
         }
@@ -1829,7 +1897,15 @@ void MainWindow::renderFrame(bool xr) {
       auto saveEye = [](const Pixmap& pm, const std::string& file) {
         const auto tmp = file+".tmp";
         try {
-          pm.save(tmp.c_str(), "png");
+#ifdef OPENGOTHIC_XR
+          if(pm.format()==TextureFormat::RGBA16F || pm.format()==TextureFormat::Depth32F) {
+            WFile out(tmp);
+            const uint32_t extent[] = {pm.w(),pm.h()};
+            if(out.write(extent,sizeof(extent))!=sizeof(extent) || out.write(pm.data(),pm.dataSize())!=pm.dataSize() || !out.flush())
+              throw std::runtime_error("Incomplete warp capture");
+            } else
+#endif
+            pm.save(tmp.c_str(), "png");
           std::filesystem::rename(tmp,file);
           }
         catch(const std::exception& e) {
@@ -1840,6 +1916,15 @@ void MainWindow::renderFrame(bool xr) {
         };
       if(cli.xrCaptureBurst()>0) {
         captureBurstImages.emplace_back(name,device.readPixels(backbuf));
+#ifdef OPENGOTHIC_XR
+        if(capturedMotion && capturedDepth) {
+          const auto base = std::filesystem::path(name).stem().string();
+          captureBurstImages.emplace_back(base+".mv",device.readPixels(*capturedMotion));
+          captureBurstImages.emplace_back(base+".depth",vulkanReadDepth32F(device,*capturedDepth));
+          Log::i("XR warp capture ",name," frame=",captureFrame," displayNs=",XrWindow::inst()->predictedDisplayTime(),
+                 " color=",backbuf.w(),"x",backbuf.h()," warp=",capturedMotion->w(),"x",capturedMotion->h());
+          }
+#endif
         if(view==1 && ++capturedBurst==cli.xrCaptureBurst())
           captureWriter[0] = std::async(std::launch::async,[images=std::move(captureBurstImages),saveEye] {
             for(auto& [file,pm]:images)

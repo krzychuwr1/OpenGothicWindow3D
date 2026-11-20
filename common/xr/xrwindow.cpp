@@ -190,6 +190,7 @@ struct XrWindow::Impl {
 
   // Application SpaceWarp
   uint32_t                 mvWidth = 0, mvHeight = 0;
+  bool                     fullMotionExtent = false;
   XrSwapchain              mvSwapchain[2]    = {};
   XrSwapchain              depthSwapchain[2] = {};
   std::vector<Attachment>  mvTargets[2];
@@ -704,6 +705,13 @@ void XrWindow::Impl::createSwapchains() {
     capacityW = std::min(2048u,props.graphicsProperties.maxSwapchainImageWidth);
     capacityH = std::min(1536u,props.graphicsProperties.maxSwapchainImageHeight);
     }
+  for(const auto& value:CommandLine::inst().settingsOverrides()) {
+    if(value.section=="BENCHMARK" && value.key=="xrTightSwapchains" && value.value=="1") {
+      capacityW = std::min(capacityW,width);
+      capacityH = std::min(capacityH,height);
+      Log::i("XR trial eye allocation ",capacityW,"x",capacityH);
+      }
+    }
   auto makeEyes = [&] {
     info.width = capacityW;
     info.height = capacityH;
@@ -788,6 +796,22 @@ bool XrWindow::Impl::createSpaceWarpSwapchains() {
   // Motion vectors at a quarter of the window resolution (the runtime upsamples them)
   mvWidth  = std::max(width/4u,  16u);
   mvHeight = std::max(height/4u, 16u);
+  // XR session setup precedes Gothic.ini loading. Only an explicit command-line
+  // experiment asks for the runtime's full recommended images at every window size.
+  for(const auto& value:CommandLine::inst().settingsOverrides()) {
+    if(value.section=="BENCHMARK" && value.key=="xrMotionExtent")
+      fullMotionExtent = value.value=="1";
+    }
+  if(fullMotionExtent) {
+    XrSystemSpaceWarpPropertiesFB warp{XR_TYPE_SYSTEM_SPACE_WARP_PROPERTIES_FB};
+    XrSystemProperties props{XR_TYPE_SYSTEM_PROPERTIES,&warp};
+    if(!ok(xrGetSystemProperties(instance,system,&props),"SpaceWarp recommended extent") ||
+       warp.recommendedMotionVectorImageRectWidth==0 || warp.recommendedMotionVectorImageRectHeight==0)
+      return false;
+    mvWidth = warp.recommendedMotionVectorImageRectWidth;
+    mvHeight = warp.recommendedMotionVectorImageRectHeight;
+    Log::i("XR motion-vector trial full recommended extent ",mvWidth,"x",mvHeight);
+    }
 
   const auto formats = swapchainFormats(session);
   auto supported = [&](int64_t f) { return std::find(formats.begin(), formats.end(), f)!=formats.end(); };
@@ -796,20 +820,23 @@ bool XrWindow::Impl::createSpaceWarpSwapchains() {
     return false;
     }
 
+  const auto& cli = CommandLine::inst();
+  const XrSwapchainUsageFlags readback = cli.xrCaptureBurst()>0 && cli.debugShow("warpraw") ?
+                                         XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT : 0;
   for(int eye=0; eye<2; ++eye) {
     XrSwapchainCreateInfo info = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
-    info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+    info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | readback;
     info.format      = VK_FORMAT_R16G16B16A16_SFLOAT;
     info.sampleCount = 1;
-    info.width       = capacityW/4;
-    info.height      = capacityH/4;
+    info.width       = fullMotionExtent ? mvWidth : capacityW/4;
+    info.height      = fullMotionExtent ? mvHeight : capacityH/4;
     info.faceCount   = 1;
     info.arraySize   = 1;
     info.mipCount    = 1;
     mvSwapchain[eye] = makeSwapchain(session, info, "motion vector swapchain");
     if(mvSwapchain[eye]==XR_NULL_HANDLE)
       return false;
-    info.usageFlags  = XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+    info.usageFlags  = XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | readback;
     info.format      = VK_FORMAT_D32_SFLOAT;
     depthSwapchain[eye] = makeSwapchain(session, info, "depth swapchain");
     if(depthSwapchain[eye]==XR_NULL_HANDLE)
@@ -2614,8 +2641,10 @@ void XrWindow::setResolution(Size size) {
   auto& s = *impl;
   s.width = uint32_t(size.w);
   s.height = uint32_t(size.h);
-  s.mvWidth = std::max(s.width/4u,1u);
-  s.mvHeight = std::max(s.height/4u,1u);
+  if(!s.fullMotionExtent) {
+    s.mvWidth = std::max(s.width/4u,1u);
+    s.mvHeight = std::max(s.height/4u,1u);
+    }
   }
 
 float XrWindow::densityUiScale() const {

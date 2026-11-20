@@ -16,11 +16,15 @@
   -QualitySweep measures a sequence of image-quality choices in the same loaded scene.
   Digits 1-6 select 75%, 100%, 125%, 150%, 75% + CMAA2 and 75% + enhanced filtering.
   Each phase warms up for 5 seconds and measures for 12. Repeat in reverse order.
+  -VideoSeconds records the physical display with screenrecord after the scene loads.
+  The MP4, app trajectory, VrApi log and exact launch arguments go into captures/.
 
 .EXAMPLE
   ./tools/bench-quest.ps1 -Waypoint NW_CITY_MAINSTREET_02
   ./tools/bench-quest.ps1 -Waypoint NW_TAVERNE -Scenario spells -Captures 3
   ./tools/bench-quest.ps1 -Waypoint NW_TAVERNE -QualitySweep 321
+  ./tools/bench-quest.ps1 -VideoSeconds 8 -Extra '-xrfaceview -xrmouse 370 -show frameid -setting INTERNAL xrSpaceWarp 1'
+  ./tools/bench-quest.ps1 -EyeCaptures 1 -Extra '-xrfaceview -xrmouse 370 -captureburst 3 -show warpraw,frameid -setting INTERNAL xrSpaceWarp 1'
 #>
 param(
   [ValidatePattern('^[A-Za-z0-9_]+$')][string]$Waypoint = 'NW_CITY_MAINSTREET_02',
@@ -28,6 +32,9 @@ param(
   [string]$Package  = 'org.opengothic.window3d',
   [string]$Apk = '',
   [switch]$VrStats,
+  [ValidateRange(0,15)][int]$VideoSeconds = 0,
+  [ValidatePattern('^\d+x\d+$')][string]$VideoSize = '960x540',
+  [ValidatePattern('^\d+$')][string]$DisplayId,
   [ValidatePattern('^[1-6]{1,6}$')][string]$QualitySweep,
   [int]$LoadSeconds = 50,
   [int]$Samples     = 12,
@@ -79,12 +86,25 @@ function Assert-HeadsetIdle {
 function Copy-BenchCaptures {
   $eyeFiles = @()
   if ($EyeCaptures -gt 0) {
-    $new = @(Invoke-BenchAdb shell run-as $Package ls files | Where-Object { $_ -cmatch '^eye-\d+-[LR]\.png$' -and $eyesBefore -cnotcontains $_ })
+    $new = @(Invoke-BenchAdb shell run-as $Package ls files | Where-Object { $_ -cmatch '^eye-\d+-[LR]\.(png|mv|depth)$' -and $eyesBefore -cnotcontains $_ })
     foreach ($left in $new -clike '*-L.png') {
       $right = $left -creplace '-L\.png$','-R.png'
       if ($new -ccontains $right) { $eyeFiles += $left,$right }
     }
     if ($eyeFiles.Count -eq 0) { throw 'No complete stereo PNG pair for this run' }
+    if ($Extra -match 'warpraw') {
+      if ($Extra -notmatch '(?:^|\s)-captureburst\s+([1-4])(?:\s|$)' -or $eyeFiles.Count -ne 2*[int]$Matches[1]) {
+        throw 'Raw motion capture requires a complete stereo burst'
+      }
+      $sidecars = @(foreach ($eye in $eyeFiles) {
+        foreach ($ext in '.mv','.depth') {
+          $raw = [IO.Path]::ChangeExtension($eye,$ext)
+          if ($new -cnotcontains $raw) { throw "Missing warp input $raw" }
+          $raw
+        }
+      })
+      $eyeFiles += $sidecars
+    }
   }
   if ($eyeFiles.Count -gt 0 -or $shots.Count -gt 0) {
     New-Item -ItemType Directory -Force $dir | Out-Null
@@ -132,6 +152,9 @@ switch ($Scenario) {
   spells { $commands += 'cheat god','insert SKELETONMAGE','insert SKELETONMAGE','insert FIREWARAN' }
 }
 $capArg = if ($EyeCaptures -gt 0) { "-capture $EyeCaptures" } else { '' }
+if ($VideoSeconds -gt 0 -and ($Perf -ne 'low' -or $QualitySweep)) {
+  throw 'Display measurements require a separate low-clock run.'
+}
 if ($QualitySweep) {
   if ($Perf -ne 'low' -or $EyeCaptures -ne 0 -or $Scenario -ne 'none') {
     throw 'Quality sweeps require the low clock level, a static scenario and eye captures disabled.'
@@ -148,6 +171,7 @@ try { $owned = $lease.WaitOne(0) } catch [Threading.AbandonedMutexException] { $
 if (-not $owned) { $lease.Dispose(); throw 'Another benchmark owns the headset' }
 $argsFile = $null
 $remoteStaging = "/data/local/tmp/opengothic-bench-$([Guid]::NewGuid().ToString('N'))"
+$remoteMovie = $null
 $wroteArgs = $false
 $forcedClocks = $false
 $wakeRequested = $false
@@ -212,6 +236,16 @@ try {
       $warmup = Invoke-BenchAdb logcat -d -T $launchTime "--pid=$gamePid" -s app:* | Select-String 'XR quality [1-6] warmup'
       if (-not $warmup -and [DateTime]::UtcNow -ge $deadline) { throw 'Quality sweep did not reach the loaded scene' }
     } until ($warmup)
+  } elseif ($VideoSeconds -gt 0) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($LoadSeconds)
+    $needPlacement = $Extra -match '(?:^|\s)-xrfaceview(?:\s|$)'
+    do {
+      Start-Sleep -Milliseconds 700
+      $startup = (Invoke-BenchAdb logcat -d -T $launchTime "--pid=$gamePid" -s app:*) -join "`n"
+      $ready = $startup.Contains(('startup command "{0}": ok' -f $commands[-1])) -and
+               (!$needPlacement -or $startup.Contains('XR bench window placed'))
+      if (!$ready -and [DateTime]::UtcNow -ge $deadline) { throw 'Scene or requested window placement did not complete' }
+    } until ($ready)
   } else {
     Start-Sleep $LoadSeconds
   }
@@ -238,13 +272,33 @@ try {
       if ([DateTime]::UtcNow -ge $deadline) { throw 'Quality sweep did not finish all phases' }
       Start-Sleep 1
     } while ($true)
+  } elseif ($VideoSeconds -gt 0) {
+    if (!$DisplayId) {
+      $physical = @(Invoke-BenchAdb shell dumpsys SurfaceFlinger --display-id | ForEach-Object {
+        if ($_ -match '^Display (\d+) \(HWC display') { $Matches[1] }
+      })
+      if ($physical.Count -ne 1) { throw 'Supply -DisplayId to identify the physical display' }
+      $DisplayId = $physical[0]
+    }
+    $remoteMovie = "$remoteStaging.mp4"
+    $reportDir = Join-Path $dir "$stamp-$Waypoint-display"
+    New-Item -ItemType Directory -Path $reportDir | Out-Null
+    $since = Invoke-BenchAdb shell date '+%s.%3N'
+    Invoke-BenchAdb shell screenrecord --display-id $DisplayId --size $VideoSize --time-limit $VideoSeconds --bit-rate 16000000 $remoteMovie
+    $recordingEnd = Invoke-BenchAdb shell date '+%s.%3N'
+    Invoke-BenchAdb pull $remoteMovie (Join-Path $reportDir 'display.mp4') | Out-Null
+    Invoke-BenchAdb logcat -d -T $launchTime "--pid=$gamePid" -s app:* | Set-Content (Join-Path $reportDir 'game.log')
+    Invoke-BenchAdb logcat -d -T $since "--pid=$gamePid" -s VrApi:* | Set-Content (Join-Path $reportDir 'vrapi.log')
+    @("args=$launchArgs","physicalDisplay=$DisplayId","size=$VideoSize","start=$since","end=$recordingEnd") |
+      Set-Content (Join-Path $reportDir 'run.txt')
+    "Display capture: $reportDir"
   } else {
     $since = (Invoke-BenchAdb shell date '+%s') + '.000'
     Start-Sleep ($Samples + 1)
   }
   if ((Invoke-BenchAdb shell pidof $Package) -ne $gamePid) { throw 'Game process changed during sampling' }
   if (((Invoke-BenchAdb shell cat $remoteArgs) -join "`n") -cne $launchArgs) { throw 'Launch arguments changed during sampling' }
-  $vr = @(Invoke-BenchAdb logcat -d -T $since -s VrApi:* | Select-String 'App=')
+  $vr = @(Invoke-BenchAdb logcat -d -T $since "--pid=$gamePid" -s VrApi:* | Select-String 'App=')
   $cpu = Invoke-BenchAdb logcat -d -T $since "--pid=$gamePid" -s app:* | Select-String 'Frame CPU ms|Point lights:|Update:|Draw CPU|eye 1|Per frame|XR submit|GPU ms per view|^.*app\s+:\s+[ A-Za-z#0-9&\-]+ [\d.]+;' | Select-Object -Last 8
   # Record statistics before requesting compositor screenshots.
   for ($i = 0; $i -lt $Captures; ++$i) {
@@ -276,6 +330,7 @@ try {
       & adb -s $questSerial shell rm -f $remoteArgs
     }
     if ($argsFile) { & adb -s $questSerial shell rm -f $remoteStaging }
+    if ($remoteMovie) { & adb -s $questSerial shell rm -f $remoteMovie }
     if ($argsFile) { Remove-Item -LiteralPath $argsFile }
     if ($capturesReady) {
       if ($EyeCaptures -gt 0) {
