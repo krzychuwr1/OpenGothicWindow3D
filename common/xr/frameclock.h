@@ -28,7 +28,13 @@ class XrFrameClock final {
       const int64_t period = nominal>0 ? nominal : estimate;
       const int64_t error = target-logical-period;
       const int64_t old = logical;
-      logical += std::max(period/2,period+error/12);
+      if(elapsed>period+period/2 && error>period/2) {
+        // A dropped display interval: catch up cleanly on this frame rather than dragging
+        // stretched steps across subsequent frames (SpaceWarp skips extrapolation here).
+        logical = target;
+        } else {
+        logical += std::max(period/2,period+error/12);
+        }
       return uint64_t(logical/1000000-old/1000000);
       }
 

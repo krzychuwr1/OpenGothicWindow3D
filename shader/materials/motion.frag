@@ -48,8 +48,14 @@ void main() {
   if(push.coverage==3u && max(tex.r,max(tex.g,tex.b))*tex.a<0.5)
     discard;
 #endif
-  const vec3 cur  = motionCur.xyz /motionCur.w;
-  outMotion = motionPrev.w>1e-6 ? vec4(cur - motionPrev.xyz/motionPrev.w, 0.0) : vec4(0);
+  vec3 mv = vec3(0.0);
+  if(motionCur.w>1e-4 && motionPrev.w>1.0 && motionPrev.z>=-0.5*motionPrev.w) {
+    const vec3 cur  = motionCur.xyz/motionCur.w;
+    const vec3 prev = motionPrev.xyz/motionPrev.w;
+    mv = vec3(cur.xy - prev.xy, clamp(cur.z - prev.z, -1.0, 1.0));
+    if(any(isnan(mv)) || any(isinf(mv)) || any(greaterThan(abs(mv.xy), vec2(1.0))))
+      mv = vec3(0.0);
+    }
   // Meta's runtime reads vectors with +y up (OpenGL NDC) also on Vulkan, where NDC +y is down
-  outMotion.y = -outMotion.y;
+  outMotion = vec4(mv.x, -mv.y, mv.z, 0.0);
   }

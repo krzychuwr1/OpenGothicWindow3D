@@ -1689,40 +1689,44 @@ void MainWindow::render(){
         eyeHistoryValid = false;
         lastTick = Application::tickCount();
         }
-      // Tick while the GPU finishes the last pair. Its display prediction supplies
-      // the pacing sample for this update; input does not wait on the next frame.
-      static const int predictionMode = Gothic::settingsGetI("BENCHMARK","xrCurrentPrediction");
       const int64_t previousPrediction = xr->predictedDisplayTime();
-      const auto updateAtPrediction = [&] {
-        const int64_t display = xr->predictedDisplayTime();
-        if(focused && display>0 && display!=frameClock.lastTarget) {
-          const auto dt = frameClock.advance(display,xr->nominalFramePeriod(),predictionMode==2);
-          updateFrame(dt);
-          }
-        };
-      if(predictionMode==0)
-        updateAtPrediction();
       {
         auto* world = Gothic::inst().world();
         xr->setSceneShown(world!=nullptr && world->view()!=nullptr && !video.isActive() && !rootMenu.isActive() &&
                           Gothic::inst().checkLoading()==Gothic::LoadState::Idle);
       }
       const uint64_t t0 = nowUs();
-      const bool renderable = xr->beginFrame();
+      const bool waited = xr->waitFrame();
       const uint64_t t1 = nowUs();
+      bool renderable = false;
       try {
-        if(predictionMode!=0)
-          updateAtPrediction();
+        // Advance simulation using this frame's predicted display time and fresh XR input,
+        // before xrBeginFrame() starts the runtime's render-phase timing window.
+        static const int predictionMode = Gothic::settingsGetI("BENCHMARK","xrCurrentPrediction");
+        const int64_t display = xr->predictedDisplayTime();
+        const int64_t nominal = xr->nominalFramePeriod();
+        if(focused && display>0 && display!=frameClock.lastTarget) {
+          const auto dt = frameClock.advance(display, nominal, predictionMode==2);
+          updateFrame(dt);
+          }
+        if(!waited) {
+          eyeHistoryValid = false;
+          return;
+          }
+        if(XrFrameClock::discontinuity(previousPrediction, display) ||
+           (nominal>0 && previousPrediction>0 && display-previousPrediction > nominal + nominal/2))
+          eyeHistoryValid = false;
+        renderable = xr->beginFrame();
         if(!renderable) {
           eyeHistoryValid = false;
           return;
           }
-        if(XrFrameClock::discontinuity(previousPrediction,xr->predictedDisplayTime()))
-          eyeHistoryValid = false;
         renderFrame(true);
         }
       catch(...) {
         eyeHistoryValid = false;
+        if(waited && !renderable)
+          renderable = xr->beginFrame();
         if(renderable)
           xr->submit(false);
         throw;
@@ -1804,11 +1808,12 @@ void MainWindow::renderFrame(bool xr) {
     window.setVerticalFov(Gothic::options().cameraFov);
     const auto active = renderer.prepareXrViewport(xrSize,window.desiredResolution(),lastXrFence);
     if(active!=xrSize) {
-      xrSize = active;
       window.setResolution(active);
+      xrSize = window.resolution();
+      eyeHistoryValid = false;
       if(auto* cam=Gothic::inst().camera())
         cam->setViewport(outW(),outH());
-      Log::i("XR portal target ",active.w,"x",active.h," motion ",active.w/4,"x",active.h/4);
+      Log::i("XR portal target ",xrSize.w,"x",xrSize.h," motion ",xrSize.w/4,"x",xrSize.h/4);
       }
     const float canvas = std::max({1.f,800.f/float(active.w),600.f/float(active.h)});
     const Size logical(int(std::round(float(active.w)*canvas)),int(std::round(float(active.h)*canvas)));

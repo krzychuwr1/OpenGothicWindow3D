@@ -213,14 +213,23 @@ struct XrWindow::Impl {
   XrPassthroughLayerFB     passthroughLayer = XR_NULL_HANDLE;
 
   // Window image, one swapchain per eye
+  static constexpr float   MinWindowWidth  = 0.3375f, MaxWindowWidth  = 6.f;
+  static constexpr float   MinWindowHeight = 0.3375f, MaxWindowHeight = 3.375f;
+  static constexpr float   MaxWindowAspect = 32.f/9.f, MinWindowAspect = 9.f/32.f;
+  static constexpr uint32_t MaxEyePixels   = 2048u*1536u;
+  static constexpr uint32_t MaxSwapDim     = 3840u;
   uint32_t                 width  = 1600;
   uint32_t                 height = 900;
   uint32_t                 capacityW = 1600, capacityH = 900;
+  uint32_t                 maxSwapW  = 2048, maxSwapH  = 1536;
+  bool                     tightSwapchains = false;
   XrSwapchain              swapchain[2] = {};
   Tempest::Device*         device = nullptr;
   // The game renders straight into the swapchain images through these
   std::vector<Attachment>  targets[2];
   int32_t                  acquired[2] = {-1, -1};
+  bool resizeSwapchains(uint32_t needW, uint32_t needH);
+  static void clampWindowSize(float& w, float& h, float prevW, float prevH);
 
   // Application SpaceWarp
   uint32_t                 mvWidth = 0, mvHeight = 0;
@@ -296,7 +305,7 @@ struct XrWindow::Impl {
   static constexpr int     RailW = 160, KnobW = 24, SliderRows = 16;
   // Window controls scale with the window (1 at the default size), not below half size
   static constexpr float   DefaultWindowHeight = 0.9f;
-  float chromeScale() const { return std::clamp(windowHeight()/DefaultWindowHeight, 0.5f, 1.4f); }
+  float chromeScale() const { return std::clamp(std::sqrt(windowWidth*windowHeight()/(1.6f*DefaultWindowHeight)), 0.5f, 1.4f); }
   float dimLeft()   const { return -0.10f*chromeScale(); } // relative to sliderCenter()
   float dimTravel() const { return 0.20f*chromeScale(); }
   bool                     sliderReady = false, dimDirty = false;
@@ -315,6 +324,7 @@ struct XrWindow::Impl {
 
   // Frame
   XrFrameState             frame = {XR_TYPE_FRAME_STATE};
+  bool                     frameWaited = false;
   bool                     frameBegun = false;
   bool                     eyesValid  = false;
   V3                       eyeInWindow[2];   // metres, window space: +x right, +y up, +z towards the viewer
@@ -398,20 +408,30 @@ struct XrWindow::Impl {
     const float d = std::clamp(length(headPos-toV3(windowPose.position)),0.8f,6.f);
     curveRadius = curveLevel>=2 ? 0.7f*d : d;
     }
+  // Keep the curved arc within ~100 degrees total so wide windows (up to 32:9) curve
+  // around the viewer like a wrap-around monitor without approaching or crossing the eyes.
+  float effectiveCurveRadius() const {
+    return isCurved() ? std::max(curveRadius, windowWidth*0.5f/0.90f) : 0.f;
+    }
   // How far the window's side edges come towards the viewer
-  float curveSag() const { return isCurved() ? curveRadius*(1.f-std::cos(windowWidth*0.5f/curveRadius)) : 0.f; }
+  float curveSag() const {
+    if(!isCurved())
+      return 0.f;
+    const float R = effectiveCurveRadius();
+    return R*(1.f-std::cos(windowWidth*0.5f/R));
+    }
   // Window space <-> unrolled arc space (x: arc length, y: height, z: distance in front of the arc).
   // Hit tests and resizing work in unrolled space, where the curved window is a flat rectangle.
   V3   unroll(const V3& p) const {
     if(!isCurved())
       return p;
-    const float R = curveRadius;
+    const float R = effectiveCurveRadius();
     return V3{R*std::atan2(p.x,R-p.z), p.y, R-std::hypot(p.x,R-p.z)};
     }
   V3   roll(const V3& u) const {
     if(!isCurved())
       return u;
-    const float R = curveRadius, a = u.x/R, r = R-u.z;
+    const float R = effectiveCurveRadius(), a = u.x/R, r = R-u.z;
     return V3{r*std::sin(a), u.y, R-r*std::cos(a)};
     }
   void fillAspect(VkCommandBuffer cmd, VkFence fence);
@@ -751,6 +771,7 @@ void XrWindow::attach(Device& device) {
   impl->device = &device;
   impl->windowWidth = CommandLine::inst().xrWindowWidth();
   impl->physicalHeight = CommandLine::inst().xrWindowHeight();
+  Impl::clampWindowSize(impl->windowWidth, impl->physicalHeight, impl->windowWidth, impl->physicalHeight);
   impl->createSession();
   AndroidApi::setExternalPresentation(int(impl->width), int(impl->height), uiScale());
   }
@@ -859,13 +880,18 @@ void XrWindow::Impl::createSwapchains() {
   info.mipCount    = 1;
   XrSystemProperties props = {XR_TYPE_SYSTEM_PROPERTIES};
   if(ok(xrGetSystemProperties(instance,system,&props),"system image limits")) {
-    capacityW = std::min(2048u,props.graphicsProperties.maxSwapchainImageWidth);
-    capacityH = std::min(1536u,props.graphicsProperties.maxSwapchainImageHeight);
+    maxSwapW  = std::min(MaxSwapDim, props.graphicsProperties.maxSwapchainImageWidth);
+    maxSwapH  = std::min(MaxSwapDim, props.graphicsProperties.maxSwapchainImageHeight);
+    capacityW = std::min(2048u, maxSwapW);
+    capacityH = std::min(1536u, maxSwapH);
     }
   for(const auto& value:CommandLine::inst().settingsOverrides()) {
     if(value.section=="BENCHMARK" && value.key=="xrTightSwapchains" && value.value=="1") {
+      tightSwapchains = true;
       capacityW = std::min(capacityW,width);
       capacityH = std::min(capacityH,height);
+      maxSwapW  = capacityW;
+      maxSwapH  = capacityH;
       Log::i("XR trial eye allocation ",capacityW,"x",capacityH);
       }
     }
@@ -1029,6 +1055,155 @@ bool XrWindow::Impl::createSpaceWarpSwapchains() {
       return false;
     }
   Log::i("OpenXR: SpaceWarp available, motion vectors ", mvWidth, "x", mvHeight);
+  return true;
+  }
+
+void XrWindow::Impl::clampWindowSize(float& w, float& h, float prevW, float prevH) {
+  w = std::clamp(w, MinWindowWidth, MaxWindowWidth);
+  h = std::clamp(h, MinWindowHeight, MaxWindowHeight);
+  if(w>h*MaxWindowAspect) {
+    if(h<prevH && w<=prevW) {
+      h = std::min(MaxWindowHeight, w/MaxWindowAspect);
+      w = h*MaxWindowAspect;
+      } else if(w>prevW && h>=prevH) {
+      w = h*MaxWindowAspect;
+      } else {
+      const float area = w*h;
+      h = std::clamp(std::sqrt(area/MaxWindowAspect), MinWindowHeight, MaxWindowWidth/MaxWindowAspect);
+      w = h*MaxWindowAspect;
+      }
+    } else if(w<h*MinWindowAspect) {
+    if(w<prevW && h<=prevH) {
+      w = std::min(MaxWindowWidth, h*MinWindowAspect);
+      h = w/MinWindowAspect;
+      } else if(h>prevH && w>=prevW) {
+      h = w/MinWindowAspect;
+      } else {
+      const float area = w*h;
+      w = std::clamp(std::sqrt(area*MinWindowAspect), MinWindowWidth, MaxWindowHeight*MinWindowAspect);
+      h = w/MinWindowAspect;
+      }
+    }
+  w = std::clamp(w, MinWindowWidth, MaxWindowWidth);
+  h = std::clamp(h, MinWindowHeight, MaxWindowHeight);
+  }
+
+bool XrWindow::Impl::resizeSwapchains(uint32_t needW, uint32_t needH) {
+  if(needW<=capacityW && needH<=capacityH)
+    return true;
+  if(tightSwapchains || device==nullptr || session==XR_NULL_HANDLE ||
+     acquired[0]>=0 || acquired[1]>=0 || mvAcquired[0]>=0 || mvAcquired[1]>=0 ||
+     depthAcquired[0]>=0 || depthAcquired[1]>=0)
+    return false;
+
+  auto roundUp64 = [](uint32_t v) { return ((v+63u)/64u)*64u; };
+  uint32_t newW = std::min(maxSwapW, std::max(needW, roundUp64(uint32_t(std::ceil(float(needW)*1.12f)))));
+  uint32_t newH = std::min(maxSwapH, std::max(needH, roundUp64(uint32_t(std::ceil(float(needH)*1.12f)))));
+  // Keep swapchains divisible by 4 so quarter-resolution SpaceWarp buffers align cleanly.
+  newW = std::max(4u, (newW/4u)*4u);
+  newH = std::max(4u, (newH/4u)*4u);
+  if(newW<needW || newH<needH)
+    return false;
+
+  device->waitIdle();
+
+  XrSwapchainCreateInfo info = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
+  info.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT |
+                     XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT;
+  if(CommandLine::inst().xrCaptureInterval()>0)
+    info.usageFlags |= XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT;
+  info.format      = eyeColorFormat;
+  info.sampleCount = 1;
+  info.faceCount   = 1;
+  info.arraySize   = 1;
+  info.mipCount    = 1;
+  info.width       = newW;
+  info.height      = newH;
+
+  XrSwapchain newColor[2] = {}, newMv[2] = {}, newDepth[2] = {};
+  std::vector<Attachment> newTargets[2], newMvTargets[2];
+  std::vector<ZBuffer>    newDepthTargets[2];
+  const bool rebuildWarp = hasSpaceWarp && !fullMotionExtent && mvSwapchain[0]!=XR_NULL_HANDLE && depthSwapchain[0]!=XR_NULL_HANDLE;
+  const auto& cli = CommandLine::inst();
+  const XrSwapchainUsageFlags readback = cli.xrCaptureBurst()>0 && cli.debugShow("warpraw") ?
+                                         XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT : 0;
+
+  auto cleanup = [&](XrSwapchain (&c)[2], std::vector<Attachment> (&t)[2],
+                     XrSwapchain (&m)[2], std::vector<Attachment> (&mt)[2],
+                     XrSwapchain (&d)[2], std::vector<ZBuffer> (&dt)[2]) {
+    for(int eye=0; eye<2; ++eye) {
+      t[eye].clear();
+      mt[eye].clear();
+      dt[eye].clear();
+      for(auto* ch : {&c[eye], &m[eye], &d[eye]})
+        if(*ch!=XR_NULL_HANDLE)
+          xrDestroySwapchain(std::exchange(*ch, XR_NULL_HANDLE));
+      }
+    };
+
+  bool okAll = false;
+  try {
+    okAll = true;
+    for(int eye=0; eye<2 && okAll; ++eye) {
+      newColor[eye] = makeSwapchain(session, info, "resize window swapchain");
+      if(newColor[eye]==XR_NULL_HANDLE) { okAll = false; break; }
+      auto imgs = swapchainImages(newColor[eye]);
+      if(imgs.empty()) { okAll = false; break; }
+      for(auto& im:imgs)
+        newTargets[eye].push_back(vulkanBorrowColorAttachment(*device, im.image, newW, newH));
+
+      if(rebuildWarp) {
+        XrSwapchainCreateInfo wi = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
+        wi.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | readback;
+        wi.format      = VK_FORMAT_R16G16B16A16_SFLOAT;
+        wi.sampleCount = wi.faceCount = wi.arraySize = wi.mipCount = 1;
+        wi.width       = std::max(newW/4u, 16u);
+        wi.height      = std::max(newH/4u, 16u);
+        newMv[eye] = makeSwapchain(session, wi, "resize motion vector swapchain");
+        if(newMv[eye]==XR_NULL_HANDLE) { okAll = false; break; }
+        wi.usageFlags  = XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | readback;
+        wi.format      = VK_FORMAT_D32_SFLOAT;
+        newDepth[eye] = makeSwapchain(session, wi, "resize depth swapchain");
+        if(newDepth[eye]==XR_NULL_HANDLE) { okAll = false; break; }
+        for(auto& im:swapchainImages(newMv[eye]))
+          newMvTargets[eye].push_back(vulkanBorrowColorAttachment(*device, im.image, wi.width, wi.height, TextureFormat::RGBA16F));
+        for(auto& im:swapchainImages(newDepth[eye]))
+          newDepthTargets[eye].push_back(vulkanBorrowDepthAttachment(*device, im.image, wi.width, wi.height, TextureFormat::Depth32F));
+        if(newMvTargets[eye].empty() || newDepthTargets[eye].empty()) { okAll = false; break; }
+        }
+      }
+    }
+  catch(const std::bad_alloc&) { okAll = false; }
+  catch(const std::system_error& e) {
+    if(e.code()!=GraphicsErrc::OutOfVideoMemory && e.code()!=GraphicsErrc::OutOfHostMemory)
+      throw;
+    okAll = false;
+    }
+
+  if(!okAll) {
+    cleanup(newColor, newTargets, newMv, newMvTargets, newDepth, newDepthTargets);
+    Log::e("OpenXR: could not resize eye swapchains to ", newW, "x", newH);
+    return false;
+    }
+
+  XrSwapchain oldColor[2] = {}, oldMv[2] = {}, oldDepth[2] = {};
+  std::vector<Attachment> oldTargets[2], oldMvTargets[2];
+  std::vector<ZBuffer>    oldDepthTargets[2];
+  for(int eye=0; eye<2; ++eye) {
+    oldColor[eye] = std::exchange(swapchain[eye], newColor[eye]);
+    oldTargets[eye] = std::exchange(targets[eye], std::move(newTargets[eye]));
+    if(rebuildWarp) {
+      oldMv[eye] = std::exchange(mvSwapchain[eye], newMv[eye]);
+      oldMvTargets[eye] = std::exchange(mvTargets[eye], std::move(newMvTargets[eye]));
+      oldDepth[eye] = std::exchange(depthSwapchain[eye], newDepth[eye]);
+      oldDepthTargets[eye] = std::exchange(depthTargets[eye], std::move(newDepthTargets[eye]));
+      }
+    }
+  cleanup(oldColor, oldTargets, oldMv, oldMvTargets, oldDepth, oldDepthTargets);
+  capacityW = newW;
+  capacityH = newH;
+  skipExtrapolation = true;
+  Log::i("OpenXR: resized eye swapchains to ", capacityW, "x", capacityH);
   return true;
   }
 
@@ -1408,7 +1583,7 @@ void XrWindow::Impl::placeWindow() {
       }
     cancelInput();
     }
-  skipExtrapolation = !placed;
+  skipExtrapolation |= !placed;
   headValid = false;
   XrSpaceLocation head = {XR_TYPE_SPACE_LOCATION};
   if(!XR_SUCCEEDED(xrLocateSpace(viewSpace, localSpace, frame.predictedDisplayTime, &head))) {
@@ -1615,7 +1790,7 @@ void XrWindow::Impl::updateInput() {
       // The window's cylinder: vertical axis at distance R in front of the window centre
       const V3 o = toLocal(windowPose, origin);
       const V3 d = rotate(conjugate(windowPose.orientation), dir);
-      const float R = curveRadius;
+      const float R = effectiveCurveRadius();
       const float a = d.x*d.x + d.z*d.z;
       const float b = 2.f*(o.x*d.x - (R-o.z)*d.z);
       const float c = o.x*o.x + (R-o.z)*(R-o.z) - R*R;
@@ -1724,8 +1899,10 @@ void XrWindow::Impl::updateInput() {
          ((grabbed==Grip::Environment || grabbed==Grip::Dim) && !roomAvailable()) ||
          (grabbed==Grip::Dim && !(immersive ? hasColorScale : dimStyleAvailable))) {
         saveDim();
-        if(grabbed==Grip::Handle && curved)
+        if(grabbed==Grip::Handle && curved) {
           updateCurveRadius();
+          skipExtrapolation = true;
+          }
         grabbedBy = -1;
         grabbed = Grip::None;
         continue;
@@ -1766,23 +1943,27 @@ void XrWindow::Impl::updateInput() {
         windowPose.orientation = facing(headPos - center);
         center = point - rotate(windowPose.orientation, grabWindow);
         windowPose.position = toXr(center);
+        skipExtrapolation = true;
         } else {
         // A corner follows the hand across the window plane; the centre stays put
         const V3    l  = unroll(toLocal(windowPose, point));
         const V3    g0 = unroll(grabWindow);
         const float dx = (l.x-g0.x)*(g0.x<0.f ? -2.f : 2.f);
         const float dy = (l.y-g0.y)*(g0.y<0.f ? -2.f : 2.f);
+        const float prevW = windowWidth, prevH = physicalHeight;
         if(aspectLocked) {
           // Locked: both edges follow the average stretch, so the shape stays
           const float k = std::clamp(((grabExtent.x+dx)/grabExtent.x + (grabExtent.y+dy)/grabExtent.y)*0.5f,
-                                     std::max(0.6f/grabExtent.x, 0.3375f/grabExtent.y),
-                                     std::min(6.f/grabExtent.x, 3.375f/grabExtent.y));
+                                     std::max(MinWindowWidth/grabExtent.x, MinWindowHeight/grabExtent.y),
+                                     std::min(MaxWindowWidth/grabExtent.x, MaxWindowHeight/grabExtent.y));
           windowWidth    = grabExtent.x*k;
           physicalHeight = grabExtent.y*k;
           } else {
-          windowWidth    = std::clamp(grabExtent.x+dx, 0.6f, 6.f);
-          physicalHeight = std::clamp(grabExtent.y+dy, 0.3375f, 3.375f);
+          windowWidth    = grabExtent.x+dx;
+          physicalHeight = grabExtent.y+dy;
+          clampWindowSize(windowWidth, physicalHeight, prevW, prevH);
           }
+        skipExtrapolation = true;
         }
       }
     else if(canManipulate && grabbedBy<0 && h.hover!=Grip::None && (gripDown || startTrigger)) {
@@ -2049,7 +2230,7 @@ void XrWindow::Impl::locateEyes() {
     if(isCurved()) {
       // An ordinary perspective view from the eye, framed by the rectangle on the window plane
       // that just contains the curved window (its arcs and side edges projected from the eye)
-      const float R = curveRadius, half = halfW/R;
+      const float R = effectiveCurveRadius(), half = halfW/R;
       std::array<float,4> f = {1e9f,-1e9f,1e9f,-1e9f};
       auto add = [&](float a, float y) {
         const V3 x{R*std::sin(a), y, R*(1.f-std::cos(a))};
@@ -2214,8 +2395,12 @@ Tempest::Rect XrWindow::uiViewport(uint8_t eye) const {
   const float halfW = s.windowWidth*0.5f, halfH = s.windowHeight()*0.5f;
   const float x0 = (-halfW-r[0])/(r[1]-r[0]), x1 = (halfW-r[0])/(r[1]-r[0]);
   const float y0 = (r[3]-halfH)/(r[3]-r[2]),  y1 = (r[3]+halfH)/(r[3]-r[2]);
-  const int x = int(std::lround(x0*float(s.width))), y = int(std::lround(y0*float(s.height)));
-  return Tempest::Rect(x, y, int(std::lround(x1*float(s.width)))-x, int(std::lround(y1*float(s.height)))-y);
+  const int W = int(s.width), H = int(s.height);
+  const int x = std::clamp(int(std::lround(x0*float(W))), 0, W-1);
+  const int y = std::clamp(int(std::lround(y0*float(H))), 0, H-1);
+  const int w = std::clamp(int(std::lround(x1*float(W)))-x, 1, W-x);
+  const int h = std::clamp(int(std::lround(y1*float(H)))-y, 1, H-y);
+  return Tempest::Rect(x, y, w, h);
   }
 
 bool XrWindow::isWindowFilterSupported() const {
@@ -2343,7 +2528,7 @@ void XrWindow::drawSurfaceLight(Renderer& renderer, Encoder<CommandBuffer>& cmd,
     // The window's light reaches the surface from its lower part: about a quarter of its height
     // above its bottom edge. A curved window's light follows its arc.
     const Tempest::Vec4 footprint(plane.fullSize.width,plane.fullSize.height,s.windowWidth,
-                                  s.isCurved() ? s.curveRadius : 0.f);
+                                  s.isCurved() ? s.effectiveCurveRadius() : 0.f);
     const bool written = renderer.drawSurfaceLight(cmd,*target,{plane.uvOffset.x,plane.uvOffset.y},
                             {plane.uvScale.x,plane.uvScale.y},s.passthroughDim,plane.drop,s.eyeColorFormat==VK_FORMAT_R8G8B8A8_SRGB,
                             footprint,plane.drop+0.25f*s.windowHeight());
@@ -2353,8 +2538,10 @@ void XrWindow::drawSurfaceLight(Renderer& renderer, Encoder<CommandBuffer>& cmd,
   }
 
 int64_t XrWindow::nominalFramePeriod() const {
+  const bool warpActive = impl->spaceWarpWanted ||
+                          (impl->hasSpaceWarp && impl->sceneShown && Gothic::settingsGetI("INTERNAL","xrSpaceWarp")!=0);
   if(impl->refreshRate>=30.f && impl->refreshRate<=240.f)
-    return int64_t(std::llround((impl->spaceWarpWanted ? 2e9 : 1e9)/double(impl->refreshRate)));
+    return int64_t(std::llround((warpActive ? 2e9 : 1e9)/double(impl->refreshRate)));
   // Core OpenXR reports the application frame period, including any runtime throttling.
   // For a missing prediction the frame clock can still estimate from consecutive targets.
   const auto period = impl->frame.predictedDisplayPeriod;
@@ -2381,7 +2568,7 @@ void XrWindow::Impl::applyRefreshRate() {
     Log::i("OpenXR: requested ", best, " Hz");
   }
 
-bool XrWindow::beginFrame() {
+bool XrWindow::waitFrame() {
   auto& s = *impl;
   if(!s.running || s.state==XR_SESSION_STATE_STOPPING) {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -2394,13 +2581,7 @@ bool XrWindow::beginFrame() {
   s.frame = {XR_TYPE_FRAME_STATE};
   if(!s.sessionResult(xrWaitFrame(s.session, &wait, &s.frame), "xrWaitFrame"))
     return false;
-  {
-  std::lock_guard<std::mutex> guard(*s.vk.queueLock);
-  XrFrameBeginInfo begin = {XR_TYPE_FRAME_BEGIN_INFO};
-  if(!s.sessionResult(xrBeginFrame(s.session, &begin), "xrBeginFrame"))
-    return false;
-  }
-  s.frameBegun = true;
+  s.frameWaited = true;
 
   if(isVisible()) {
     const int style = Gothic::settingsGetI("INTERNAL","xrWindowEdges");
@@ -2411,12 +2592,43 @@ bool XrWindow::beginFrame() {
     // No motion vector can describe an instantaneous change in source coverage.
     s.skipExtrapolation |= contourChanged;
     // A focused game keeps ticking even when the runtime requests zero layers.
+    // Refresh XR input for this frame before simulation runs.
     s.updateInput();
     s.updateSurface();
-    if(s.frame.shouldRender) {
-      s.locateEyes();
+    if(s.frame.shouldRender)
       return true;
-      }
+    }
+  // Not rendering: pair xrBeginFrame / xrEndFrame with zero layers immediately.
+  {
+  std::lock_guard<std::mutex> guard(*s.vk.queueLock);
+  XrFrameBeginInfo begin = {XR_TYPE_FRAME_BEGIN_INFO};
+  if(!s.sessionResult(xrBeginFrame(s.session, &begin), "xrBeginFrame")) {
+    s.frameWaited = false;
+    return false;
+    }
+  }
+  s.frameWaited = false;
+  s.frameBegun  = true;
+  submit(false);
+  return false;
+  }
+
+bool XrWindow::beginFrame() {
+  auto& s = *impl;
+  if(!s.frameWaited)
+    return false;
+  s.frameWaited = false;
+  {
+  std::lock_guard<std::mutex> guard(*s.vk.queueLock);
+  XrFrameBeginInfo begin = {XR_TYPE_FRAME_BEGIN_INFO};
+  if(!s.sessionResult(xrBeginFrame(s.session, &begin), "xrBeginFrame"))
+    return false;
+  }
+  s.frameBegun = true;
+
+  if(isVisible() && s.frame.shouldRender) {
+    s.locateEyes();
+    return true;
     }
   submit(false);
   return false;
@@ -2461,7 +2673,7 @@ void XrWindow::drawWindowEdges(Encoder<CommandBuffer>& cmd, bool motion) {
       Vec4 rect, eye, shape;
       Vec2 size;
       uint32_t guard, pad;
-      } push{{r[0],r[1],r[2],r[3]},{e.x,e.y,e.z,s.curveRadius},
+      } push{{r[0],r[1],r[2],r[3]},{e.x,e.y,e.z,s.effectiveCurveRadius()},
              {s.windowWidth*0.5f,s.windowHeight()*0.5f,s.edgeRadius(),s.edgeFeather()},
              {float(w),float(h)},0u,0u};
     cmd.setDebugMarker(motion ? "XR curved window motion" : "XR curved window");
@@ -2484,6 +2696,7 @@ void XrWindow::drawWindowEdges(Encoder<CommandBuffer>& cmd, bool motion) {
     auto border = shader("window_edge.vert.sprv");
     state.setZWriteEnabled(motion);
     if(motion) {
+      state.setZTestMode(RenderState::ZTestMode::Always);
       state.setBlendSource(RenderState::BlendMode::One);
       state.setBlendDest(RenderState::BlendMode::Zero);
       s.edgeMotion = s.device->pipeline(Triangles,state,border,shader("window_edge_motion.frag.sprv"));
@@ -3348,7 +3561,7 @@ bool XrWindow::submit(bool rendered) {
       q.subImage.imageRect       = {{0,0},{int32_t(Impl::CornerSize),int32_t(Impl::CornerSize)}};
       q.subImage.imageArrayIndex = uint32_t((c==0 ? 2 : 0) + (held ? 1 : 0));
       // On a curved window the bracket sits on the arc, facing its axis
-      q.pose.orientation         = s.isCurved() ? mul(s.windowPose.orientation, aroundY(-at.x/s.curveRadius))
+      q.pose.orientation         = s.isCurved() ? mul(s.windowPose.orientation, aroundY(-at.x/s.effectiveCurveRadius()))
                                                 : s.windowPose.orientation;
       q.pose.position            = toXr(toWorld(s.windowPose, s.roll(at)));
       q.size                     = {sz, sz};
@@ -3406,6 +3619,8 @@ bool XrWindow::submit(bool rendered) {
            " position=",p.x,",",p.y,",",p.z," orientation=",q.x,",",q.y,",",q.z,",",q.w,
            " size=",spill->size.width,"x",spill->size.height," blend=",s.hasAlphaBlend ? "ONE/ONE" : "premultiplied");
     }
+  if(ended && end.layerCount!=0 && hasImage)
+    s.skipExtrapolation = false;
   return ended && warp;
   }
   }
@@ -3430,22 +3645,76 @@ Size XrWindow::desiredResolution() const {
     frameW = s.windowWidth;
     frameH = s.windowHeight();
     }
+  // Measure angular density across at most a 16:9 / 9:16 central chord so very wide (up to 32:9)
+  // or very tall (up to 9:32) windows keep crisp central pixel density instead of dropping from
+  // wide-angle foreshortening at the edges.
   float ppm = 0.f;
-  for(auto& f:s.eyeFov) {
-    ppm = std::max(ppm,1600.f*(f.angleRight-f.angleLeft)/(refX*frameW));
-    ppm = std::max(ppm,900.f*(f.angleUp-f.angleDown)/(2.f*refHalf*frameH));
+  float minZ = 1e9f;
+  for(int i=0; i<2; ++i) {
+    V3 e = s.eyeInWindow[i];
+    e.z = std::max(e.z, 0.05f);
+    minZ = std::min(minZ, e.z);
+    const auto& r = s.eyeRect[size_t(i)];
+    const float rw = r[1]-r[0], rh = r[3]-r[2];
+    if(!(rw>0.f && rh>0.f))
+      continue;
+    const float cw = std::min(rw, rh*(16.f/9.f));
+    const float ch = std::min(rh, rw*(16.f/9.f));
+    const float cx = std::clamp(e.x, r[0]+cw*0.5f, r[1]-cw*0.5f);
+    const float cy = std::clamp(e.y, r[2]+ch*0.5f, r[3]-ch*0.5f);
+    const float angX = std::atan((cx+cw*0.5f-e.x)/e.z) - std::atan((cx-cw*0.5f-e.x)/e.z);
+    const float angY = std::atan((cy+ch*0.5f-e.y)/e.z) - std::atan((cy-ch*0.5f-e.y)/e.z);
+    ppm = std::max(ppm, 1600.f*angX/(refX*cw));
+    ppm = std::max(ppm, 900.f*angY/(2.f*refHalf*ch));
+    }
+  if(s.scalePicture) {
+    // In Scale picture mode, a very wide or tall window still fits the entire game FOV on its
+    // shorter axis. Keep that axis reasonably sharp (up to ~22 ppd, bounded by a 1600x900 pixel
+    // count) so slim ultrawide/portrait shapes do not become blurry.
+    const float shortSide = std::min(frameW, frameH);
+    const float floorPpm  = std::min({640.f/shortSide, 1260.f/minZ,
+                                      std::sqrt(float(1600u*900u)/(frameW*frameH))});
+    ppm = std::max(ppm, floorPpm);
     }
   if(s.isCurved()) {
     // The frame around a curve includes corners the mask hides: spend at most 30% more
-    // pixels than the flat window would, so curving costs about the same GPU time
-    const float budget = 1.3f*s.windowWidth*s.windowHeight(), area = frameW*frameH;
-    if(area>budget)
-      ppm *= std::sqrt(budget/area);
+    // pixels than the flat window would, so curving costs about the same GPU time.
+    const float w = s.windowWidth, h = s.windowHeight();
+    const float cw = std::min(w, h*(16.f/9.f)), ch = std::min(h, w*(16.f/9.f));
+    float flatPpm = 0.f;
+    for(int i=0; i<2; ++i) {
+      V3 e = s.eyeInWindow[i];
+      e.z = std::max(e.z, 0.05f);
+      const float cx = std::clamp(e.x, -w*0.5f+cw*0.5f, w*0.5f-cw*0.5f);
+      const float cy = std::clamp(e.y, -h*0.5f+ch*0.5f, h*0.5f-ch*0.5f);
+      const float angX = std::atan((cx+cw*0.5f-e.x)/e.z) - std::atan((cx-cw*0.5f-e.x)/e.z);
+      const float angY = std::atan((cy+ch*0.5f-e.y)/e.z) - std::atan((cy-ch*0.5f-e.y)/e.z);
+      flatPpm = std::max(flatPpm, 1600.f*angX/(refX*cw));
+      flatPpm = std::max(flatPpm, 900.f*angY/(2.f*refHalf*ch));
+      }
+    if(s.scalePicture) {
+      const float shortSide = std::min(w, h);
+      const float floorPpm  = std::min({640.f/shortSide, 1260.f/minZ,
+                                        std::sqrt(float(1600u*900u)/(w*h))});
+      flatPpm = std::max(flatPpm, floorPpm);
+      }
+    const float maxPixels = 1.3f*(w*flatPpm)*(h*flatPpm);
+    const float curPixels = (frameW*ppm)*(frameH*ppm);
+    if(curPixels>maxPixels)
+      ppm *= std::sqrt(maxPixels/curPixels);
     }
-  ppm = std::min({ppm,float(s.capacityW)/frameW,float(s.capacityH)/frameH});
+  // Cap total eye pixels to the same GPU budget as 2048x1536 while allowing wide/tall
+  // shapes to use up to maxSwapW / maxSwapH along their long axis.
+  const float pixelCapPpm = std::sqrt(float(Impl::MaxEyePixels)/(frameW*frameH));
+  ppm = std::min({ppm, pixelCapPpm, float(s.maxSwapW)/frameW, float(s.maxSwapH)/frameH});
   auto multiple = [](float x,int n) { return std::max(n,int(std::round(x/float(n)))*n); };
-  const int w = std::min(int(s.capacityW),multiple(frameW*ppm,32));
-  const int h = std::min(int(s.capacityH),multiple(float(w)*frameH/frameW,4));
+  int w = std::min(int(s.maxSwapW), multiple(frameW*ppm, 16));
+  int h = std::min(int(s.maxSwapH), multiple(float(w)*frameH/frameW, 4));
+  if(uint64_t(w)*uint64_t(h)>uint64_t(Impl::MaxEyePixels)) {
+    const float k = std::sqrt(float(Impl::MaxEyePixels)/(float(w)*float(h)));
+    w = std::max(16, int(float(w)*k/16.f)*16);
+    h = std::max(4,  int(float(h)*k/4.f)*4);
+    }
   const float aspect = frameW/frameH;
   if(std::abs(float(s.width)/float(s.height)/aspect-1.f)<0.02f &&
      std::abs(float(w)/float(s.width)-1.f)<0.08f && std::abs(float(h)/float(s.height)-1.f)<0.08f)
@@ -3455,8 +3724,18 @@ Size XrWindow::desiredResolution() const {
 
 void XrWindow::setResolution(Size size) {
   auto& s = *impl;
-  s.width = uint32_t(size.w);
-  s.height = uint32_t(size.h);
+  uint32_t nextW = uint32_t(std::max(1, size.w));
+  uint32_t nextH = uint32_t(std::max(1, size.h));
+  if((nextW>s.capacityW || nextH>s.capacityH) && !s.resizeSwapchains(nextW, nextH)) {
+    s.maxSwapW = s.capacityW;
+    s.maxSwapH = s.capacityH;
+    }
+  nextW = std::min(nextW, s.capacityW);
+  nextH = std::min(nextH, s.capacityH);
+  if(s.width!=nextW || s.height!=nextH)
+    s.skipExtrapolation = true;
+  s.width = nextW;
+  s.height = nextH;
   if(!s.fullMotionExtent) {
     s.mvWidth = std::max(s.width/4u,1u);
     s.mvHeight = std::max(s.height/4u,1u);
@@ -3529,6 +3808,7 @@ Tempest::Size XrWindow::resolution() const { return Tempest::Size(0,0); }
 Tempest::Size XrWindow::desiredResolution() const { return resolution(); }
 void      XrWindow::setResolution(Tempest::Size) {}
 float     XrWindow::densityUiScale() const { return uiScale(); }
+bool      XrWindow::waitFrame() { return false; }
 bool      XrWindow::beginFrame() { return false; }
 int64_t   XrWindow::nominalFramePeriod() const { return 0; }
 int64_t   XrWindow::predictedDisplayTime() const { return 0; }

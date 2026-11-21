@@ -114,14 +114,17 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
   right = right*(1.f/std::sqrt(dot(right,right)));
   const Point up = {0,1,0}, front = cross(right,up);
   const Point foot = window.position+rotate(window.orientation,{0,-0.5f*size.height,0});
-  // The portal is free-standing and can extend into a real desk. Accept the
-  // portion of that desk below eye level even if it intersects the lower screen.
-  const float maxHeight = std::min(view.pose.position.y-foot.y-0.025f,0.5f*size.height+0.15f);
+  const Point eyeWorld = view.pose.position-foot;
+  const Point eyeP = {dot(eyeWorld,right),eyeWorld.y,dot(eyeWorld,front)};
+  // The lit surface must always lie below the bottom edge of the game window (and below eye level).
+  const float maxHeight = std::min(-0.005f, view.pose.position.y-foot.y-0.025f);
+  if(maxHeight< -2.3f)
+    return {};
   const float halfW = std::clamp(0.46f*size.width,0.22f,1.2f);
   const float reach = std::clamp(0.35f+0.28f*size.width,0.55f,1.35f);
   std::vector<Sample> cloud;
   cloud.reserve(gridW*gridH);
-  std::vector<Point> wide; // also under and behind the window, for the fallback below
+  std::vector<Point> wide; // horizontal surfaces under and near the window
   std::vector<Point> grid(size_t(gridW*gridH));
   std::vector<uint8_t> gridValid(size_t(gridW*gridH),0);
   for(int y=0;y<gridH;++y) {
@@ -143,53 +146,70 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
       const Point p = {dot(world,right),world.y,dot(world,front)};
       grid[i] = p;
       gridValid[i] = 1;
-      if(std::abs(p.x)>=halfW || p.z<0 || p.z>=reach || p.y>maxHeight || p.y< -2.3f)
+      }
+    }
+
+  // Upward-facing horizontal samples only (within ~20 degrees of +Y, facing the viewer).
+  // Testing one-step quadrants recovers clean tabletop samples right up to desk clutter
+  // (keyboard, mouse, monitor stand) while rejecting walls, monitor screens and undersides.
+  auto isUpwardHorizontal = [&](const Point& p, const Point& dx, const Point& dz, float maxStep) {
+    if(dot(dx,dx)>maxStep*maxStep || dot(dz,dz)>maxStep*maxStep)
+      return false;
+    Point n = cross(dx,dz);
+    const float len = std::sqrt(dot(n,n));
+    if(!(len>1e-6f))
+      return false;
+    if(dot(n, eyeP-p)<0.f)
+      n = n*-1.f;
+    return n.y/len>=0.94f;
+    };
+  for(int y=1;y+1<gridH;++y) {
+    for(int x=1;x+1<gridW;++x) {
+      const size_t i = size_t(y*gridW+x);
+      if(!gridValid[i])
         continue;
-      const int col = std::min(columns-1,int((p.x+halfW)*float(columns)/(2.f*halfW)));
-      const int row = std::min(rows-1,int(p.z*float(rows)/reach));
-      cloud.push_back({p,col,row});
-      if(counts) {
-        if(cloud.size()==1) {
-          counts->low=counts->high=p;
-          } else {
-          counts->low={std::min(counts->low.x,p.x),std::min(counts->low.y,p.y),std::min(counts->low.z,p.z)};
-          counts->high={std::max(counts->high.x,p.x),std::max(counts->high.y,p.y),std::max(counts->high.z,p.z)};
+      const size_t l = i-1, r = i+1, t = i-size_t(gridW), b = i+size_t(gridW);
+      const Point p = grid[i];
+      bool horiz = false;
+      if(gridValid[l] && gridValid[r] && gridValid[t] && gridValid[b])
+        horiz = isUpwardHorizontal(p, grid[r]-grid[l], grid[b]-grid[t], 0.30f);
+      if(!horiz && gridValid[r] && gridValid[b])
+        horiz = isUpwardHorizontal(p, grid[r]-p, grid[b]-p, 0.20f);
+      if(!horiz && gridValid[l] && gridValid[b])
+        horiz = isUpwardHorizontal(p, p-grid[l], grid[b]-p, 0.20f);
+      if(!horiz && gridValid[r] && gridValid[t])
+        horiz = isUpwardHorizontal(p, grid[r]-p, p-grid[t], 0.20f);
+      if(!horiz && gridValid[l] && gridValid[t])
+        horiz = isUpwardHorizontal(p, p-grid[l], p-grid[t], 0.20f);
+      if(!horiz)
+        continue;
+      if(p.y>maxHeight || p.y< -2.3f)
+        continue;
+      if(std::abs(p.x)<halfW+0.35f && p.z>-1.2f && p.z<reach)
+        wide.push_back(p);
+      if(std::abs(p.x)<halfW && p.z>=0.f && p.z<reach) {
+        const int col = std::min(columns-1,int((p.x+halfW)*float(columns)/(2.f*halfW)));
+        const int row = std::min(rows-1,int(p.z*float(rows)/reach));
+        cloud.push_back({p,col,row});
+        if(counts) {
+          if(cloud.size()==1) {
+            counts->low=counts->high=p;
+            } else {
+            counts->low={std::min(counts->low.x,p.x),std::min(counts->low.y,p.y),std::min(counts->low.z,p.z)};
+            counts->high={std::max(counts->high.x,p.x),std::max(counts->high.y,p.y),std::max(counts->high.z,p.z)};
+            }
           }
         }
       }
     }
   if(counts) counts->footprint=cloud.size();
 
-  // Horizontal samples only: a sample whose neighbours span a surface with an upward normal
-  // (within about 20 degrees, like VRON Engine's room surfaces). Walls, furniture sides and
-  // clutter never compete with the table or floor height.
-  for(int y=1;y+1<gridH;++y) {
-    for(int x=1;x+1<gridW;++x) {
-      const size_t i = size_t(y*gridW+x);
-      const size_t l = i-1, r = i+1, t = i-size_t(gridW), b = i+size_t(gridW);
-      if(!gridValid[i] || !gridValid[l] || !gridValid[r] || !gridValid[t] || !gridValid[b])
-        continue;
-      const Point p = grid[i];
-      const Point dx = grid[r]-grid[l], dz = grid[b]-grid[t];
-      // Neighbours on another surface (an edge) make a meaningless normal
-      if(dot(dx,dx)>0.3f*0.3f || dot(dz,dz)>0.3f*0.3f)
-        continue;
-      const Point n = cross(dx,dz);
-      const float len = std::sqrt(dot(n,n));
-      if(!(len>1e-6f) || std::abs(n.y)/len<0.94f)
-        continue;
-      if(std::abs(p.x)<halfW+1.0f && p.z>-3.0f && p.z<reach && p.y<=maxHeight && p.y>=-2.3f)
-        wide.push_back(p);
-      }
-    }
-
   // Looking at the window, the depth sensor rarely sees the surface between the window and the
   // viewer: it lies too steeply below the gaze. It does see the same table or floor under and
-  // just behind the window. Take the strongest horizontal surface there (a height peak among
-  // the samples, the higher one when a table stands on the floor), require it to reach the
-  // window, and light it towards the viewer.
+  // just behind the window. Scan from the highest surface below the window downward so a real
+  // tabletop is chosen over the floor below it without being drowned out by floor sample count.
   auto fallback = [&]() -> std::optional<EnvironmentDepth::Surface> {
-    if(wide.size()<12) {
+    if(wide.size()<10) {
       Tempest::Log::i("XR surface fallback samples=",wide.size()," (too few)");
       return {};
       }
@@ -199,54 +219,61 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
     std::vector<int> hist(size_t(n),0);
     for(auto& p:wide)
       ++hist[size_t(std::clamp(int((p.y-low)/bin),0,n-1))];
-    const int needed = std::max(12,int(wide.size()/10));
-    int peak = -1;
-    for(int i=0;i<n;++i) {
+    for(int i=n-1; i>=0; --i) {
       const int around = hist[size_t(i)] + (i>0 ? hist[size_t(i-1)] : 0) + (i+1<n ? hist[size_t(i+1)] : 0);
-      if(around>=needed)
-        peak = i; // keep the highest strong surface
-      }
-    if(peak<0) {
-      Tempest::Log::i("XR surface fallback samples=",wide.size()," no horizontal peak");
-      return {};
-      }
-    const float guess = low+(float(peak)+0.5f)*bin;
-    double sum = 0;
-    int    count = 0, nearWindow = 0;
-    std::vector<std::pair<int,int>> cells;
-    for(auto& p:wide) {
-      if(std::abs(p.y-guess)>0.03f)
+      if(around<10)
         continue;
-      sum += p.y;
-      ++count;
-      if(p.z>-1.5f)
-        ++nearWindow;
-      cells.emplace_back(int(std::floor(p.x/0.1f)),int(std::floor(p.z/0.1f)));
+      // Prefer the local peak bin of this height band before evaluating support.
+      if(i>0 && hist[size_t(i-1)]>hist[size_t(i)])
+        continue;
+      if(i+1<n && hist[size_t(i+1)]>hist[size_t(i)])
+        continue;
+      const float guess = low+(float(i)+0.5f)*bin;
+      double sum = 0;
+      int    count = 0, nearWindow = 0;
+      float  minX = 1e9f, maxX = -1e9f, minZ = 1e9f, maxZ = -1e9f;
+      std::vector<std::pair<int,int>> cells;
+      for(auto& p:wide) {
+        if(std::abs(p.y-guess)>0.03f)
+          continue;
+        sum += p.y;
+        ++count;
+        if(std::abs(p.x)<=halfW+0.20f && p.z>=-0.80f)
+          ++nearWindow;
+        minX = std::min(minX, p.x); maxX = std::max(maxX, p.x);
+        minZ = std::min(minZ, p.z); maxZ = std::max(maxZ, p.z);
+        cells.emplace_back(int(std::floor(p.x/0.1f)),int(std::floor(p.z/0.1f)));
+        }
+      std::sort(cells.begin(),cells.end());
+      const size_t area = size_t(std::unique(cells.begin(),cells.end())-cells.begin());
+      const float spanX = maxX-minX, spanZ = maxZ-minZ;
+      if(count<10 || area<6 || nearWindow<4 || spanX<0.25f || spanZ<0.15f)
+        continue;
+      const float c = float(sum/count);
+      if(c>maxHeight)
+        continue;
+      Tempest::Log::i("XR surface fallback horizontal=",wide.size()," height=",c," inliers=",count,
+                      " cells=",area," nearWindow=",nearWindow," span=",spanX,"x",spanZ);
+      if(counts) counts->inliers=size_t(count);
+      EnvironmentDepth::Surface out;
+      const float yaw = 0.5f*std::atan2(front.x,front.z);
+      const XrQuaternionf facing = {0,std::sin(yaw),0,std::cos(yaw)};
+      constexpr float k = 0.70710678f;
+      out.pose.orientation = compose(facing,{-k,0,0,k});
+      // The light reaches about h*sqrt(3) in front of a window h above the surface: size the
+      // footprint to the surface's distance below the window, not to a fixed reach
+      const float h = std::max(0.f,-c)+0.25f*size.height;
+      const float depthM = std::clamp(2.5f*h,0.4f,2.5f);
+      out.pose.position = foot+front*(depthM*0.5f)+up*(c+0.004f);
+      out.uvOffset = {0.f,0.f};
+      out.uvScale  = {1.f,1.f};
+      out.size     = {2.f*halfW,depthM};
+      out.fullSize = {2.f*halfW,depthM};
+      out.drop     = std::max(0.f,-c);
+      return out;
       }
-    std::sort(cells.begin(),cells.end());
-    const size_t area = size_t(std::unique(cells.begin(),cells.end())-cells.begin());
-    Tempest::Log::i("XR surface fallback horizontal=",wide.size()," height=",guess," inliers=",count,
-                    " cells=",area," nearWindow=",nearWindow);
-    if(count<needed || area<6 || nearWindow<4)
-      return {};
-    const float c = float(sum/count);
-    if(counts) counts->inliers=size_t(count);
-    EnvironmentDepth::Surface out;
-    const float yaw = 0.5f*std::atan2(front.x,front.z);
-    const XrQuaternionf facing = {0,std::sin(yaw),0,std::cos(yaw)};
-    constexpr float k = 0.70710678f;
-    out.pose.orientation = compose(facing,{-k,0,0,k});
-    // The light reaches about h*sqrt(3) in front of a window h above the surface: size the
-    // footprint to the surface's distance below the window, not to a fixed reach
-    const float h = std::max(0.f,-c)+0.25f*size.height;
-    const float depthM = std::clamp(2.5f*h,0.4f,2.5f);
-    out.pose.position = foot+front*(depthM*0.5f)+up*(c+0.004f);
-    out.uvOffset = {0.f,0.f};
-    out.uvScale  = {1.f,1.f};
-    out.size     = {2.f*halfW,depthM};
-    out.fullSize = {2.f*halfW,depthM};
-    out.drop     = std::max(0.f,-c);
-    return out;
+    Tempest::Log::i("XR surface fallback samples=",wide.size()," no supported horizontal surface below window");
+    return {};
     };
 
   if(cloud.size()<12)
@@ -326,6 +353,12 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
 
   const float x = halfW*(float(bounds.l+bounds.r)/float(columns)-1.f);
   const float z = reach*0.5f*float(bounds.t+bounds.b)/float(rows);
+  const float spanW = 2.f*halfW*float(bounds.r-bounds.l)/float(columns);
+  const float spanD = reach*float(bounds.b-bounds.t)/float(rows);
+  const float centerY = a*x+b*z+c;
+  const float maxCornerY = centerY + 0.5f*(std::abs(a)*spanW + std::abs(b)*spanD);
+  if(centerY>maxHeight || maxCornerY>-0.002f)
+    return fallback();
   auto normal = (up-right*a-front*b)*(1.f/std::sqrt(1.f+a*a+b*b));
   const float sn = std::sqrt(2.f+2.f*normal.y);
   const XrQuaternionf tilt = {normal.z/sn,0,-normal.x/sn,sn*0.5f};
@@ -334,15 +367,16 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
   constexpr float k = 0.70710678f;
   EnvironmentDepth::Surface out;
   out.pose.orientation = compose(tilt,compose(facing,{-k,0,0,k}));
-  out.pose.position = foot+right*x+front*z+up*(a*x+b*z+c)+normal*0.004f;
+  out.pose.position = foot+right*x+front*z+up*centerY+normal*0.004f;
   out.uvOffset = {float(bounds.l)/float(columns),float(bounds.t)/float(rows)};
   out.uvScale = {float(bounds.r-bounds.l)/float(columns),float(bounds.b-bounds.t)/float(rows)};
-  out.size = {2.f*halfW*out.uvScale.x*std::sqrt(1.f+a*a),reach*out.uvScale.y*std::sqrt(1.f+b*b)};
-  out.drop = std::max(0.f,-c);
+  out.size = {spanW*std::sqrt(1.f+a*a),spanD*std::sqrt(1.f+b*b)};
+  out.drop = std::max(0.f,-centerY);
   out.fullSize = {2.f*halfW,reach};
   // Looking at the window, the floor in front can be measured where the table below it is not:
-  // when the horizontal surfaces under and behind the window include a higher one, prefer it
-  if(auto higher = fallback(); higher && higher->pose.position.y>out.pose.position.y+0.1f)
+  // when the horizontal surfaces under and behind the window include a higher one (still below
+  // the bottom edge of the window), prefer it
+  if(auto higher = fallback(); higher && higher->pose.position.y>out.pose.position.y+0.08f)
     return higher;
   return out;
   }
@@ -663,8 +697,10 @@ void EnvironmentDepth::update(XrSpace local,XrTime displayTime) {
       if(s.coherent || vkOk(vkInvalidateMappedMemoryRanges(s.vk.device,1,&range),"invalidate samples")) {
         try {
           FitCounts counts;
-          fitted=fitSurface(static_cast<const float*>(s.mapped),s.imageW,s.imageH,s.frame,s.window,s.size,
-                            s.trace ? &counts : nullptr);
+          auto candidate=fitSurface(static_cast<const float*>(s.mapped),s.imageW,s.imageH,s.frame,s.window,s.size,
+                                    s.trace ? &counts : nullptr);
+          if(candidate && (!fitted || candidate->pose.position.y>fitted->pose.position.y+0.08f))
+            fitted=candidate;
           if(s.trace)
             Tempest::Log::i("XR surface samples valid=",counts.valid," footprint=",counts.footprint,
                             " planeHypotheses=",counts.hypotheses," fitted=",counts.inliers);
@@ -683,9 +719,16 @@ void EnvironmentDepth::update(XrSpace local,XrTime displayTime) {
             }
           } catch(const std::bad_alloc&) { fitted.reset(); }
         }
-      if(fitted)
+      if(fitted) {
         Tempest::Log::i("XR surface depth found ",fitted->size.width," x ",fitted->size.height," m, height ",
                         fitted->pose.position.y," m LOCAL, drop ",fitted->drop," m");
+        // The very first map after provider startup can miss a nearby tabletop and see only the
+        // floor beneath it; take up to two confirming maps before stopping the depth sensor.
+        if(fitted->drop>0.50f && s.maps<3 && displayTime-s.startedAt<8000000000LL) {
+          s.wanted=true;
+          s.nextMap=displayTime+150000000;
+          }
+        }
       else if(s.maps<8 && displayTime-s.startedAt<8000000000LL) {
         // The first map after provider startup can have holes. Give tracking
         // a short bounded acquisition burst, then sleep until the next placement.

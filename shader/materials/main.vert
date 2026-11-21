@@ -275,7 +275,7 @@ void vertexShader(const uvec4 task) {
     // The scene depth it is tested against is point-sampled at motion-vector resolution: pull the
     // surface 3% towards the camera (1-d scales with 1/distance) so it does not fail against itself
     if(push.blendCoverage==0u)
-      gl_Position.z = pos.w - (pos.w - pos.z)*1.03;
+      gl_Position.z = max(0.0, pos.w - (pos.w - pos.z)*1.03);
   }
 #endif
 #if defined(MAT_VARYINGS)

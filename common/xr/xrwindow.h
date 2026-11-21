@@ -39,7 +39,10 @@ class XrWindow final {
 
     // Poll session events. A focus interruption suppresses input for this update, even if focus returned.
     bool              pollInputFocus(bool nativeFocusLost);
-    // Waits for the next display frame.
+    // Waits for the next display frame and refreshes XR input for its predicted display time.
+    // Returns true when the application should tick simulation and then call beginFrame().
+    bool              waitFrame();
+    // Begins rendering the waited frame and locates eye views for it.
     // Returns true when the application should render and then call submit().
     bool              beginFrame();
     int64_t           nominalFramePeriod() const;

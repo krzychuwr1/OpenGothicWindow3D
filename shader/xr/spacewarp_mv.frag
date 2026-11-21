@@ -31,15 +31,28 @@ void main() {
   vec4 pos = scene.viewProjectLwcInv*vec4(ndc, z, 1.0);
   // The cleared depth belongs to the sky. Its direction follows camera rotation
   // and the off-axis projection, while translating the eye leaves it unchanged.
-  vec4 prev;
+  vec4 prev = vec4(0.0);
+  bool valid = false;
   if(z==1.0) {
-    prev = push.prevViewProject*vec4(pos.xyz, 0.0);
-    } else {
+    const float d2 = dot(pos.xyz, pos.xyz);
+    if(d2>1e-12) {
+      prev  = push.prevViewProject*vec4(pos.xyz*inversesqrt(d2), 0.0);
+      valid = prev.w>0.1;
+      }
+    } else if(abs(pos.w)>1e-6) {
     const vec3 world = pos.xyz/pos.w + push.originLwc.xyz;
-    prev = push.prevViewProject*vec4(world, 1.0);
+    prev  = push.prevViewProject*vec4(world, 1.0);
+    // Previous view-space depth is in cm; require safely in front of the previous eye plane
+    // so perspective division cannot explode into RGBA16F infinities and tear SpaceWarp.
+    valid = prev.w>1.0 && prev.z>=-0.5*prev.w;
     }
-  outMotion = prev.w>1e-6 ? vec4(ndc-prev.xy/prev.w, z==1.0 ? 0.0 : z-prev.z/prev.w, 0.0) : vec4(0);
+  vec3 mv = vec3(0.0);
+  if(valid) {
+    mv = vec3(ndc - prev.xy/prev.w, z==1.0 ? 0.0 : clamp(z - prev.z/prev.w, -1.0, 1.0));
+    if(any(isnan(mv)) || any(isinf(mv)) || any(greaterThan(abs(mv.xy), vec2(1.0))))
+      mv = vec3(0.0);
+    }
   // Meta's runtime reads vectors with +y up (OpenGL NDC) also on Vulkan, where NDC +y is down
-  outMotion.y = -outMotion.y;
+  outMotion = vec4(mv.x, -mv.y, mv.z, 0.0);
   gl_FragDepth = z;
   }
