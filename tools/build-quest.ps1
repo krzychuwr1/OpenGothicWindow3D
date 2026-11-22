@@ -9,7 +9,8 @@
 
 .EXAMPLE
   ./tools/build-quest.ps1 -Install
-  ./tools/build-quest.ps1 -Install -GameDir 'D:\SteamLibrary\steamapps\common\Gothic II'
+  ./tools/build-quest.ps1 -Install -GameDir 'E:\Games\Gothic II'
+  ./tools/build-quest.ps1 -Variant pl    # Polish package, reads /sdcard/OpenGothic/gothic2_pl
 #>
 param(
   [string]$AndroidSdk    = $(if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { "$env:LOCALAPPDATA\Android\Sdk" }),
@@ -95,7 +96,7 @@ if ($Install -or $Launch) {
 }
 if ($Install) {
   adb -s $questSerial install -r $apk
-  if ($LASTEXITCODE) { throw 'adb -s $questSerial install failed' }
+  if ($LASTEXITCODE) { throw 'adb install failed' }
   # Read access to the shared game folder (/sdcard/OpenGothic)
   adb -s $questSerial shell appops set $package MANAGE_EXTERNAL_STORAGE allow
 }

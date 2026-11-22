@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   Only the folders the engine reads are copied: Data, _work and System. They go to
-  /sdcard/OpenGothic/Gothic2. Files that adb -s $questSerial pushes into Android/data stay unreadable to the
+  /sdcard/OpenGothic/Gothic2. Files that adb pushes into Android/data stay unreadable to the
   app on Meta Quest, so the app reads the shared folder with the all-files access that this
   script grants (sideloaded apps only; uninstalling the app keeps the game files).
 #>

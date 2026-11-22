@@ -1,9 +1,9 @@
 # Foveated rendering: research notes
 
-On `astra-audit`, **Video settings → Foveation** implements the 25-degree full-rate region and
-2×2 peripheral lighting. It defaults to Off. At CPU/GPU levels 1/0 this saved 1.46 ms of GPU
-time per stereo frame on the main street and 3.49 ms in the tavern. The proposals below describe
-the original research. The paired runs and headset checks are in [ASTRA_LOG.md](ASTRA_LOG.md).
+**Video settings → Foveation** implements the 25-degree full-rate region and 2×2 peripheral
+lighting. It defaults to Off. At CPU/GPU levels 1/0 this saved 1.46 ms of GPU time per stereo
+frame on the main street and 3.49 ms in the tavern. The proposals below describe the original
+research.
 
 ## What the Quest 3 offers (queried on the headset, `-gpuprofile` logs it)
 

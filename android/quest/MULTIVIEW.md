@@ -2,7 +2,7 @@
 
 Multiview draws both eyes in one render pass: one draw stream, a view index in the shaders and a
 two-layer render target. On the Quest it mainly saves CPU recording and shared work before the
-pixels; this branch measures how much of that applies to OpenGothic's renderer.
+pixels; these measurements show how much of that applies to OpenGothic's renderer.
 
 ## Measurements
 
@@ -36,7 +36,7 @@ fps).
 
 ## What a full implementation needs
 
-- Two-layer G-buffer and depth (this branch has them: `LayeredTargets`, Tempest
+- Two-layer G-buffer and depth (already in the code: `LayeredTargets`, Tempest
   `vulkanBorrowLayeredAttachment/Depth` and `vulkanSetViewMask`), plus single-layer views of the
   same images for every later per-eye pass (the renderer uses the G-buffer and depth in about 150
   places), sharing Tempest's hazard tracking between the views of one image.
@@ -47,9 +47,9 @@ fps).
 - The second eye's command buffer skipping culling, occluders and G-buffer.
 
 Not done: for about 5% the change is large and touches most of the renderer. Application SpaceWarp
-(halving the rendered frame rate) is the far bigger lever and is on its own branch.
+(halving the rendered frame rate) is the far bigger lever.
 
-## Options on this branch (development only)
+## Development options
 
 `-skip eye1cull`, `-skip eye1cull,eye1gbufps`, `-skip hizcull` and `-skip mvtest` (multiview timing
 pass in eye 0) reproduce the table; they draw wrong pictures and are for measurement only.

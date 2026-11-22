@@ -1,201 +1,81 @@
-> **Meta Quest window build:** this fork adds a Meta Quest version that shows the game as a
-> stereo window in passthrough. See [android/quest/README.md](android/quest/README.md).
+# OpenGothic Window3D
 
-## OpenGothic
-Open source re-implementation of Gothic 2: Night of the Raven.
+**Gothic II: Night of the Raven on Meta Quest, in a 3D window floating in your room.**
 
-Motivation: The original Gothic 1 and Gothic 2 are still great games, but it's not easy to make them work on modern systems.
-The goal of this project is to make a feature-complete Gothic game client, compatible with the original game data and mods.
+The game runs on the headset itself, no PC needed while playing. It is shown through a
+head-tracked stereo window with passthrough around it: each eye looks through the window from its
+own position, at life size, so leaning and moving your head reveal depth and parallax as if you
+were looking through a real window into Khorinis. Move, resize and curve the window, switch to a
+quiet VR landscape, and play with a Bluetooth keyboard and mouse, an Xbox-style gamepad or the
+Quest controllers.
 
-----
-[![Latest build](https://img.shields.io/github/release-pre/Try/opengothic?style=for-the-badge)](https://github.com/Try/opengothic/releases/latest)
-[![](https://dcbadge.vercel.app/api/server/G9XvcFQnn6)](https://discord.gg/G9XvcFQnn6)
+This is a fork of [OpenGothic](https://github.com/Try/OpenGothic), the open-source Gothic II
+engine. **No game data is included:** you need your own copy of *Gothic II Gold Edition* /
+*Night of the Raven* (Steam or GOG).
 
-![Screenshoot](scr0.png)
+## Features
 
-#### Work in progress
-[![Build status](https://img.shields.io/github/actions/workflow/status/Try/OpenGothic/build.yml?branch=master)](https://github.com/Try/OpenGothic/actions?query=build.yml?query=branch%3Amaster)
+- Head-tracked stereo window into the game world, in passthrough or a VR dusk landscape
+- Grab, move, resize and curve the window with hands or controllers; aspect lock, edge styles,
+  room dimming
+- The selected inventory item floats out of the window as a real 3D object
+- Optional Application SpaceWarp (72 fps motion at half the rendering cost), foveated lighting and
+  surface light that spills the game's colours onto your table or floor
+- Keyboard and mouse, gamepad and Quest controller support
+- Settings tuned for the Quest's mobile GPU
 
+## Requirements
 
-Development is focused on Gothic 2 and new features are not tested for compatibility with Gothic 1. While Gothic 1 is not officially supported, pull requests that fix Gothic 1 — and general — bugs are welcome.
+- Meta Quest 3 or 3S (developed and tested on Quest 3; Quest 2 and Pro are allowed by the app but
+  untested)
+- Developer mode enabled on the headset (free; needed to install apps from outside the Meta store)
+- A Windows PC and a USB cable to install the app and copy the game files once
+- Gothic II Gold Edition / Night of the Raven installed on that PC
 
-The original game has been completely replicated; you can complete both the main quest and the addon. Check out the [bugtracker](https://github.com/Try/OpenGothic/issues) for a list of known issues.
+## Install
 
-OpenGothic is designed to utilize features of modern graphics hardware and APIs, like mesh shaders or ray tracing. While mesh shaders are not mandatory, don't expect OpenGothic to run well on low-end or outdated graphics cards.
+1. Enable developer mode for the headset in the Meta Horizon phone app, connect the headset to the
+   PC with a USB cable, put it on and allow USB debugging.
+2. Download `OpenGothicWindow3D-Quest-Installer.exe` from the
+   [latest release](https://github.com/krzychuwr1/OpenGothicWindow3D/releases/latest) and run it.
+   It finds your Gothic II installation, installs the app and copies the game files (about 3 GB).
+3. On the headset: Library > Unknown Sources > OpenGothic Window3D.
 
-#### Prerequisites
+A PowerShell script is available too, and the full guide covers updating, uninstalling, the window
+controls and the gamepad layout: **[Quest guide](android/quest/README.md)**.
 
-Gothic 2: Night of the Raven is required as OpenGothic does not provide any built-in game assets or scripts.
+## Building from source
 
-Supported systems are:
-* Windows (DX12, Vulkan)
-* Linux (Vulkan)
-* MacOS (Metal)
-
-## How to play
-### Windows
-1. If not already done, install Gothic 2. OpenGothic comes with automatic path detection if your Gothic files are in a common path.
-    * "C:\Program Files (x86)\JoWooD\Gothic II"
-    * "C:\Gothic II"
-    * "C:\Program Files (x86)\Steam\steamapps\common\Gothic II"
-2. Download OpenGothic and extract it into a folder of your choice. Available options are:
-    * A [Pre-Release](https://github.com/Try/opengothic/releases/latest) (recommended)
-    * Alternatively a recent test build from [CI](https://github.com/Try/OpenGothic/actions?query=build.yml?query=branch%3Amaster)
-3. Run `Gothic2Notr.exe`.
-
-   If nothing happens, check `log.txt` and look for the line `invalid gothic path`. In this case OpenGothic fails to find your Gothic installation and you have to explicitly specify its location via `-g` parameter. Either you create a shortcut to `Gothic2Notr.exe` and change the target line in Properties to e.g.
-
-   `Gothic2Notr.exe -g "C:\Program Files (x86)\Steam\steamapps\common\Gothic II"`
-
-   or you can edit `Gothic2Notr.bat` and run this file instead.
-
-### Linux
-1. If not already done, install Gothic 2 via Wine/Proton or copy the game files from a Windows installation.
-2. Install OpenGothic using one of these options:
-   * **Debian/Ubuntu**: Download the `.deb` package from [Releases](https://github.com/Try/opengothic/releases/latest) and install with `sudo dpkg -i opengothic_*.deb`
-   * **Arch**: Install from [AUR](https://aur.archlinux.org/packages/opengothic)
-   * **Other distros**: Download the portable build from [CI](https://github.com/Try/OpenGothic/actions?query=build.yml?query=branch%3Amaster) or build manually
-
-3. Run `Gothic2Notr -g "~/PlayOnLinux's virtual drives/Gothic2_gog/drive_c/Gothic II"` (example path, use the path to your Gothic 2 installation instead)
-
-   For the portable build, you can edit `Gothic2Notr.sh` and change the line `exec "$DIR/Gothic2Notr" "$@"` to
-
-   `exec "$DIR/Gothic2Notr" "$@" -g "~/PlayOnLinux's virtual drives/Gothic2_gog/drive_c/Gothic II"`
-
-   to not have to enter the path manually every time. Then run `Gothic2Notr.sh` without arguments to start.
-
-### MacOS
-1. If not already done, install Gothic 2. Instructions on how to obtain the game files can be found [here](https://macsourceports.com/faq#getgamedata). OpenGothic comes with automatic path detection if your Gothic files are in `"~/Library/Application Support/OpenGothic"`.
-2. Download a build from [Mac Source Ports](https://macsourceports.com/game/gothic2) and follow the installation instructions given there.
-   Alternatively, recent test builds are available from [CI](https://github.com/Try/OpenGothic/actions?query=build.yml?query=branch%3Amaster) and can be extracted into a folder of your choice. You can compile a fresh build as well.
-3. Run `Gothic2Notr.sh`
-
-   If OpenGothic fails to find your Gothic 2 files, you have to explicitly specify its location via `-g` parameter.
-   Change the line `exec "$DIR/Gothic2Notr" "$@"` to reflect your Gothic 2 path e.g.
-
-   `exec "$DIR/Gothic2Notr" "$@" -g "~/PlayOnLinux's virtual drives/Gothic2_gog/drive_c/Gothic II"`
-
----
-### Modifications
-Mods can be installed as usual. Provide the `modfile.ini` to OpenGothic via the `-game:` parameter to play. Example:
-
-`Gothic2Notr.exe -game:Karibik.ini`
-
-#### What's working?
-Content mods (retexture/reworld/animations) that only rely on regular scripting and do not use memory hacking.
-
-#### What's not?
-- Ikarus/LeGo
-
-There are ongoing efforts to support parts of it to make at least some popular mods, like `Chronicles of Myrtana`, playable. Progress can be tracked in the corresponding [issue](https://github.com/Try/OpenGothic/issues/231). An explanantion how Ikarus works is given [here](https://github.com/Try/OpenGothic/discussions/396#discussioncomment-4823499).
-- Union (32 bit and Windows only, [not possible](https://github.com/Try/OpenGothic/issues/195))
-- DX11 Renderer - same as Union, but don't worry - OpenGothic has nice graphics out of the box
-- AST sdk
-- Ninja
-
-## Build Instructions
-### Linux
-Install dependencies:
-* Ubuntu 20.04/22.04 and their derived distros
-```bash
-source <(cat /etc/os-release | grep UBUNTU_CODENAME)
-# latest Vulkan SDK provided externally as Ubuntu packages are usually older
-wget -qO - http://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
-sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-${UBUNTU_CODENAME}.list http://packages.lunarg.com/vulkan/lunarg-vulkan-${UBUNTU_CODENAME}.list
-sudo apt update
-sudo apt install vulkan-sdk
-
-# distro-provided packages
-sudo apt install git cmake g++ glslang-tools libvulkan-dev libasound2-dev libx11-dev libxcursor-dev
+```powershell
+git clone --recursive https://github.com/krzychuwr1/OpenGothicWindow3D.git
+cd OpenGothicWindow3D
+./tools/fetch-quest-deps.ps1
+./tools/build-quest.ps1 -Install
 ```
 
-* Arch
-```bash
-sudo pacman -S git cmake gcc glslang vulkan-devel alsa-lib libx11 libxcursor vulkan-icd-loader libglvnd
-```
+Requirements (Android SDK, NDK, CMake, Ninja, Python, glslangValidator) and options are in the
+[Quest guide](android/quest/README.md#build-from-source). For desktop builds (Windows, Linux, macOS)
+see the [upstream README](docs/OpenGothic.md); this fork is developed and tested for the Quest.
 
-* Fedora
-```bash
-sudo dnf install git cmake gcc-c++ glslang vulkan-loader-devel alsa-lib-devel libX11-devel libXcursor-devel vulkan-validation-layers-devel libglvnd-devel
-```
+## Known limitations
 
-* NixOS
-```bash
-# use the dev flake
-cd linux/flake   
-nix develop
-```
+- Experimental: expect bugs. Gothic II can be played, but not everything has been tested on the
+  headset.
+- Mods are untested on the headset. Those that need Ikarus/LeGo, Union or other memory hacks do
+  not work in OpenGothic at all.
+- Release APKs are signed with a development key. To switch between a release and your own build,
+  uninstall the app first.
 
-#### Compilation
-```bash
-# 1st time build:
-git clone --recurse-submodules https://github.com/Try/OpenGothic.git
-cd OpenGothic
-cmake -B build -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE:STRING=RelWithDebInfo
-make -C build -j $(nproc)
+Bugs and ideas: [issues](https://github.com/krzychuwr1/OpenGothicWindow3D/issues). Problems that
+also happen in desktop OpenGothic belong in the [upstream tracker](https://github.com/Try/OpenGothic/issues).
 
-# following builds:
-git pull --recurse-submodules
-make -C build -j $(nproc)
-```
-Executables can be located at `OpenGothic/build/opengothic`.
+## Credits and license
 
-### MacOS
-```bash
-brew install glslang
-git clone --recurse-submodules https://github.com/Try/OpenGothic.git
-cd OpenGothic
-cmake -H. -Bbuild -DCMAKE_BUILD_TYPE:STRING=RelWithDebInfo
-cmake --build ./build --target Gothic2Notr
-```
-Executables can be located at `OpenGothic/build/opengothic`.
+Built on [OpenGothic](https://github.com/Try/OpenGothic) by Try and its contributors, with
+[Tempest](https://github.com/Try/Tempest), [ZenKit](https://github.com/GothicKit/ZenKit),
+[dmusic](https://github.com/GothicKit/dmusic), [Bullet](https://github.com/bulletphysics/bullet3)
+and the [OpenXR loader](https://github.com/KhronosGroup/OpenXR-SDK). Released under the
+[MIT License](LICENSE), like OpenGothic.
 
-### Android
-Install dependencies: JDK 17, Gradle 8.9, CMake 3.22.1 or newer, Ninja and the Android SDK with SDK 35, build-tools 35.0.0, NDK 27.0.12077973 and SDK CMake 3.22.1.
-Set `JAVA_HOME`, `ANDROID_HOME` and `VULKAN_SDK`. Put Gradle, Ninja and the host Vulkan SDK's `glslangValidator` on `PATH`. 
-Vulkan headers come from the host SDK; Android links the NDK's Vulkan loader.
-```bash
-cmake -S . -B build/android -G Ninja -DCMAKE_TOOLCHAIN_FILE=/path/to/ndk/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24 -DCMAKE_BUILD_TYPE=Release
-cmake --build build/android --target OpenGothic-apk
-```
-Details on APK build and ADB game-file setup are documented in [android/README.md](android/README.md).
-
-
-## Video
-[![Video](https://img.youtube.com/vi/TpayMkyZ58Y/0.jpg)](https://www.youtube.com/watch?v=TpayMkyZ58Y)
-
-## Available Graphic options
-
-The game menu in Gothic 2 is done by scripting. While the original graphics settings do not apply to current-gen graphics, the engine redefines meaning for some tweakables:
-
-* `Settings` -> `Extended configuration`
-  *  `Cloud Shadows` mapped to SSAO.
-  *  `Radial Fog` mapped to "Volumetric fog"
-  *  `Reflections` reused, for screen space reflections
-* `Settings` -> `Video settings`
-  *  Internal rendering resolution, for 3D, can be altered here. UI and text is always rendered at full resolution.
-* Application command line:
-  *  Ray tracing: setting affects only capable hardware, off by default for igpu's, add `-rt 1` to enable
-
-Rendering distance is not customizable.
-
-## Command line arguments
-| Argument(s)            | Description                                                      |
-| ---------------------- | -------                                                          |
-| `-g`                   | specify path containing Gothic game data                         |
-| `-game:<modfile.ini>`  | specify game modification manifest (GothicStarter compatibility) |
-| `-nomenu`              | skip main menu                                                   |
-| `-devmode`             | enable marvin-mode at start of the game                          |
-| `-w <worldname.zen>`   | startup world; newworld.zen is default                           |
-| `-save q`              | load the quick save on start                                     |
-| `-save <number>`       | load a specified save-game slot on start                         |
-| `-v -validation`       | enable validation layers for graphics api                        |
-| `-dx12`                | force DirectX 12 renderer instead of Vulkan (Windows only)       |
-| `-g1`                  | assume a Gothic 1 installation                                   |
-| `-g2c`                 | assume a Gothic 2 classic installation                           |
-| `-g2`                  | assume a Gothic 2 night of the raven installation                |
-| `-rt <boolean>`        | explicitly enable or disable ray-query                           |
-| `-gi <boolean>`        | explicitly enable or disable ray-traced global illumination      |
-| `-ms <boolean>`        | explicitly enable or disable meshlets                            |
-| `-aa <number>`         | enable anti-aliasing (number = 1-2, 2 = most expensive AA)       |
-| `-window`              | windowed debugging mode (not to be used for playing)             |
+This is an unofficial fan project. It is not affiliated with or endorsed by THQ Nordic, Piranha
+Bytes or Meta. Gothic is a trademark of its respective owners.

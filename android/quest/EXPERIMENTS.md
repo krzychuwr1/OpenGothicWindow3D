@@ -1,4 +1,4 @@
-# XR experiments (branches `xr-spacewarp`, `xr-multiview`, `xr-multiview-spacewarp`)
+# XR experiments: Application SpaceWarp and multiview
 
 Measurements are from Meta Quest 3 with `tools/bench-quest.ps1` (new game, hero teleported to a
 waypoint at noon, `-gpuprofile`). Frame rates vary a few fps between runs; compare runs made at
@@ -42,19 +42,13 @@ graphics-device choice, which has no use on the headset, is repurposed for it. I
    - Cost at the low test clocks in Khorinis: about 1.1 ms per eye (0.84 ms with characters only,
      1.7 ms if every movable prop were drawn).
 
-**Limitations on the experiment branches**
+**Limitations**
 
-- Morph meshes use this frame's morph offsets for both frames (their own deformation is not in the
-  vectors, only their movement).
-- Alpha-tested surfaces of moving objects are drawn as solid.
+- The object pass samples the previous frame's morph descriptors and respects the visible
+  material's alpha cutoff. Newly allocated instances fall back to camera motion.
 - Distant NPCs are posed every 2nd or 4th frame (animation level of detail), so their vectors are
   zero on frames without an update.
 - Particles carry no vectors.
-
-On `astra-audit`, the object pass samples previous morph descriptors and respects the visible
-material’s alpha cutoff. Newly allocated instances fall back to camera motion. Particles and the
-animation update cadence remain limitations. The Video menu labels the setting **SpaceWarp**.
-Shader readbacks and Quest checks are recorded in [ASTRA_LOG.md](ASTRA_LOG.md).
 
 **Checking the vectors:** `-show motion` paints each eye's motion vectors over the dimmed picture
 (right red, up green, left and down blue) and `bench-quest.ps1 -Scenario combat -EyeCaptures 2`
@@ -65,7 +59,7 @@ vectors.
 
 ## Multiview
 
-Measured on the `xr-multiview` branch with real multiview rendering (two-layer targets and a view
+Measured with an experimental multiview path (two-layer targets and a view
 mask in Tempest): the Adreno 740 draws the G-buffer for both eyes in 4.3 ms against 4.6-5.0 ms for
 two passes, and sharing culling needs an occlusion test valid for both eyes. A full implementation
 would gain about 1-1.5 ms per frame for a change across most of the renderer, so it is not enabled.

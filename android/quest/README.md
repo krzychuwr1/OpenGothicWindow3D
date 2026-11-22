@@ -10,23 +10,41 @@ your own copy of Gothic II Gold Edition / Night of the Raven (Steam or GOG).
 
 ## Install (players)
 
-1. Enable developer mode for the headset in the Meta Horizon phone app.
-2. Download `OpenGothicWindow3D.apk` and `install-quest.ps1` into one folder.
-3. Download [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools)
+You need a Windows PC, a USB cable for the headset and Gothic II Gold Edition / Night of the
+Raven installed on the PC.
+
+1. Enable developer mode for the headset in the Meta Horizon phone app (Devices > your headset >
+   Headset settings > Developer mode). Meta asks you to register as a developer first; that is free.
+2. Connect the headset to the PC with a USB cable, put it on and allow USB debugging.
+
+**Option A: installer (recommended).** Download `OpenGothicWindow3D-Quest-Installer.exe` from the
+[latest release](https://github.com/krzychuwr1/OpenGothicWindow3D/releases/latest) and run it. It contains the app and `adb`, finds
+Gothic II in your Steam libraries or GOG installation (or lets you pick the folder), installs the
+app and copies `Data`, `_work` and `System` (about 3 GB) to `/sdcard/OpenGothic/Gothic2` on the
+headset. Windows SmartScreen may warn about an unsigned program: choose More info > Run anyway.
+
+**Option B: PowerShell script.**
+
+1. Download `OpenGothicWindow3D.apk` and `install-quest.ps1` from the release into one folder.
+2. Download [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools)
    and unzip it into the same folder (so that `platform-tools\adb.exe` exists).
-4. Connect the headset with a USB cable, put it on and allow USB debugging.
-5. Run in PowerShell:
+3. Run in PowerShell:
 
    ```powershell
    ./install-quest.ps1
    ```
 
-   It installs the app, finds Gothic II in your Steam libraries or GOG installation and copies
-   `Data`, `_work` and `System` (about 3 GB) to `/sdcard/OpenGothic/Gothic2` on the headset. If the
-   game is elsewhere, pass `-GameDir "path\to\Gothic II"`.
-6. On the headset: Library > Unknown Sources > OpenGothic Window3D.
+   If the game is not found, pass `-GameDir "path\to\Gothic II"`. If PowerShell refuses to run the
+   script, run `powershell -ExecutionPolicy Bypass -File install-quest.ps1` instead.
 
-Uninstalling the app keeps the game files; delete `/sdcard/OpenGothic` to remove them.
+Then, on the headset: Library > Unknown Sources > OpenGothic Window3D.
+
+Updating: install the new version the same way; with Option B you can skip copying the game again
+with `-SkipGameFiles`. Uninstalling the app keeps the game files; delete `/sdcard/OpenGothic` to
+remove them. Saves and settings live in the app's own storage and are removed with the app.
+
+If you switch between a release build and one you built yourself, uninstall the old app first:
+they are signed with different keys and Android refuses to update one with the other.
 
 ## The window
 
@@ -34,18 +52,25 @@ Uninstalling the app keeps the game files; delete `/sdcard/OpenGothic` to remove
   (controllers), or grab it directly. The window follows your hand and turns to face you. With a
   controller, push or pull the thumbstick while holding to move it away or closer.
 - **Resize:** reach for a bottom corner until a bracket appears, then grab and drag.
-- **Switch surroundings:** point at the crescent button below the handle and pinch or squeeze the controller grip to enter a quiet dusk landscape. The window icon brings back passthrough. The choice is saved in `INTERNAL/xrEnvironment` (0 for passthrough, 1 for VR).
-- **Dim the room:** the slider below the buttons darkens the passthrough room, or the
-  landscape in VR mode.
-- **Lock the shape:** the padlock button keeps the window's aspect ratio while you resize it.
-- **Curve the window:** the button with the arc curves the window around you like a curved
-  monitor. The game is still seen in full 3D through it, and SpaceWarp keeps working.
-- The buttons appear when you point at the handle and hide again a few seconds after you stop.
-- **Ghost hands:** the hand button shows your hands as dark outlines with pointing rays: off,
-  automatically when you raise a hand after a few seconds without keyboard, mouse or pad, or always.
-- **Surface light** (Video settings, experimental): the game's colours fall on the table or floor
-  under the window.
 - **Recenter:** hold the Meta button; the window comes back in front of you.
+
+A row of buttons appears below the handle when you point at it and hides again a few seconds
+after you stop. Point at a button and pinch or squeeze grip to use it. From left to right:
+
+- **Ghost hands:** shows your hands as dark outlines with pointing rays: off, automatically when
+  you raise a hand after a few seconds without keyboard, mouse or pad, or always.
+- **Curve:** curves the window around you like a curved monitor. The game is still seen in full
+  3D through it, and SpaceWarp keeps working.
+- **Edges:** square corners, rounded corners, or rounded with a soft edge.
+- **Aspect lock:** keeps the window's aspect ratio while you resize it.
+- **3D inventory:** the selected inventory item floats in front of the window as a 3D object.
+  It has its own small handle, so you can move it where you like.
+- **Surface light** (experimental): the game's colours fall on the table or floor under the
+  window. The headset asks once for access to spatial data, which it needs to find the surface.
+- **Surroundings:** the crescent switches to a quiet dusk landscape, the window icon brings back
+  passthrough.
+- **Dimming slider** (below the buttons): darkens the passthrough room, or the landscape in VR
+  mode.
 - The window opens at the distance where it shows the game's full field of view. Further away it
   frames less of the scene, as a real window would.
 
@@ -90,18 +115,36 @@ Use `-setting INTERNAL xrFoveation 1` for a single run.
 
 ## Build from source
 
-Requirements: Android SDK with build-tools and a platform of API 34 or newer, NDK 27 or newer,
-CMake 3.22+, Ninja, Python 3, `glslangValidator` (the Android emulator package ships one), Vulkan
-headers 1.4.341 or newer copied to `toolchain/vulkan/include`, and the OpenXR loader AAR
-(`org.khronos.openxr:openxr_loader_for_android`) extracted to `toolchain/openxr-aar`.
+The build runs on Windows. Requirements:
+
+- Android SDK with build-tools and a platform of API 34 or newer, and NDK 27 or newer (Android
+  Studio's SDK Manager installs them; `ANDROID_HOME` or the default `%LOCALAPPDATA%\Android\Sdk`
+  is used, or pass `-AndroidSdk`)
+- CMake 3.22+, Ninja and Python 3 on `PATH`
+- `glslangValidator` on `PATH` (from the Vulkan SDK; the Android emulator package also ships one,
+  which the script finds by itself)
+- a debug keystore in `%USERPROFILE%\.android\debug.keystore` (Android Studio creates it; or
+  `keytool -genkeypair -keystore %USERPROFILE%\.android\debug.keystore -alias androiddebugkey
+  -storepass android -keypass android -keyalg RSA -validity 10000 -dname "CN=Android Debug"`)
 
 ```powershell
-git clone --recursive <this repository>
-./tools/build-quest.ps1 -AndroidSdk C:\Android -Install -GameDir 'D:\SteamLibrary\steamapps\common\Gothic II'
+git clone --recursive https://github.com/krzychuwr1/OpenGothicWindow3D.git
+cd OpenGothicWindow3D
+./tools/fetch-quest-deps.ps1     # Vulkan headers and the OpenXR loader into toolchain/
+./tools/build-quest.ps1 -Install -GameDir 'E:\Games\Gothic II'
 ```
 
-The script builds the native library, packages and signs the APK with the local debug key
-(`%USERPROFILE%\.android\debug.keystore`) without Gradle, installs it and copies the game files.
+`fetch-quest-deps.ps1` downloads the Vulkan headers (KhronosGroup on GitHub) and the
+`org.khronos.openxr:openxr_loader_for_android` AAR (Maven Central) into `toolchain/`, which git
+ignores. `build-quest.ps1` builds the native library, packages and signs the APK with the debug
+key without Gradle (`build/quest/OpenGothicWindow3D.apk`), and with `-Install` / `-GameDir` installs
+it and copies the game files. `-Variant pl` builds a second package, `org.opengothic.window3d.pl`,
+that reads `/sdcard/OpenGothic/gothic2_pl`, so English and Polish game data can be installed side
+by side (copy them with `tools/push-game-data.ps1 -GameDir ... -Subdir gothic2_pl -Package org.opengothic.window3d.pl`).
+
+`tools/quest-installer/build-installer.ps1` then packs the APK and `adb` into the single-file
+Windows installer (`build/quest-installer/`), compiled with the C# compiler that ships with
+Windows.
 
 ## Developer options
 
