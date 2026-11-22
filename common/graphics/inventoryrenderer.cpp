@@ -81,7 +81,7 @@ Vec3 InventoryRenderer::itemRotation(const zenkit::IItem& itData) {
     }
   }
 
-void InventoryRenderer::draw(Tempest::Encoder<CommandBuffer>& cmd, float scaleX, float scaleY) {
+void InventoryRenderer::draw(Tempest::Encoder<CommandBuffer>& cmd, float scaleX, float scaleY, int originX, int originY) {
   Tempest::Matrix4x4 mv = Tempest::Matrix4x4::mkIdentity();
   mv.translate(0, 0, 0.5f);
   mv.scale(0.8f,1.f,1.f);
@@ -93,7 +93,7 @@ void InventoryRenderer::draw(Tempest::Encoder<CommandBuffer>& cmd, float scaleX,
     const int h = int(std::round(float(i.y+i.h)*scaleY))-y;
     if(w<=0 || h<=0)
       continue;
-    cmd.setViewport(x,y,w,h);
+    cmd.setViewport(originX+x,originY+y,w,h);
     for(size_t r=0;r<i.mesh.nodesCount();++r) {
       auto  n = i.mesh.node(r);
       auto& m = n.material();

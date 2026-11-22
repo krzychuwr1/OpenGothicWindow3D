@@ -757,8 +757,13 @@ void Renderer::draw(Attachment& result, Encoder<CommandBuffer>& cmd, uint8_t fId
       cmd.setViewport(uiViewport);
     cmd.setDebugMarker("Inventory");
 #ifdef OPENGOTHIC_XR
-    if(XrWindow::inst())
-      inventory.draw(cmd,float(result.w())/float(std::max(1,inventory.w())),float(result.h())/float(std::max(1,inventory.h())));
+    if(XrWindow::inst()) {
+      // The item viewports must land in the same rectangle as the rest of the interface: on a
+      // curved window that is an inset per eye, not the whole eye image
+      const Tempest::Rect area = uiInset ? uiViewport : Tempest::Rect(0,0,int(result.w()),int(result.h()));
+      inventory.draw(cmd,float(area.w)/float(std::max(1,inventory.w())),float(area.h)/float(std::max(1,inventory.h())),
+                     area.x,area.y);
+      }
     else
 #endif
       inventory.draw(cmd);
