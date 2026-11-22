@@ -48,7 +48,8 @@ Apps from outside the Meta store need developer mode. It is free.
 ### 2. Run the installer
 
 1. Download **`OpenGothicWindow3D-Quest-Installer.exe`** from the
-   [latest release](https://github.com/krzychuwr1/OpenGothicWindow3D/releases/latest).
+   [latest release](https://github.com/krzychuwr1/OpenGothicWindow3D/releases/latest). It is the
+   only file you need: the app and the tools to install it are inside.
 2. Connect the headset to the PC with the USB cable. Put the headset on and choose **Allow** when it
    asks to allow USB debugging (tick *Always allow from this computer*).
 3. Run the installer. If Windows SmartScreen warns about an unknown program, choose
@@ -58,21 +59,6 @@ Apps from outside the Meta store need developer mode. It is free.
      **Browse...** and pick the folder that contains `Data`, `_work` and `System`.
    - **2. Meta Quest Headset:** should say *Connected*.
 5. Click **Install to Quest**. Copying the game files (about 3 GB) takes a few minutes.
-
-<details>
-<summary>Prefer a script instead of the .exe?</summary>
-
-1. Download `OpenGothicWindow3D.apk` and `install-quest.ps1` from the release into one folder.
-2. Download [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools)
-   and unzip them into the same folder, so that `platform-tools\adb.exe` exists.
-3. Connect the headset as above, then in PowerShell, in that folder:
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File install-quest.ps1
-   ```
-
-   Add `-GameDir "D:\path\to\Gothic II"` if your game is not found automatically.
-</details>
 
 ### 3. Start the game
 

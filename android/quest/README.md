@@ -17,31 +17,17 @@ Raven installed on the PC.
    Headset settings > Developer mode). Meta asks you to register as a developer first; that is free.
 2. Connect the headset to the PC with a USB cable, put it on and allow USB debugging.
 
-**Option A: installer (recommended).** Download `OpenGothicWindow3D-Quest-Installer.exe` from the
-[latest release](https://github.com/krzychuwr1/OpenGothicWindow3D/releases/latest) and run it. It contains the app and `adb`, finds
-Gothic II in your Steam libraries or GOG installation (or lets you pick the folder), installs the
-app and copies `Data`, `_work` and `System` (about 3 GB) to `/sdcard/OpenGothic/Gothic2` on the
-headset. Windows SmartScreen may warn about an unsigned program: choose More info > Run anyway.
+3. Download `OpenGothicWindow3D-Quest-Installer.exe` from the
+   [latest release](https://github.com/krzychuwr1/OpenGothicWindow3D/releases/latest) and run it.
+   It is the only file you need: it contains the app and `adb`, finds Gothic II in your Steam
+   libraries or GOG installation (or lets you pick the folder), installs the app and copies
+   `Data`, `_work` and `System` (about 3 GB) to `/sdcard/OpenGothic/Gothic2` on the headset.
+   Windows SmartScreen may warn about an unsigned program: choose More info > Run anyway.
+4. On the headset: Library > Unknown Sources > OpenGothic Window3D.
 
-**Option B: PowerShell script.**
-
-1. Download `OpenGothicWindow3D.apk` and `install-quest.ps1` from the release into one folder.
-2. Download [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools)
-   and unzip it into the same folder (so that `platform-tools\adb.exe` exists).
-3. Run in PowerShell:
-
-   ```powershell
-   ./install-quest.ps1
-   ```
-
-   If the game is not found, pass `-GameDir "path\to\Gothic II"`. If PowerShell refuses to run the
-   script, run `powershell -ExecutionPolicy Bypass -File install-quest.ps1` instead.
-
-Then, on the headset: Library > Unknown Sources > OpenGothic Window3D.
-
-Updating: install the new version the same way; with Option B you can skip copying the game again
-with `-SkipGameFiles`. Uninstalling the app keeps the game files; delete `/sdcard/OpenGothic` to
-remove them. Saves and settings live in the app's own storage and are removed with the app.
+Updating: run the new installer and tick *Update app only* to skip copying the game again.
+Uninstalling the app keeps the game files; delete `/sdcard/OpenGothic` to remove them. Saves and
+settings live in the app's own storage and are removed with the app.
 
 If you switch between a release build and one you built yourself, uninstall the old app first:
 they are signed with different keys and Android refuses to update one with the other.
@@ -145,6 +131,14 @@ by side (copy them with `tools/push-game-data.ps1 -GameDir ... -Subdir gothic2_p
 `tools/quest-installer/build-installer.ps1` then packs the APK and `adb` into the single-file
 Windows installer (`build/quest-installer/`), compiled with the C# compiler that ships with
 Windows.
+
+Without the installer, `tools/install-quest.ps1` installs an APK and copies the game files from
+the command line (`adb` on `PATH` or in a `platform-tools` folder next to the script):
+
+```powershell
+./tools/install-quest.ps1 -Apk build\quest\OpenGothicWindow3D.apk
+./tools/install-quest.ps1 -Apk build\quest\OpenGothicWindow3D.apk -SkipGameFiles   # update the app only
+```
 
 ## Developer options
 
