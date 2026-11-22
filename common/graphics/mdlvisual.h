@@ -76,6 +76,9 @@ class MdlVisual final {
 
     const Pose&                    pose() const { return *skInst; }
     Pose&                          armPose() { return *skInst; } // Pose::setArmTargets
+    // VR: the wearer looks out of this head, so it must not be drawn (leaning back would show the face)
+    void                           setHeadHidden(bool hidden);
+    bool                           isHeadHidden() const { return headHidden; }
     bool                           updateAnimation(Npc* npc, Interactive* mobsi, World& world, uint64_t dt, bool force);
     void                           processLayers  (World& world);
     bool                           processEvents(World& world, uint64_t &barrier, Animation::EvCount &ev);
@@ -168,6 +171,7 @@ class MdlVisual final {
 
     std::string                    hnpcVisualName;
     bool                           hnpcFlagGhost = false;
+    bool                           headHidden    = false;
     PfxSlot                        hnpcVisual;
 
     const Skeleton*                skeleton=nullptr;

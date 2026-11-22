@@ -1,5 +1,7 @@
 #include "mdlvisual.h"
 
+#include <type_traits>
+
 #include "graphics/mesh/skeleton.h"
 #include "game/serialize.h"
 #include "world/objects/npc.h"
@@ -438,6 +440,13 @@ void MdlVisual::setObjMatrix(const Tempest::Matrix4x4 &m, bool syncAttach) {
   view.setPose(m,*skInst);
   if(syncAttach)
     syncAttaches();
+  }
+
+void MdlVisual::setHeadHidden(bool hidden) {
+  if(headHidden==hidden)
+    return;
+  headHidden = hidden;
+  syncAttaches(head);
   }
 
 void MdlVisual::setHeadRotation(float dx, float dz) {
@@ -914,6 +923,11 @@ void MdlVisual::syncAttaches(Attach<View>& att) {
   auto  p    = pos;
   if(att.boneId<pose.boneCount())
     p = pose.bone(att.boneId);
+  if constexpr(std::is_same_v<View,MeshObjects::Mesh>) {
+    // A hidden head collapses onto its bone: no triangles left to draw or to cast shadows
+    if(headHidden && &att==&head)
+      p.scale(0.f,0.f,0.f);
+    }
   att.view.setObjMatrix(p);
   }
 

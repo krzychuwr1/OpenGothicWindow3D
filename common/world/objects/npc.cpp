@@ -4812,6 +4812,12 @@ static Vec3 rotateByQuat(const Vec4& q, const Vec3& v) {
   }
 
 void Npc::updateArmTracking(uint64_t dt) {
+  // Looking out of the hero's eyes in VR: his own head must not show (leaning back, looking down)
+  {
+    Vec3 anchor;
+    auto* vr = XrWindow::inst();
+    visual.setHeadHidden(isPlayer() && vr!=nullptr && vr->vrEyeAnchor(anchor));
+  }
   // The hero's arms follow the user's tracked hands while nothing else needs them; else they fade out
   Pose::ArmTarget arm[2];
   auto* xr = XrWindow::inst();
@@ -4878,7 +4884,8 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
     }
 
 #if defined(OPENGOTHIC_XR)
-  if(isPlayer() || visual.pose().hasArmTargets())
+  // Also the hero just left behind (another NPC taken over): his arms and head return to normal
+  if(isPlayer() || visual.pose().hasArmTargets() || visual.isHeadHidden())
     updateArmTracking(dt);
 #endif
   bool syncAtt = visual.updateAnimation(this,nullptr,owner,dt,force);
