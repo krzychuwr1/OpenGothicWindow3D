@@ -6,6 +6,8 @@
 
 **Play Gothic II: Night of the Raven on your Meta Quest, through a 3D window floating in your room.**
 
+![Gothic II on Meta Quest: played with a gamepad in a living room, an inventory item floating out of the window, and a town street above a desk played with keyboard and mouse](docs/images/banner.webp)
+
 The game runs on the headset itself, with no PC needed while you play. You see Khorinis through a
 life-size, head-tracked stereo window: lean in and the world behind it shifts with real depth, as
 if it were an actual window in your wall. Move it, resize it, curve it, and play with a keyboard
@@ -101,6 +103,10 @@ Hold the **Meta button** to bring it back in front of you.
 | Surface light | Let the game's light fall on your table or floor (experimental) |
 | Moon / window | Switch between your room (passthrough) and a dusk VR landscape |
 | Slider | Dim the room around the window |
+
+| Hang it on a wall | Items in 3D | Curved, in the VR landscape |
+| :---: | :---: | :---: |
+| <img src="docs/images/wall.webp" width="240" alt="A Gothic II window hanging on a living-room wall above a sideboard"> | <img src="docs/images/sword.webp" width="240" alt="A sword from the inventory floating above a real desk, next to a keyboard and mouse"> | <img src="docs/images/curved.webp" width="240" alt="The window curved like a monitor, floating in a dark dusk landscape"> |
 
 **Graphics.** The Quest version starts with lighter settings than the PC version. In the game's
 **Settings → Video settings** you can change the refresh rate, try **Application SpaceWarp**
