@@ -546,6 +546,10 @@ void MainWindow::keyDownEvent(KeyEvent &event) {
   auto mapping = keycodec.mapping(event);
   player.onKeyPressed(act,event.key,mapping);
 
+  // VR mode on V, or F12 when V is bound to a game action
+  if(auto xr = XrWindow::inst(); xr!=nullptr && act==KeyCodec::Idle && (event.key==Event::K_V || event.key==Event::K_F12))
+    xr->setVrMode(!xr->isVrMode());
+
   if(event.key==Event::K_F11) {
     auto tex = renderer.screenshoot(cmdId, Size(int(outW()),int(outH())));
     auto pm  = device.readPixels(textureCast<const Texture2d&>(tex));
@@ -1104,8 +1108,12 @@ void MainWindow::updateAnimation(uint64_t dt) {
 void MainWindow::tickCamera(uint64_t dt) {
   auto pcamera = Gothic::inst().camera();
   auto pl      = Gothic::inst().player();
-  if(pcamera==nullptr)
+  if(pcamera==nullptr) {
+    Vec3 spin, offset;
+    if(auto xr = XrWindow::inst())
+      xr->updateVrView(false, 0.f, spin, offset);
     return;
+    }
 
   auto&      camera       = *pcamera;
   const auto ws           = pl!=nullptr ? pl->weaponState() : WeaponState::NoWeapon;
@@ -1143,11 +1151,51 @@ void MainWindow::tickCamera(uint64_t dt) {
       }
     }
 
-  if(dt==0)
+  if(dt==0) {
+    tickXrVrCamera(camera, dt);
     return;
+    }
   if(camera.isToggleEnabled() && !camera.isCutscene())
     camera.setMode(solveCameraMode());
   camera.tick(dt);
+  tickXrVrCamera(camera, dt);
+  }
+
+void MainWindow::tickXrVrCamera(Camera& camera, uint64_t dt) {
+#ifdef OPENGOTHIC_XR
+  auto* xr = XrWindow::inst();
+  if(xr==nullptr)
+    return;
+  // VR mode looks out of the hero's eyes only in the game's free camera. Dialogs, menus, the
+  // inventory, interactions, cutscenes, death and knock-outs show through the window as usual.
+  auto*      pl   = Gothic::inst().player();
+  const auto mode = solveCameraMode();
+  const bool allowed = pl!=nullptr && !pl->isDown() && !camera.isCutscene() && !camera.isMarvin() &&
+                       !video.isActive() && !rootMenu.isActive() && !chapter.isActive() && !document.isActive() &&
+                       !dialogs.isActive() && inventory.isOpen()==InventoryMenu::State::Closed &&
+                       Gothic::inst().checkLoading()==Gothic::LoadState::Idle &&
+                       mode!=Camera::Dialog && mode!=Camera::Inventory && mode!=Camera::Mobsi && mode!=Camera::Death;
+  Vec3 spin, offset;
+  if(!xr->updateVrView(allowed, pl!=nullptr ? pl->rotation() : 0.f, spin, offset)) {
+    xrVrHeadValid = false;
+    camera.setVrPose(false, Vec3(), Vec3());
+    return;
+    }
+  // Eye height follows the head bone (sneaking, swimming) but smoothed over a third of a second,
+  // so the walk cycle does not bob the view; the feet position itself is not smoothed.
+  const Vec3 root = pl->position();
+  const Vec3 head = pl->cameraBone(true)-root;
+  const float k = xrVrHeadValid ? 1.f-std::exp(-float(dt)/300.f) : 1.f;
+  xrVrHead      = xrVrHead + (head-xrVrHead)*k;
+  xrVrHeadValid = true;
+  // The eyes a little ahead of and above the head bone, outside the face (its back faces are culled)
+  const float a = pl->rotationRad();
+  const Vec3  forward(std::cos(a), 0.f, std::sin(a));
+  camera.setVrPose(true, root + xrVrHead + forward*12.f + Vec3(0.f,6.f,0.f) + offset, spin);
+#else
+  (void)camera;
+  (void)dt;
+#endif
   }
 
 Camera::Mode MainWindow::solveCameraMode() const {

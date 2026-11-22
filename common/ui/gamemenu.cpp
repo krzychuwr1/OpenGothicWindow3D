@@ -415,6 +415,7 @@ void GameMenu::addXrVideoChoices(bool foveation, bool surfaceLight, bool windowF
     {true,"MENUITEM_XR_AA","Anti-aliasing","Off|CMAA2","Smooths edges in the game scene before drawing the interface","xrCmaa2"},
     {windowFilter,"MENUITEM_XR_FILTER","Window filtering","Default|Enhanced","Asks the headset to supersample and sharpen the window","xrWindowFilter"},
     {foveation,"MENUITEM_XR_FOVEATION","Foveation","Off|On","Shades peripheral lighting at lower detail around the direction your head faces","xrFoveation"},
+    {true,"MENUITEM_XR_VRMODE","VR mode","Off|On","Steps through the window: look around the world from the hero's eyes (V, double thumb tap, or hold both grips)","xrVrMode"},
     {true,"MENUITEM_XR_ARMS","Arm tracking","Off|On","In VR mode the hero's arms follow your tracked hands","xrArmTracking"},
     };
   const auto count = std::count_if(std::begin(choices),std::end(choices),[](const Choice& c){ return c.enabled; });

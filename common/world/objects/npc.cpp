@@ -4825,10 +4825,12 @@ void Npc::updateArmTracking(uint64_t dt) {
                     !isAttackAnim() && !Gothic::inst().isInDialog();
   XrHandTargets hands;
   Vec4          head;
-  if(free && xr->handTargets(hands) && xr->headOrientation(head)) {
-    // Head-relative hands turned into room (LOCAL) axes, whose forward the hero's yaw stands for.
-    // MERGE: the VR camera puts the head orientation on top of the hero's yaw; if it takes a
-    // reference yaw out of the head orientation, take the same one out of `head` here.
+  Vec3          eyes;
+  if(free && xr->handTargets(hands) && xr->headOrientation(head) && xr->vrHeadOffset(eyes)) {
+    // Head-relative hands turned into the frame the VR view started in, whose forward the hero's
+    // yaw stands for. The VR camera sits 12 cm ahead of and 6 cm above the head bone (see
+    // MainWindow::tickXrVrCamera) and follows the wearer's head motion: anchor the hands there too.
+    eyes += Vec3(0.f,6.f,12.f);
     auto room = [&](const Vec3& v) { return rotateByQuat(head,v); };
     // OpenXR (+X right, +Y up, -Z forward, metres) -> Pose body frame (x right, y up, z forward, centimetres)
     auto body = [](const Vec3& v, float scale) { return Vec3(v.x*scale, v.y*scale, -v.z*scale); };
@@ -4837,7 +4839,7 @@ void Npc::updateArmTracking(uint64_t dt) {
       if(!h.valid)
         continue;
       arm[i].valid  = true;
-      arm[i].wrist  = body(room(h.wrist),100.f);
+      arm[i].wrist  = eyes + body(room(h.wrist),100.f);
       arm[i].distal = Vec3::normalize(body(room(h.knuckle-h.wrist),1.f));
       arm[i].thumb  = Vec3::normalize(body(room(h.thumbBase-h.wrist),1.f));
       arm[i].dorsal = body(room(rotateByQuat(h.orientation,Vec3(0,1,0))),1.f);

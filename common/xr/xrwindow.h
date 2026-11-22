@@ -97,6 +97,17 @@ class XrWindow final {
     // predicted eye positions. False while the eyes are not tracked.
     bool              eyeView(uint8_t eye, float verticalFovDeg, Camera::EyeView& out) const;
 
+    // VR mode ("step through the portal"): a first-person view of the game world filling the
+    // headset instead of the window. Chosen by the wearer (chrome button, Video menu, V/F12 key,
+    // double thumb tap, both grips held); shown only while the game allows it.
+    bool              isVrMode() const;
+    void              setVrMode(bool vr);
+    // Once per game update: whether the game allows the VR view now (otherwise the window shows).
+    // True when this frame renders VR. Then `spin` holds the camera angles in degrees (pitch down,
+    // yaw, 0) and `offset` the head motion since the view started, in game units in world space,
+    // both for a body facing heroYaw (degrees).
+    bool              updateVrView(bool allowed, float heroYaw, Tempest::Vec3& spin, Tempest::Vec3& offset);
+
     // Controller state of the XR controllers (empty while the window is grabbed or the app is unfocused).
     PadState          pad() const;
     // Previous XR controls still eligible to generate an ordinary release.
@@ -129,6 +140,9 @@ class XrWindow final {
     // Head (VIEW space) orientation relative to the room (LOCAL space), quaternion x,y,z,w;
     // located with the hands, so only while arm tracking is active
     bool              headOrientation(Tempest::Vec4& out) const;
+    // VR view: the wearer's head motion since the view started, in the hero's body frame
+    // (x right, y up, z forward, centimetres); false when the VR view is not shown
+    bool              vrHeadOffset(Tempest::Vec3& out) const;
 
   private:
     XrWindow();

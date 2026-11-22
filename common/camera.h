@@ -124,15 +124,21 @@ class Camera final {
       Tempest::Vec3 offset;
       float         left = 0, right = 0, bottom = 0, top = 0;
       float         zNear = 0;
+      // VR mode: the eye's turn from the camera orientation, in view space (head roll)
+      Tempest::Matrix4x4 rotation = Tempest::Matrix4x4::mkIdentity();
       };
     void               setEyeView(const EyeView* view);
 #if defined(OPENGOTHIC_XR)
     bool               takeCameraCut();
+    // VR mode: while active the camera sits at `pos` and looks along `spin` (pitch, yaw), whatever
+    // the game camera would do; stepping out returns to the game camera at once
+    void               setVrPose(bool active, const Tempest::Vec3& pos, const Tempest::Vec3& spin);
 #endif
 
   private:
 #if defined(OPENGOTHIC_XR)
     bool               cameraCut = true;
+    bool               vrPose = false;
     bool               dialogSpeaker = false, appliedSpeaker = false;
 #endif
     mutable Tempest::Vec3 shadowLight = {0,1,0};
@@ -144,6 +150,7 @@ class Camera final {
 #endif
       Tempest::Vec3      pos;
       Tempest::Matrix4x4 proj;
+      Tempest::Matrix4x4 rotation;
       float              zNear = 0;
       } eye;
 

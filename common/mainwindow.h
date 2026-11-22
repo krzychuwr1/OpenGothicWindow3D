@@ -132,6 +132,7 @@ class MainWindow : public Tempest::Window {
     uint32_t outH() const;
     void     updateAnimation(uint64_t dt);
     void     tickCamera(uint64_t dt);
+    void     tickXrVrCamera(Camera& camera, uint64_t dt);
     void     isDialogClosed(bool& ret);
 
     template<Tempest::KeyEvent::KeyType k>
@@ -151,6 +152,8 @@ class MainWindow : public Tempest::Window {
 #ifdef OPENGOTHIC_XR
     Tempest::Fence*       lastXrFence = nullptr;
     float                 xrUiScale = 1.25f;
+    Tempest::Vec3         xrVrHead;           // smoothed head bone above the hero's feet, VR mode
+    bool                  xrVrHeadValid = false;
 #endif
     Tempest::Matrix4x4    prevEyeViewProject[2];
     bool                  eyeHistoryValid = false;
