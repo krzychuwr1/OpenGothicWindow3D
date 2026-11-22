@@ -158,6 +158,23 @@ bool Camera::takeCameraCut() {
   cameraCut = false;
   return cut;
   }
+
+void Camera::setVrPose(bool active, const Tempest::Vec3& pos, const Tempest::Vec3& spin) {
+  cameraCut |= active!=vrPose;
+  const Vec3 prev = origin;
+  if(active) {
+    origin = pos;
+    angles = spin;
+    }
+  else if(vrPose && camMarvinMod==M_Normal && camMod!=Cutscene && camMod!=FirstPerson) {
+    // Back behind the hero without sweeping out of his head
+    tickThirdPerson(-1.f);
+    }
+  vrPose = active;
+  // tick() tracks the water medium by the surfaces the camera crosses: count this jump too
+  if(auto* world = Gothic::inst().world(); world!=nullptr && prev!=origin)
+    inWater ^= (world->physic()->cameraRay(prev,origin).waterCol%2)!=0;
+  }
 #endif
 
 void Camera::setEyeView(const EyeView* v) {
@@ -180,7 +197,8 @@ void Camera::setEyeView(const EyeView* v) {
                        0.f,       2*n/(t-b),  -(t+b)/(t-b), 0.f,
                        0.f,       0.f,         k,           -n*k,
                        0.f,       0.f,         1.f,          0.f);
-  eye.pos    = origin + shake + Vec3(wx,wy,wz);
+  eye.pos      = origin + shake + Vec3(wx,wy,wz);
+  eye.rotation = v->rotation;
 #if defined(OPENGOTHIC_XR)
   eye.inWater = inWater;
   if(auto* world = Gothic::inst().world(); world!=nullptr && origin!=eye.pos) {
@@ -1128,12 +1146,20 @@ Matrix4x4 Camera::viewProj() const {
   }
 
 Matrix4x4 Camera::view() const {
-  if(eye.active)
-    return mkView(eye.pos, angles);
+  if(eye.active) {
+    auto ret = eye.rotation;
+    ret.mul(mkView(eye.pos, angles));
+    return ret;
+    }
   return mkView(origin+shake, angles);
   }
 
 Matrix4x4 Camera::viewLwc() const {
+  if(eye.active) {
+    auto ret = eye.rotation;
+    ret.mul(mkView(Vec3(0), angles));
+    return ret;
+    }
   return mkView(Vec3(0), angles);
   }
 

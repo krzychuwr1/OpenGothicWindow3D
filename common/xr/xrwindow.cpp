@@ -79,6 +79,7 @@ static XrQuaternionf mul(const XrQuaternionf& a, const XrQuaternionf& b) {
           a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z};
   }
 static XrQuaternionf aroundY(float angle) { return {0.f, std::sin(angle*0.5f), 0.f, std::cos(angle*0.5f)}; }
+static XrQuaternionf aroundX(float angle) { return {std::sin(angle*0.5f), 0.f, 0.f, std::cos(angle*0.5f)}; }
 
 // Orientation whose +Z points along `back` (from the window towards the viewer), without roll.
 static XrQuaternionf facing(const V3& back) {
@@ -125,7 +126,7 @@ static std::array<float,4> windowFovMargins(const XrView& view, const XrPosef& w
   }
 
 // Parts of the window frame a hand can grab
-enum class Grip : uint8_t { None, Handle, CornerLeft, CornerRight, Environment, Dim, Aspect, Curve, Hands, Edges, Inventory3D, SurfaceLight, ItemHandle };
+enum class Grip : uint8_t { None, Handle, CornerLeft, CornerRight, Environment, Dim, Aspect, Curve, Hands, Edges, Inventory3D, SurfaceLight, ItemHandle, VrMode };
 
 struct Hand {
   XrPath         path        = XR_NULL_PATH;
@@ -170,6 +171,7 @@ struct XrWindow::Impl {
   void invalidateSurface();
   void updateSurface();
   bool                     hasHandInteraction = false;
+  bool                     hasMicrogestures   = false;
   bool                     hasPerfSettings    = false;
   bool                     hasSpaceWarp       = false;
   bool                     hasWindowFilter    = false;
@@ -204,6 +206,7 @@ struct XrWindow::Impl {
   XrTime                   retryRateAfter = 0;
   ShadingRateMap           lightingRate[Resources::MaxFramesInFlight];
   V3                       headForward;
+  XrQuaternionf            headOrientation = {0,0,0,1};
   bool                     headValid = false;
   XrSession                session    = XR_NULL_HANDLE;
   XrSessionState           state      = XR_SESSION_STATE_UNKNOWN;
@@ -263,8 +266,8 @@ struct XrWindow::Impl {
   bool                     curveReady = false, curved = false;
   int                      curveLevel = 0;               // 0 flat, 1 slight, 2 strong
   bool                     sceneShown = false;
-  static constexpr uint32_t ChromeW = 800, ChromeH = 135;
-  static constexpr float    ChromePhysW = 0.80f, ChromePhysH = 0.135f;
+  static constexpr uint32_t ChromeW = 900, ChromeH = 135;
+  static constexpr float    ChromePhysW = 0.90f, ChromePhysH = 0.135f;
   struct ChromeState {
     bool showEnv          = false;
     bool immersive        = false;
@@ -273,6 +276,7 @@ struct XrWindow::Impl {
     bool inventory3D      = false;
     bool showSurfaceLight = false;
     bool surfaceLightOn   = false;
+    bool vrMode           = false;
     int  handsMode        = 0;
     int  curveLevel       = 0;
     int  edgeStyle        = 0;
@@ -281,7 +285,7 @@ struct XrWindow::Impl {
     bool operator==(const ChromeState& o) const {
       return showEnv==o.showEnv && immersive==o.immersive && aspectLocked==o.aspectLocked &&
              showSlider==o.showSlider && inventory3D==o.inventory3D &&
-             showSurfaceLight==o.showSurfaceLight && surfaceLightOn==o.surfaceLightOn &&
+             showSurfaceLight==o.showSurfaceLight && surfaceLightOn==o.surfaceLightOn && vrMode==o.vrMode &&
              handsMode==o.handsMode && curveLevel==o.curveLevel && edgeStyle==o.edgeStyle &&
              dimStep==o.dimStep && hover==o.hover;
       }
@@ -406,11 +410,31 @@ struct XrWindow::Impl {
   XrAction                 aStickClick= XR_NULL_HANDLE;
   XrAction                 aA = XR_NULL_HANDLE, aB = XR_NULL_HANDLE, aX = XR_NULL_HANDLE, aY = XR_NULL_HANDLE;
   XrAction                 aMenu      = XR_NULL_HANDLE;
+  XrAction                 aThumbTap  = XR_NULL_HANDLE;   // microgesture, hand tracking only
   std::array<Hand,2>       hands;
   PadState                 padState, releasePad;
   enum PadControl : size_t { StickLeft=PadState::Count, StickRight, TriggerLeft, TriggerRight, ControlCount };
   std::bitset<ControlCount> blockedControls;
   bool                     padInterrupted = false;
+
+  // VR mode: the game fills the view from the wearer's eyes (no window, chrome or room)
+  bool                     vrMode     = false;  // chosen by the wearer (INTERNAL xrVrMode)
+  bool                     vrActive   = false;  // this frame renders the VR view
+  bool                     vrRefValid = false;
+  float                    vrRefYaw   = 0.f;    // head yaw (radians) when the view started
+  V3                       vrRefPos;            // head position then, LOCAL space
+  XrQuaternionf            vrBase     = {0,0,0,1}; // head yaw and pitch handed to the camera
+  V3                       vrBasePos;           // head position handed to the camera
+  XrTime                   vrLastTap = 0, vrToggleAfter = 0, vrGripSince = 0;
+  bool                     vrGripLatched = false;
+  mutable uint32_t         vrRecommended[2] = {};
+  static constexpr float   VrNear = 0.05f;      // metres
+  // The interface in VR: a head-locked panel this far ahead (metres), its half width and its
+  // centre's drop below the gaze as tangents (about 45 degrees wide, 5 degrees low)
+  static constexpr float   VrPanelDistance = 1.5f, VrPanelHalf = 0.42f, VrPanelDrop = 0.08f;
+  static constexpr uint32_t VrEyePixels = 1536u*1536u;
+  void updateVrToggles();
+  void toggleVrMode(const char* source);
 
   ~Impl();
 
@@ -441,17 +465,18 @@ struct XrWindow::Impl {
   void updateChromePanel(bool showEnv, bool showSlider, bool showSurfaceLight, Grip hover);
   V3   buttonCenter() const { return handleCenter() + V3{0,-0.10f*chromeScale(),0}; }
   V3   chromeCenter() const { return buttonCenter() + V3{0,-0.0325f*chromeScale(),0}; }
-  // The row below the handle, centred: hands, curve, edges, aspect lock, 3D inventory, surface light, VR/passthrough;
-  // the dimming slider sits below the row
-  V3   handsCenter() const        { return buttonCenter() + V3{-0.33f*chromeScale(),0,0}; }
-  V3   curveCenter() const        { return buttonCenter() + V3{-0.22f*chromeScale(),0,0}; }
-  V3   edgesCenter() const        { return buttonCenter() + V3{-0.11f*chromeScale(),0,0}; }
-  V3   aspectCenter() const       { return buttonCenter() + V3{ 0.00f*chromeScale(),0,0}; }
-  V3   inventory3DCenter() const  { return buttonCenter() + V3{ 0.11f*chromeScale(),0,0}; }
-  V3   surfaceLightCenter() const { return buttonCenter() + V3{ 0.22f*chromeScale(),0,0}; }
-  V3   environmentCenter() const  { return buttonCenter() + V3{ 0.33f*chromeScale(),0,0}; }
+  // The row below the handle, centred: hands, curve, edges, aspect lock, 3D inventory, surface light,
+  // sky/passthrough, VR mode; the dimming slider sits below the row
+  V3   handsCenter() const        { return buttonCenter() + V3{-0.385f*chromeScale(),0,0}; }
+  V3   curveCenter() const        { return buttonCenter() + V3{-0.275f*chromeScale(),0,0}; }
+  V3   edgesCenter() const        { return buttonCenter() + V3{-0.165f*chromeScale(),0,0}; }
+  V3   aspectCenter() const       { return buttonCenter() + V3{-0.055f*chromeScale(),0,0}; }
+  V3   inventory3DCenter() const  { return buttonCenter() + V3{ 0.055f*chromeScale(),0,0}; }
+  V3   surfaceLightCenter() const { return buttonCenter() + V3{ 0.165f*chromeScale(),0,0}; }
+  V3   environmentCenter() const  { return buttonCenter() + V3{ 0.275f*chromeScale(),0,0}; }
+  V3   vrModeCenter() const       { return buttonCenter() + V3{ 0.385f*chromeScale(),0,0}; }
   V3   sliderCenter() const       { return buttonCenter() + V3{0,-0.07f*chromeScale(),0}; }
-  bool isCurved() const { return curved && curveRadius>0.f && sceneShown; }
+  bool isCurved() const { return curved && curveRadius>0.f && sceneShown && !vrActive; }
   // The arc is centred on the viewer at the moment the window is placed or curved
   // Slight: the arc centred on the viewer. Strong: a tighter arc (the viewer stays inside it).
   void updateCurveRadius() {
@@ -648,6 +673,10 @@ bool XrWindow::Impl::createInstance() {
     ext.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
   if(hasHandInteraction)
     ext.push_back(XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
+  // Double thumb tap toggles VR mode (its paths extend the hand interaction profile)
+  hasMicrogestures = hasHandInteraction && has(XR_META_HAND_TRACKING_MICROGESTURES_EXTENSION_NAME);
+  if(hasMicrogestures)
+    ext.push_back(XR_META_HAND_TRACKING_MICROGESTURES_EXTENSION_NAME);
   hasColorScale = has(XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME);
   if(hasColorScale)
     ext.push_back(XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME);
@@ -1433,6 +1462,8 @@ void XrWindow::Impl::createActions() {
   make(aX,          "button_x",     "X",                XR_ACTION_TYPE_BOOLEAN_INPUT,  false);
   make(aY,          "button_y",     "Y",                XR_ACTION_TYPE_BOOLEAN_INPUT,  false);
   make(aMenu,       "menu",         "Menu",             XR_ACTION_TYPE_BOOLEAN_INPUT,  false);
+  if(hasMicrogestures)
+    make(aThumbTap, "thumb_tap",    "Thumb tap",        XR_ACTION_TYPE_BOOLEAN_INPUT,  true);
 
   auto suggest = [&](const char* profile, std::initializer_list<std::pair<XrAction,const char*>> list) {
     const auto profilePath = path(profile);
@@ -1483,6 +1514,9 @@ void XrWindow::Impl::createActions() {
       {aNear, "/user/hand/right/input/pinch_ext/pose"},
       {aGrab, "/user/hand/left/input/pinch_ext/value"},
       {aGrab, "/user/hand/right/input/pinch_ext/value"},
+      // Skipped (null action) unless XR_META_hand_tracking_microgestures is enabled
+      {aThumbTap, "/user/hand/left/input/tap_thumb_meta/click"},
+      {aThumbTap, "/user/hand/right/input/tap_thumb_meta/click"},
       });
     }
 
@@ -1626,6 +1660,7 @@ void XrWindow::Impl::placeWindow() {
   const auto due = [this](XrTime t) { return t<=frame.predictedDisplayTime; };
   if(std::erase_if(recenterTimes,due)!=0) {
     placed = false;
+    vrRefValid = false; // a recenter also sets where VR looks forward
     if(probePlaced) {
       probePlaced = false;
       probeStableSince = 0;
@@ -1648,6 +1683,7 @@ void XrWindow::Impl::placeWindow() {
     }
   headValid = true;
   headForward = rotate(head.pose.orientation,V3{0,0,-1});
+  headOrientation = head.pose.orientation;
   headPos = toV3(head.pose.position);
   if(CommandLine::inst().xrFaceView() && !probePlaced) {
     // The unattended headset can rest on its side. Wait for tracking to settle
@@ -1749,7 +1785,7 @@ void XrWindow::Impl::smokeHand(Hand& hand) {
   if(f>710)
     return;
 
-  V3 point = buttonCenter();
+  V3 point = environmentCenter(); // the sky/passthrough toggle the log lines above report
   bool ray = false;
   if(f<320) {
     hand.grab = (f>=108 && f<116) || (f>=292 && f<300) ? 1.f : 0.f;
@@ -1792,6 +1828,7 @@ void XrWindow::Impl::updateInput() {
     cancelInput();
     return;
     }
+  updateVrToggles();
 
   auto getF = [&](XrAction a, XrPath sub) -> std::optional<float> {
     if(a==XR_NULL_HANDLE || sub==XR_NULL_PATH)
@@ -1828,7 +1865,7 @@ void XrWindow::Impl::updateInput() {
 
   // Pointing at or touching the frame parts: the handle moves the window, the corners resize it.
   // The game image itself is never a grab target, so playing never moves the window by accident.
-  const bool canManipulate = frame.shouldRender && placed && headValid;
+  const bool canManipulate = frame.shouldRender && placed && headValid && !vrActive; // no window in VR
   const int64_t steadyNow = std::chrono::duration_cast<std::chrono::nanoseconds>(
                               std::chrono::steady_clock::now().time_since_epoch()).count();
   const bool gameInputRecent = steadyNow-lastGameInput.load() < 1000000000;
@@ -1996,7 +2033,8 @@ void XrWindow::Impl::updateInput() {
         continue;
         }
       if(!canManipulate || grabbed==Grip::Environment || grabbed==Grip::Aspect || grabbed==Grip::Curve ||
-         grabbed==Grip::Hands || grabbed==Grip::Edges || grabbed==Grip::Inventory3D || grabbed==Grip::SurfaceLight) {
+         grabbed==Grip::Hands || grabbed==Grip::Edges || grabbed==Grip::Inventory3D || grabbed==Grip::SurfaceLight ||
+         grabbed==Grip::VrMode) {
         lastGrabTime = frame.predictedDisplayTime;
         continue;
         }
@@ -2094,6 +2132,8 @@ void XrWindow::Impl::updateInput() {
           Gothic::settingsSetI("INTERNAL", "xrEnvironment", immersive ? 1 : 0);
           Gothic::flushSettings();
           }
+        } else if(grabbed==Grip::VrMode) {
+        toggleVrMode("chrome button");
         } else if(grabbed==Grip::ItemHandle) {
         grabItemOffset = itemOffset;
         } else if(grabbed!=Grip::Handle) {
@@ -2105,7 +2145,7 @@ void XrWindow::Impl::updateInput() {
   for(size_t i=0; i<hands.size(); ++i) {
     const Grip g = hands[i].hover;
     if(g==Grip::Handle || g==Grip::Environment || g==Grip::Dim || g==Grip::Aspect || g==Grip::Curve ||
-       g==Grip::Hands || g==Grip::Edges || g==Grip::Inventory3D || g==Grip::SurfaceLight)
+       g==Grip::Hands || g==Grip::Edges || g==Grip::Inventory3D || g==Grip::SurfaceLight || g==Grip::VrMode)
       lastChromeHover = frame.predictedDisplayTime;
     }
   if(grabbed!=Grip::None && grabbed!=Grip::CornerLeft && grabbed!=Grip::CornerRight && grabbed!=Grip::ItemHandle)
@@ -2167,7 +2207,7 @@ void XrWindow::Impl::updateInput() {
         bone(XR_HAND_JOINT_RING_PROXIMAL_EXT, XR_HAND_JOINT_LITTLE_PROXIMAL_EXT);
         }
       // The ray, only towards the window and its controls (or the 3D item handle)
-      if(h.aimValid) {
+      if(h.aimValid && !vrActive) {
         if(h.hover==Grip::ItemHandle) {
           const V3 tint{1.f,0.88f,0.55f};
           capsule(h.aim.position, toXr(h.hit), 0.0012f, 0.7f*fade, tint, true);
@@ -2280,6 +2320,9 @@ Grip XrWindow::Impl::targetAt(float x, float y) const {
   const V3 button = environmentCenter();
   if(buttonReady && roomAvailable() && std::abs(x-button.x)<0.055f*k && std::abs(y-button.y)<0.04f*k)
     return Grip::Environment;
+  const V3 vr = vrModeCenter();
+  if(chromeReady && std::abs(x-vr.x)<0.05f*k && std::abs(y-vr.y)<0.04f*k)
+    return Grip::VrMode;
   const V3 slide = sliderCenter();
   if(sliderRow()>=0 && x>=slide.x+dimLeft()-0.025f*k && x<=slide.x+dimLeft()+dimTravel()+0.025f*k && std::abs(y-slide.y)<0.025f*k)
     return Grip::Dim;
@@ -2378,6 +2421,14 @@ void XrWindow::Impl::locateEyes() {
     // Depth 0 is the near plane: the window plane, or the curve's nearest (side) edges
     eyeNear[i]             = std::max(e.z-curveSag(), 0.05f);
     }
+  if(vrActive) {
+    // VR: the game image is each eye's own full view (projection layer, life-size depth)
+    for(int i=0; i<2; ++i) {
+      eyePose[i] = views[i].pose;
+      eyeFov[i]  = views[i].fov;
+      eyeNear[i] = VrNear;
+      }
+    }
   }
 
 bool XrWindow::eyeView(uint8_t eye, float verticalFovDeg, Camera::EyeView& out) const {
@@ -2388,6 +2439,34 @@ bool XrWindow::eyeView(uint8_t eye, float verticalFovDeg, Camera::EyeView& out) 
   // the inverse magnification as well, so stereo still converges at the physical window.
   // Eye distance and depth stay in metres in both modes, including for SpaceWarp.
   const float units = 100.f;
+  if(s.vrActive) {
+    // VR: each eye from its tracked pose with the runtime's field of view, life-size, relative to the
+    // head pose handed to the camera (updateVrView: camera angles hold its yaw and pitch)
+    const auto&         v   = s.eyeViews[eye];
+    const XrQuaternionf inv = conjugate(s.vrBase);
+    const V3            p   = rotate(inv, toV3(v.pose.position) - s.vrBasePos)*units;
+    const XrQuaternionf r   = mul(inv, v.pose.orientation);
+    // View space of the game camera: +x right, +y down, +z forward; OpenXR: +y up, -z forward.
+    // The rest of the eye's orientation (head roll, canted displays) is C*R^T*C, C = diag(1,-1,-1).
+    out.offset = Tempest::Vec3(p.x, -p.y, -p.z);
+    const V3 axis[3] = {rotate(r,V3{1,0,0}), rotate(r,V3{0,1,0}), rotate(r,V3{0,0,1})};
+    auto m = [&](int i, int j) {
+      const float flip = (i==0)==(j==0) ? 1.f : -1.f;
+      const V3&   a    = axis[i];
+      return flip*(j==0 ? a.x : (j==1 ? a.y : a.z));
+      };
+    out.rotation = Tempest::Matrix4x4(m(0,0), m(0,1), m(0,2), 0.f,
+                                      m(1,0), m(1,1), m(1,2), 0.f,
+                                      m(2,0), m(2,1), m(2,2), 0.f,
+                                      0.f,    0.f,    0.f,    1.f);
+    const float near = Impl::VrNear*units;
+    out.zNear  = near;
+    out.left   =  std::tan(v.fov.angleLeft)*near;
+    out.right  =  std::tan(v.fov.angleRight)*near;
+    out.bottom = -std::tan(v.fov.angleUp)*near;
+    out.top    = -std::tan(v.fov.angleDown)*near;
+    return true;
+    }
   // Scale picture: one scale for both axes, chosen so the 2.4 x 1.35 m reference view always
   // fits; a wider window shows more to the sides, a taller one more above and below.
   const float fit    = std::max(2.4f/s.windowWidth, 1.35f/s.windowHeight());
@@ -2702,6 +2781,23 @@ void XrWindow::drawHands(Encoder<CommandBuffer>& cmd, uint8_t eye, uint8_t slot)
 
 Tempest::Rect XrWindow::uiViewport(uint8_t eye) const {
   auto& s = *impl;
+  if(s.vrActive && s.eyesValid && eye<2 && s.width>0 && s.height>0) {
+    // VR: the interface on a head-locked panel ahead, where each eye sees it (so it has depth)
+    const auto& v = s.eyeViews[eye];
+    const V3    e = rotate(conjugate(s.vrBase), toV3(v.pose.position)-s.vrBasePos); // eye in head space
+    const float z = Impl::VrPanelDistance + e.z;
+    const float halfW = Impl::VrPanelHalf*Impl::VrPanelDistance;
+    const float halfH = halfW*float(s.height)/float(s.width);
+    const float drop  = Impl::VrPanelDrop*Impl::VrPanelDistance;
+    const float tl = std::tan(v.fov.angleLeft), tr = std::tan(v.fov.angleRight);
+    const float td = std::tan(v.fov.angleDown), tu = std::tan(v.fov.angleUp);
+    if(!(z>0.1f && tr>tl && tu>td))
+      return Tempest::Rect();
+    auto px = [&](float x) { return int(std::lround(((x-e.x)/z-tl)/(tr-tl)*float(s.width))); };
+    auto py = [&](float y) { return int(std::lround((tu-(y-e.y)/z)/(tu-td)*float(s.height))); };
+    const int x0 = px(-halfW), x1 = px(halfW), y0 = py(halfH-drop), y1 = py(-halfH-drop);
+    return Tempest::Rect(x0, y0, std::max(1,x1-x0), std::max(1,y1-y0));
+    }
   if(!s.isCurved() || eye>1 || s.width==0 || s.height==0)
     return Tempest::Rect();
   const auto& r = s.eyeRect[eye];
@@ -2726,7 +2822,8 @@ bool XrWindow::isFoveationSupported() const {
 
 void XrWindow::prepareLightingRate(Encoder<CommandBuffer>& cmd, uint8_t slot, uint8_t eye, uint32_t w, uint32_t h) {
   auto& s = *impl;
-  if(!isFoveationSupported() || !s.placed || !s.headValid || !s.eyesValid || eye>=2 || slot>=Resources::MaxFramesInFlight)
+  if(!isFoveationSupported() || !s.placed || !s.headValid || !s.eyesValid || eye>=2 || slot>=Resources::MaxFramesInFlight ||
+     s.vrActive) // the rate map follows the window
     return;
   const auto e = s.eyeInWindow[eye];
   if(!(e.z>0.f) || w==0 || h==0 || s.frame.predictedDisplayTime<s.retryRateAfter)
@@ -2785,7 +2882,7 @@ void XrWindow::Impl::updateSurface() {
              " focused=",int(focused));
       }
     }
-  if(!placed || !headValid || moving || !focused || !frame.shouldRender) {
+  if(!placed || !headValid || moving || !focused || !frame.shouldRender || vrActive) {
     invalidateSurface();
     return;
     }
@@ -2950,7 +3047,7 @@ bool XrWindow::beginFrame() {
 void XrWindow::drawWindowEdges(Encoder<CommandBuffer>& cmd, bool motion) {
   auto& s = *impl;
   static const bool apertureGuard = Gothic::settingsGetI("BENCHMARK","xrApertureGuard")!=0;
-  if(s.edgeStyle==0 && !(motion && apertureGuard) && !s.isCurved())
+  if((s.edgeStyle==0 && !(motion && apertureGuard) && !s.isCurved()) || s.vrActive)
     return;
   if(s.isCurved()) {
     if(s.curveCoverage.isEmpty()) {
@@ -3325,6 +3422,7 @@ void XrWindow::Impl::updateChromePanel(bool showEnv, bool showSlider, bool showS
   st.inventory3D      = inventory3DEnabled;
   st.showSurfaceLight = showSurfaceLight;
   st.surfaceLightOn   = surfaceLightEnabled;
+  st.vrMode           = vrMode;
   st.handsMode        = handsMode;
   st.curveLevel       = curveLevel;
   st.edgeStyle        = edgeStyle;
@@ -3366,10 +3464,10 @@ void XrWindow::Impl::updateChromePanel(bool showEnv, bool showSlider, bool showS
         }
     };
 
-  // 1. Hands button (-0.33 m)
+  // 1. Hands button (-0.385 m)
   if(handsButtonReady) {
     const int mode = handsMode;
-    drawButton(-0.33f, hover==Grip::Hands, [&](float u, float v) {
+    drawButton(-0.385f, hover==Grip::Hands, [&](float u, float v) {
       float d = std::max(std::abs(u)-6.f, std::abs(v-6.f)-5.f);
       d = std::min(d, seg(u,v,-6.f,0.f,-7.f,-11.f)-1.6f);
       d = std::min(d, seg(u,v,-2.f,0.f,-2.f,-14.f)-1.6f);
@@ -3384,10 +3482,10 @@ void XrWindow::Impl::updateChromePanel(bool showEnv, bool showSlider, bool showS
       });
     }
 
-  // 2. Curve button (-0.22 m)
+  // 2. Curve button (-0.275 m)
   if(curveReady) {
     const int level = curveLevel;
-    drawButton(-0.22f, hover==Grip::Curve, [&](float u, float v) {
+    drawButton(-0.275f, hover==Grip::Curve, [&](float u, float v) {
       float line;
       if(level>0) {
         const float R = level>=2 ? 17.f : 26.f;
@@ -3401,10 +3499,10 @@ void XrWindow::Impl::updateChromePanel(bool showEnv, bool showSlider, bool showS
       });
     }
 
-  // 3. Corner / edge style button (-0.11 m): square, rounded, or rounded + soft edge
+  // 3. Corner / edge style button (-0.165 m): square, rounded, or rounded + soft edge
   {
     const int style = edgeStyle;
-    drawButton(-0.11f, hover==Grip::Edges, [&](float u, float v) {
+    drawButton(-0.165f, hover==Grip::Edges, [&](float u, float v) {
       // Rounded rectangle outline; corner radius grows from 0 (square) to 9 (rounded / soft)
       const float rad = style==0 ? 0.f : 9.f;
       const float qx = std::abs(u) - (16.f - rad);
@@ -3421,10 +3519,10 @@ void XrWindow::Impl::updateChromePanel(bool showEnv, bool showSlider, bool showS
       });
     }
 
-  // 4. Aspect lock button (0.00 m)
+  // 4. Aspect lock button (-0.055 m)
   if(aspectReady) {
     const bool locked = aspectLocked;
-    drawButton(0.00f, hover==Grip::Aspect, [&](float u, float v) {
+    drawButton(-0.055f, hover==Grip::Aspect, [&](float u, float v) {
       const float body = std::max(std::abs(u)-11.f, std::abs(v-5.f)-8.f);
       const float sx = locked ? 0.f : 5.f, sy = locked ? 0.f : -5.f;
       const float au = u-sx, av = v-sy+3.f;
@@ -3434,10 +3532,10 @@ void XrWindow::Impl::updateChromePanel(bool showEnv, bool showSlider, bool showS
       });
     }
 
-  // 5. 3D Inventory preview button (+0.11 m): isometric 3D cube (crossed when off)
+  // 5. 3D Inventory preview button (+0.055 m): isometric 3D cube (crossed when off)
   {
     const bool on = inventory3DEnabled;
-    drawButton(0.11f, hover==Grip::Inventory3D, [&](float u, float v) {
+    drawButton(0.055f, hover==Grip::Inventory3D, [&](float u, float v) {
       // Isometric cube vertices
       const float r = 14.f, dx = r*0.866f, dy = r*0.5f;
       float d = seg(u,v, 0.f,-r,  dx,-dy);
@@ -3457,10 +3555,10 @@ void XrWindow::Impl::updateChromePanel(bool showEnv, bool showSlider, bool showS
       });
     }
 
-  // 6. Surface light button (+0.22 m): screen bar casting cone onto table (crossed when off)
+  // 6. Surface light button (+0.165 m): screen bar casting cone onto table (crossed when off)
   if(showSurfaceLight) {
     const bool on = surfaceLightEnabled;
-    drawButton(0.22f, hover==Grip::SurfaceLight, [&](float u, float v) {
+    drawButton(0.165f, hover==Grip::SurfaceLight, [&](float u, float v) {
       float d = seg(u,v,-12.f,-11.f, 12.f,-11.f)-2.0f; // screen top bar
       d = std::min(d, seg(u,v,-17.f, 11.f, 17.f, 11.f)-1.6f); // table surface line
       d = std::min(d, seg(u,v,-10.f,-8.f, -15.f, 9.f)-1.3f);  // left cone ray
@@ -3472,15 +3570,27 @@ void XrWindow::Impl::updateChromePanel(bool showEnv, bool showSlider, bool showS
       });
     }
 
-  // 7. Environment button (+0.33 m)
+  // 7. Environment button (+0.275 m)
   if(showEnv) {
     const bool sky = immersive;
-    drawButton(0.33f, hover==Grip::Environment, [&](float u, float v) {
+    drawButton(0.275f, hover==Grip::Environment, [&](float u, float v) {
       const float moon = std::min(16.f-std::hypot(u,v), std::hypot(u-8.f,v+5.f)-14.f);
       const float window = 2.f-std::abs(std::max(std::abs(u)-17.f, std::abs(v)-12.f));
       return std::clamp((sky ? window : moon)+0.5f, 0.f, 1.f);
       });
     }
+
+  // 8. Enter VR button (+0.385 m): a headset, front view (the button hides with the window in VR).
+  // A dot: VR mode is on and starts once the game shows its free camera again.
+  const bool vrPending = vrMode;
+  drawButton(0.385f, hover==Grip::VrMode, [&](float u, float v) {
+    const float qx = std::abs(u)-14.f, qy = std::abs(v+1.f)-8.f;
+    const float body = std::abs(std::hypot(std::max(qx,0.f),std::max(qy,0.f)) + std::min(std::max(qx,qy),0.f) - 5.f) - 1.8f;
+    const float lens = std::hypot(std::abs(u)-7.5f, v+1.f) - 4.f;
+    const float strap = std::max(std::abs(v+1.f)-2.f, 19.f-std::abs(u)) + (std::abs(u)>22.f ? 99.f : 0.f);
+    const float dot   = vrPending ? std::hypot(u-25.f, v-12.f)-3.f : 99.f;
+    return std::clamp(0.5f-std::min({body,lens,strap,dot}), 0.f, 1.f);
+    });
 
   // Dimming slider below the button row
   if(showSlider) {
@@ -3718,7 +3828,11 @@ bool XrWindow::submit(bool rendered) {
   XrCompositionLayerEquirect2KHR sky = {XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR};
   XrCompositionLayerEquirectKHR sky1 = {XR_TYPE_COMPOSITION_LAYER_EQUIRECT_KHR};
   XrCompositionLayerColorScaleBiasKHR skyDim = {XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR};
-  if(s.panoramaReady && (s.immersive || !s.roomAvailable())) {
+  // VR mode: the game fills the view, opaque, without the window's frame parts
+  const bool vrView = hasImage && s.vrActive;
+  if(vrView) {
+    // nothing of the room or the sky behind the game
+    } else if(s.panoramaReady && (s.immersive || !s.roomAvailable())) {
     if(s.hasColorScale && s.passthroughDim>0.f) {
       const float k = 1.f-0.92f*s.passthroughDim;
       skyDim.colorScale = {k,k,k,1.f};
@@ -3752,7 +3866,7 @@ bool XrWindow::submit(bool rendered) {
     }
 
   const XrCompositionLayerQuad* spill = nullptr;
-  if(hasImage && s.lightEnabled && s.environmentDepth.surface()) {
+  if(hasImage && !vrView && s.lightEnabled && s.environmentDepth.surface()) {
     const auto& surface = *s.environmentDepth.surface();
     spill = s.surfaceLight.layer(s.localSpace,surface.pose,surface.size,s.hasAlphaBlend);
     if(spill)
@@ -3763,7 +3877,7 @@ bool XrWindow::submit(bool rendered) {
   // SpaceWarp: the window as a projection layer with motion vectors and depth
   XrCompositionLayerProjection      proj = {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
   const bool curvedView = hasImage && s.isCurved();
-  if(s.edgeStyle!=0 || curvedView) {
+  if((s.edgeStyle!=0 || curvedView) && !vrView) {
     // The sRGB swapchain stores straight colour. Premultiply after the compositor's sRGB decode.
     proj.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT | XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
     for(auto& q:quad)
@@ -3779,7 +3893,7 @@ bool XrWindow::submit(bool rendered) {
     }
   XrCompositionLayerProjectionView  pv[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
   XrCompositionLayerSpaceWarpInfoFB sw[2] = {{XR_TYPE_COMPOSITION_LAYER_SPACE_WARP_INFO_FB},{XR_TYPE_COMPOSITION_LAYER_SPACE_WARP_INFO_FB}};
-  if(warp || curvedView) {
+  if(warp || curvedView || vrView) {
     for(int eye=0; eye<2; ++eye) {
       auto& w = sw[eye];
       w.layerFlags = s.skipExtrapolation ? XR_COMPOSITION_LAYER_SPACE_WARP_INFO_FRAME_SKIP_BIT_FB : 0;
@@ -3813,7 +3927,7 @@ bool XrWindow::submit(bool rendered) {
     addLayer(proj);
     }
 
-  if(hasImage && !warp && !curvedView) {
+  if(hasImage && !warp && !curvedView && !vrView) {
     for(int eye=0; eye<2; ++eye) {
       auto& q = quad[eye];
       q.space                    = s.localSpace;
@@ -3834,7 +3948,7 @@ bool XrWindow::submit(bool rendered) {
   XrCompositionLayerColorScaleBiasKHR fade = {XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR};
   fade.colorScale = {1.f,1.f,1.f,reveal};
   const void* fadeNext = s.hasColorScale && reveal<1.f ? &fade : nullptr;
-  const bool showButtons = hasImage && reveal>0.f;
+  const bool showButtons = hasImage && reveal>0.f && !vrView;
   XrCompositionLayerQuad chromePanel = {XR_TYPE_COMPOSITION_LAYER_QUAD};
   if(s.chromeReady && showButtons) {
     const bool showEnv          = s.buttonReady && s.roomAvailable();
@@ -3843,7 +3957,7 @@ bool XrWindow::submit(bool rendered) {
     Grip chromeHover = Grip::None;
     for(const Grip g : {s.grabbed, s.hands[0].hover, s.hands[1].hover}) {
       if(g==Grip::Hands || g==Grip::Curve || g==Grip::Edges || g==Grip::Aspect ||
-         g==Grip::Inventory3D || g==Grip::SurfaceLight || g==Grip::Environment || g==Grip::Dim) {
+         g==Grip::Inventory3D || g==Grip::SurfaceLight || g==Grip::Environment || g==Grip::Dim || g==Grip::VrMode) {
         chromeHover = g;
         break;
         }
@@ -3864,7 +3978,7 @@ bool XrWindow::submit(bool rendered) {
     }
   XrCompositionLayerQuad handle = {XR_TYPE_COMPOSITION_LAYER_QUAD};
   std::array<XrCompositionLayerQuad,2> corners;
-  if(s.handleReady && hasImage) {
+  if(s.handleReady && hasImage && !vrView) {
     const bool hoverHandle = s.hands[0].hover==Grip::Handle || s.hands[1].hover==Grip::Handle;
 
     handle.layerFlags                = chromeFlags;
@@ -3879,7 +3993,7 @@ bool XrWindow::submit(bool rendered) {
     addLayer(handle);
     }
 
-  if(s.cornersReady && hasImage) {
+  if(s.cornersReady && hasImage && !vrView) {
     const float halfW = s.windowWidth*0.5f, halfH = s.windowHeight()*0.5f, sz = 0.10f*s.chromeScale();
     for(int c=0; c<2; ++c) {
       const auto corner = c==0 ? Grip::CornerLeft : Grip::CornerRight;
@@ -4009,6 +4123,28 @@ Size XrWindow::desiredResolution() const {
   const auto& s = *impl;
   if(!s.eyesValid)
     return resolution();
+  if(s.vrActive) {
+    // VR: the runtime's recommended eye image, within a GPU budget, shaped like the field of view
+    if(s.vrRecommended[0]==0) {
+      XrViewConfigurationView cv[2] = {{XR_TYPE_VIEW_CONFIGURATION_VIEW},{XR_TYPE_VIEW_CONFIGURATION_VIEW}};
+      uint32_t count = 0;
+      const bool known = XR_SUCCEEDED(xrEnumerateViewConfigurationViews(s.instance, s.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+                                                                         2, &count, cv)) && count>0 && cv[0].recommendedImageRectWidth>0;
+      s.vrRecommended[0] = known ? cv[0].recommendedImageRectWidth  : 1536u;
+      s.vrRecommended[1] = known ? cv[0].recommendedImageRectHeight : 1536u;
+      }
+    const auto& f      = s.eyeViews[0].fov;
+    const float tanW   = std::tan(f.angleRight)-std::tan(f.angleLeft);
+    const float tanH   = std::tan(f.angleUp)-std::tan(f.angleDown);
+    const float aspect = tanW>0.f && tanH>0.f ? std::clamp(tanW/tanH, 0.5f, 2.f) : 1.f;
+    const float pixels = std::min(float(s.vrRecommended[0])*float(s.vrRecommended[1]), float(Impl::VrEyePixels));
+    auto multiple = [](float x,int n) { return std::max(n,int(std::round(x/float(n)))*n); };
+    const int w = std::min(int(s.maxSwapW), multiple(std::sqrt(pixels*aspect), 16));
+    const int h = std::min(int(s.maxSwapH), multiple(float(w)/aspect, 4));
+    if(std::abs(float(w)/float(s.width)-1.f)<0.04f && std::abs(float(h)/float(s.height)-1.f)<0.04f)
+      return resolution();
+    return Size(w,h);
+    }
   const float refHalf = s.verticalFov*float(M_PI)/360.f;
   const float refX = 2.f*std::atan((16.f/9.f)*std::tan(refHalf));
   // The image covers the eye's frame on the window plane (larger than the window when curved)
@@ -4122,6 +4258,12 @@ float XrWindow::densityUiScale() const {
   const auto& s = *impl;
   if(!s.eyesValid)
     return uiScale();
+  if(s.vrActive && s.width>0) {
+    // The VR panel: interface elements about as large to the eye as in the window at its sweet spot
+    const float panelDeg = 2.f*std::atan(Impl::VrPanelHalf*float(s.height)/float(s.width))*180.f/float(M_PI);
+    const float scale    = uiScale()*(float(s.height)/900.f)*(s.verticalFov/panelDeg);
+    return std::clamp(std::round(scale*8.f)/8.f,0.5f,3.f);
+    }
   const float z = std::max(0.05f,(s.eyeInWindow[0].z+s.eyeInWindow[1].z)*0.5f);
   const float scale = uiScale()*(float(s.height)/900.f)*(1.35f/s.windowHeight())*(z/Impl::portalDistance(s.verticalFov));
   return std::clamp(std::round(scale*8.f)/8.f,0.5f,3.f);
@@ -4141,6 +4283,130 @@ void XrWindow::setVerticalFov(float degrees) {
 
 PadState XrWindow::pad() const {
   return impl->padState;
+  }
+
+bool XrWindow::isVrMode() const {
+  return impl->vrMode;
+  }
+
+void XrWindow::setVrMode(bool vr) {
+  if(vr!=impl->vrMode)
+    impl->toggleVrMode("request");
+  }
+
+void XrWindow::Impl::toggleVrMode(const char* source) {
+  vrMode = !vrMode;
+  vrToggleAfter = frame.predictedDisplayTime + 1000000000;
+  // The Video menu shows and sets the same choice
+  Gothic::settingsSetI("INTERNAL", "xrVrMode", vrMode ? 1 : 0);
+  Gothic::flushSettings();
+  Log::i("OpenXR: VR mode ", vrMode ? "on" : "off", " (", source, ")");
+  }
+
+void XrWindow::Impl::updateVrToggles() {
+  const XrTime now = frame.predictedDisplayTime;
+  auto state = [&](XrAction action, XrPath hand, auto st) {
+    XrActionStateGetInfo gi = {XR_TYPE_ACTION_STATE_GET_INFO};
+    gi.action        = action;
+    gi.subactionPath = hand;
+    XrResult r = XR_ERROR_HANDLE_INVALID;
+    if constexpr(std::is_same_v<decltype(st),XrActionStateBoolean>)
+      r = xrGetActionStateBoolean(session, &gi, &st);
+    else if constexpr(std::is_same_v<decltype(st),XrActionStateFloat>)
+      r = xrGetActionStateFloat(session, &gi, &st);
+    else
+      r = xrGetActionStateVector2f(session, &gi, &st);
+    if(r!=XR_SUCCESS)
+      st.isActive = XR_FALSE;
+    return st;
+    };
+  // Double thumb tap (hand tracking microgesture): two taps of either hand within 0.4 s
+  for(const auto& h:hands) {
+    if(aThumbTap==XR_NULL_HANDLE || h.path==XR_NULL_PATH)
+      continue;
+    const auto tap = state(aThumbTap, h.path, XrActionStateBoolean{XR_TYPE_ACTION_STATE_BOOLEAN});
+    if(!tap.isActive || !tap.currentState || !tap.changedSinceLastSync)
+      continue;
+    if(vrLastTap!=0 && now-vrLastTap<400000000 && now>=vrToggleAfter) {
+      vrLastTap = 0;
+      toggleVrMode("double thumb tap");
+      } else {
+      vrLastTap = now;
+      }
+    }
+  // Both controller grips held for a second: in VR they grab nothing and no game action uses them
+  bool held = grabbedBy<0 && aGrab!=XR_NULL_HANDLE && aStick!=XR_NULL_HANDLE;
+  for(const auto& h:hands) {
+    if(!held || h.path==XR_NULL_PATH) {
+      held = false;
+      break;
+      }
+    const auto stick = state(aStick, h.path, XrActionStateVector2f{XR_TYPE_ACTION_STATE_VECTOR2F}); // controllers only
+    const auto grip  = state(aGrab,  h.path, XrActionStateFloat{XR_TYPE_ACTION_STATE_FLOAT});
+    held = stick.isActive && grip.isActive && grip.currentState>0.75f;
+    }
+  if(!held) {
+    vrGripSince   = 0;
+    vrGripLatched = false;
+    }
+  else if(vrGripSince==0) {
+    vrGripSince = now;
+    }
+  else if(!vrGripLatched && now-vrGripSince>=1000000000) {
+    vrGripLatched = true;
+    toggleVrMode("both grips held");
+    }
+  }
+
+bool XrWindow::updateVrView(bool allowed, float heroYaw, Tempest::Vec3& spin, Tempest::Vec3& offset) {
+  auto& s = *impl;
+  s.vrMode = Gothic::settingsGetI("INTERNAL","xrVrMode")!=0;
+  const bool active = s.vrMode && allowed && s.headValid;
+  if(active!=s.vrActive) {
+    // Nothing of the room shows in VR: pause the passthrough feed meanwhile
+    if(s.passthrough!=XR_NULL_HANDLE && !s.immersive)
+      ok(active ? s.xrPausePassthrough(s.passthrough) : s.xrStartPassthrough(s.passthrough), "switch passthrough");
+    if(active && s.grabbed==Grip::ItemHandle)
+      s.saveItemOffset();
+    if(active) {
+      s.grabbedBy = -1;
+      s.grabbed   = Grip::None;
+      }
+    s.vrActive          = active;
+    s.vrRefValid        = false;
+    s.skipExtrapolation = true;
+    Log::i("OpenXR: ", active ? "VR view" : "window view");
+    }
+  if(!active)
+    return false;
+
+  // Head yaw and pitch become the camera angles; roll and each eye's own pose stay in eyeView()
+  const V3    f     = rotate(s.headOrientation, V3{0,0,-1});
+  const float yaw   = std::atan2(-f.x, -f.z);
+  const float pitch = std::asin(std::clamp(f.y, -1.f, 1.f));
+  if(!s.vrRefValid) {
+    // Where the wearer looks when the view starts is where the hero faces
+    s.vrRefYaw   = yaw;
+    s.vrRefPos   = s.headPos;
+    s.vrRefValid = true;
+    }
+  s.vrBase    = mul(aroundY(yaw), aroundX(pitch));
+  s.vrBasePos = s.headPos;
+
+  // OpenXR turns left with growing yaw and looks up with growing pitch; the game camera turns
+  // left with growing yaw too but looks down with growing pitch
+  const float deg = 180.f/float(M_PI);
+  spin = Tempest::Vec3(-pitch*deg, heroYaw + (yaw-s.vrRefYaw)*deg, 0.f);
+  // Head motion in the body frame of the start (+x right, +y up, -z forward), within a metre
+  V3 d = rotate(aroundY(-s.vrRefYaw), s.headPos - s.vrRefPos);
+  if(const float h = std::hypot(d.x, d.z); h>1.f) {
+    d.x /= h;
+    d.z /= h;
+    }
+  // Game world for a body facing heroYaw: forward (cos, 0, sin), right (sin, 0, -cos), centimetres
+  const float c = std::cos(heroYaw/deg), sn = std::sin(heroYaw/deg);
+  offset = Tempest::Vec3(-d.z*c + d.x*sn, d.y, -d.z*sn - d.x*c)*100.f;
+  return true;
   }
 
 bool XrWindow::takePadInterruption(PadState& releaseSources) {
@@ -4206,6 +4472,9 @@ Tempest::Attachment* XrWindow::motionTarget(uint8_t) { return nullptr; }
 Tempest::ZBuffer*    XrWindow::depthTarget(uint8_t) { return nullptr; }
 Tempest::Attachment* XrWindow::eyeTarget(uint8_t) { return nullptr; }
 bool      XrWindow::eyeView(uint8_t, float, Camera::EyeView&) const { return false; }
+bool      XrWindow::isVrMode() const { return false; }
+void      XrWindow::setVrMode(bool) {}
+bool      XrWindow::updateVrView(bool, float, Tempest::Vec3&, Tempest::Vec3&) { return false; }
 void      XrWindow::setVerticalFov(float) {}
 std::string XrWindow::timingReport() { return ""; }
 PadState  XrWindow::pad() const { return {}; }
