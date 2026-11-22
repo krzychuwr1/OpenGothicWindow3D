@@ -153,6 +153,11 @@ struct XrWindow::Impl {
   bool                     hasPanorama = false;
   bool                     hasEquirect2 = false;
   bool                     hasPassthrough     = false;
+  // Runtimes without XR_FB_passthrough (SteamVR on Steam Frame, Android XR) may blend the room in
+  // behind the layers instead: XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND
+  bool                     blendRoom = false;
+  XrEnvironmentBlendMode   opaqueBlend = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+  std::string              blendModes, boundProfiles;
   bool                     hasDepth = false, hasAlphaBlend = false;
   bool                     lightEnabled = false, probePending = true, depthReady = false;
   bool                     surfaceCanProbe = false;
@@ -170,6 +175,7 @@ struct XrWindow::Impl {
   void invalidateSurface();
   void updateSurface();
   bool                     hasHandInteraction = false;
+  bool                     hasFrameController = false;
   bool                     hasPerfSettings    = false;
   bool                     hasSpaceWarp       = false;
   bool                     hasWindowFilter    = false;
@@ -420,7 +426,11 @@ struct XrWindow::Impl {
   void createPassthrough();
   void destroyPassthrough();
   void passthroughChanged(XrPassthroughStateChangedFlagsFB flags);
-  bool roomAvailable() const { return passthroughLayer!=XR_NULL_HANDLE && !passthroughUnavailable; }
+  // XR_FB_passthrough stays preferred; alpha blending stands in only while there is no passthrough layer
+  bool roomAvailable() const { return passthroughLayer!=XR_NULL_HANDLE ? !passthroughUnavailable : blendRoom; }
+  bool blendsRoom() const { return passthroughLayer==XR_NULL_HANDLE && blendRoom; }
+  void queryBlendModes();
+  void logInteractionProfiles();
   void createActions();
   bool pollEvents();
   void stopSession();
@@ -648,6 +658,10 @@ bool XrWindow::Impl::createInstance() {
     ext.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
   if(hasHandInteraction)
     ext.push_back(XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
+  // Steam Frame controllers; without it SteamVR emulates Touch controllers
+  hasFrameController = has("XR_VALVE_frame_controller_interaction");
+  if(hasFrameController)
+    ext.push_back("XR_VALVE_frame_controller_interaction");
   hasColorScale = has(XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME);
   if(hasColorScale)
     ext.push_back(XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME);
@@ -865,6 +879,7 @@ void XrWindow::Impl::createSession() {
       Log::e("OpenXR: SpaceWarp targets unavailable, using ordinary stereo");
       }
     }
+  queryBlendModes();
   createPassthrough();
   createActions();
   if(xrCreateHandTracker && xrLocateHandJoints) {
@@ -876,6 +891,52 @@ void XrWindow::Impl::createSession() {
         handTracker[i] = XR_NULL_HANDLE;
       }
     }
+  // One line for remote debugging on other headsets
+  Log::i("OpenXR: room=", passthroughLayer!=XR_NULL_HANDLE ? "XR_FB_passthrough" : (blendRoom ? "alpha blend" : "none"),
+         " blend modes=", blendModes.empty() ? std::string("?") : blendModes,
+         " profiles=", boundProfiles.empty() ? std::string("none") : boundProfiles,
+         " hand tracking=", handTracker[0]!=XR_NULL_HANDLE ? "yes" : "no");
+  }
+
+void XrWindow::Impl::queryBlendModes() {
+  uint32_t count = 0;
+  if(!ok(xrEnumerateEnvironmentBlendModes(instance, system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &count, nullptr),
+         "count blend modes") || count==0)
+    return;
+  std::vector<XrEnvironmentBlendMode> modes(count);
+  if(!ok(xrEnumerateEnvironmentBlendModes(instance, system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, count, &count, modes.data()),
+         "enumerate blend modes"))
+    return;
+  modes.resize(count);
+  bool opaque = false;
+  for(auto m:modes) {
+    opaque    |= m==XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    blendRoom |= m==XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND;
+    if(!blendModes.empty())
+      blendModes += ',';
+    blendModes += m==XR_ENVIRONMENT_BLEND_MODE_OPAQUE      ? "opaque" :
+                  m==XR_ENVIRONMENT_BLEND_MODE_ADDITIVE    ? "additive" :
+                  m==XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND ? "alpha" : "other";
+    }
+  // The runtime's preferred mode comes first
+  if(!opaque && !modes.empty())
+    opaqueBlend = modes[0];
+  }
+
+void XrWindow::Impl::logInteractionProfiles() {
+  std::string line;
+  for(const auto& h:hands) {
+    XrInteractionProfileState st = {XR_TYPE_INTERACTION_PROFILE_STATE};
+    if(h.path==XR_NULL_PATH || XR_FAILED(xrGetCurrentInteractionProfile(session, h.path, &st)))
+      continue;
+    char name[XR_MAX_PATH_LENGTH] = {};
+    uint32_t len = 0;
+    if(st.interactionProfile==XR_NULL_PATH || XR_FAILED(xrPathToString(instance, st.interactionProfile, sizeof(name), &len, name)))
+      std::strcpy(name, "none");
+    line += (&h==&hands[0]) ? " left=" : " right=";
+    line += name;
+    }
+  Log::i("OpenXR: current interaction profile", line);
   }
 
 static std::vector<XrSwapchainImageVulkan2KHR> swapchainImages(XrSwapchain chain) {
@@ -1353,7 +1414,8 @@ void XrWindow::Impl::saveDim() {
 int XrWindow::Impl::sliderRow() const {
   // Dimming applies to passthrough only: hidden in VR mode
   // Darkens the passthrough room, or the landscape in VR mode; shown with the buttons
-  const bool canDim = immersive ? hasColorScale : (dimStyleAvailable && roomAvailable());
+  // Alpha-blended room: no dimming (XR_FB_passthrough styles only)
+  const bool canDim = immersive ? hasColorScale : (dimStyleAvailable && !blendsRoom() && roomAvailable());
   if(!sliderReady || !canDim || !chromeShown())
     return -1;
   return SliderRows-1;
@@ -1454,7 +1516,12 @@ void XrWindow::Impl::createActions() {
     s.interactionProfile     = profilePath;
     s.countSuggestedBindings = uint32_t(b.size());
     s.suggestedBindings      = b.data();
-    ok(xrSuggestInteractionProfileBindings(instance, &s), profile);
+    // A rejected profile leaves the others usable
+    if(!ok(xrSuggestInteractionProfileBindings(instance, &s), profile))
+      return;
+    if(!boundProfiles.empty())
+      boundProfiles += ',';
+    boundProfiles += std::string_view(profile).substr(std::strlen("/interaction_profiles/"));
     };
   suggest("/interaction_profiles/oculus/touch_controller", {
     {aAim,        "/user/hand/left/input/aim/pose"},
@@ -1483,6 +1550,63 @@ void XrWindow::Impl::createActions() {
       {aNear, "/user/hand/right/input/pinch_ext/pose"},
       {aGrab, "/user/hand/left/input/pinch_ext/value"},
       {aGrab, "/user/hand/right/input/pinch_ext/value"},
+      });
+    }
+  // Other runtimes (SteamVR, generic OpenXR); component paths per the OpenXR spec.
+  // The simple profile only where hands have no profile of their own: a runtime could map them to it.
+  if(!hasHandInteraction) {
+    suggest("/interaction_profiles/khr/simple_controller", {
+      {aAim,     "/user/hand/left/input/aim/pose"},
+      {aAim,     "/user/hand/right/input/aim/pose"},
+      {aNear,    "/user/hand/left/input/grip/pose"},
+      {aNear,    "/user/hand/right/input/grip/pose"},
+      {aTrigger, "/user/hand/left/input/select/click"},
+      {aTrigger, "/user/hand/right/input/select/click"},
+      {aMenu,    "/user/hand/left/input/menu/click"},
+      {aMenu,    "/user/hand/right/input/menu/click"},
+      });
+    }
+  // Index has no menu button: the left system button (the runtime may keep it for itself)
+  suggest("/interaction_profiles/valve/index_controller", {
+    {aAim,        "/user/hand/left/input/aim/pose"},
+    {aAim,        "/user/hand/right/input/aim/pose"},
+    {aNear,       "/user/hand/left/input/grip/pose"},
+    {aNear,       "/user/hand/right/input/grip/pose"},
+    {aGrab,       "/user/hand/left/input/squeeze/value"},
+    {aGrab,       "/user/hand/right/input/squeeze/value"},
+    {aStick,      "/user/hand/left/input/thumbstick"},
+    {aStick,      "/user/hand/right/input/thumbstick"},
+    {aTrigger,    "/user/hand/left/input/trigger/value"},
+    {aTrigger,    "/user/hand/right/input/trigger/value"},
+    {aStickClick, "/user/hand/left/input/thumbstick/click"},
+    {aStickClick, "/user/hand/right/input/thumbstick/click"},
+    {aA,          "/user/hand/right/input/a/click"},
+    {aB,          "/user/hand/right/input/b/click"},
+    {aX,          "/user/hand/left/input/a/click"},
+    {aY,          "/user/hand/left/input/b/click"},
+    {aMenu,       "/user/hand/left/input/system/click"},
+    });
+  if(hasFrameController) {
+    // Steam Frame: all four face buttons are on the right controller, View (left) is Touch's menu
+    suggest("/interaction_profiles/valve/frame_controller_valve", {
+      {aAim,        "/user/hand/left/input/aim/pose"},
+      {aAim,        "/user/hand/right/input/aim/pose"},
+      {aNear,       "/user/hand/left/input/grip/pose"},
+      {aNear,       "/user/hand/right/input/grip/pose"},
+      {aGrab,       "/user/hand/left/input/squeeze/value"},
+      {aGrab,       "/user/hand/right/input/squeeze/value"},
+      {aStick,      "/user/hand/left/input/thumbstick"},
+      {aStick,      "/user/hand/right/input/thumbstick"},
+      {aTrigger,    "/user/hand/left/input/trigger/value"},
+      {aTrigger,    "/user/hand/right/input/trigger/value"},
+      {aStickClick, "/user/hand/left/input/thumbstick/click"},
+      {aStickClick, "/user/hand/right/input/thumbstick/click"},
+      {aA,          "/user/hand/right/input/a/click"},
+      {aB,          "/user/hand/right/input/b/click"},
+      {aX,          "/user/hand/right/input/x/click"},
+      {aY,          "/user/hand/right/input/y/click"},
+      {aMenu,       "/user/hand/left/input/view/click"},
+      {aMenu,       "/user/hand/right/input/menu/click"},
       });
     }
 
@@ -1612,6 +1736,9 @@ bool XrWindow::Impl::pollEvents() {
         }
       case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
         stopSession();
+        break;
+      case XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED:
+        logInteractionProfiles();
         break;
       default:
         break;
@@ -3304,7 +3431,7 @@ void XrWindow::Impl::fillEnvironment(VkCommandBuffer cmd, VkFence fence) {
 
   if(panorama!=XR_NULL_HANDLE)
     panoramaReady = uploadStatic(vk, cmd, fence, panorama, SkyW, SkyH, 1, duskPanorama(SkyW,SkyH));
-  buttonReady = chromeReady && panoramaReady && hasPassthrough;
+  buttonReady = chromeReady && panoramaReady && (hasPassthrough || blendRoom);
   sliderReady = buttonReady && xrSetPassthroughStyle!=nullptr;
   if(sliderReady && passthroughDim>0.f)
     applyDim(passthroughDim);
@@ -3718,6 +3845,7 @@ bool XrWindow::submit(bool rendered) {
   XrCompositionLayerEquirect2KHR sky = {XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR};
   XrCompositionLayerEquirectKHR sky1 = {XR_TYPE_COMPOSITION_LAYER_EQUIRECT_KHR};
   XrCompositionLayerColorScaleBiasKHR skyDim = {XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR};
+  bool alphaRoom = false;
   if(s.panoramaReady && (s.immersive || !s.roomAvailable())) {
     if(s.hasColorScale && s.passthroughDim>0.f) {
       const float k = 1.f-0.92f*s.passthroughDim;
@@ -3744,6 +3872,10 @@ bool XrWindow::submit(bool rendered) {
       sky1.scale = {1.f,1.f};
       addLayer(sky1);
       }
+    } else if(s.blendsRoom()) {
+    // No bottom layer: the room shows wherever no layer covers it. The window quad is opaque,
+    // every layer drawn around it blends by source alpha.
+    alphaRoom = true;
     } else if(s.roomAvailable()) {
     pt.layerHandle = s.passthroughLayer;
     if(s.dimUsesOpacity && s.passthroughDim>0.f)
@@ -3970,7 +4102,7 @@ bool XrWindow::submit(bool rendered) {
 
   XrFrameEndInfo end = {XR_TYPE_FRAME_END_INFO};
   end.displayTime          = s.frame.predictedDisplayTime;
-  end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+  end.environmentBlendMode = alphaRoom ? XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND : s.opaqueBlend;
   end.layerCount           = s.frame.shouldRender && isVisible() ? layerCount : 0;
   end.layers               = layers.data();
   {
