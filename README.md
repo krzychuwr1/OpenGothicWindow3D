@@ -1,50 +1,136 @@
-# OpenGothic Window3D
+# Gothic II in 3D on Meta Quest
 
-**Gothic II: Night of the Raven on Meta Quest, in a 3D window floating in your room.**
+> Forked from **[OpenGothic](https://github.com/Try/OpenGothic)**, the open-source Gothic II engine
+> by Try and contributors. This fork adds a Meta Quest version; the desktop OpenGothic README is
+> kept in [docs/OpenGothic.md](docs/OpenGothic.md).
 
-The game runs on the headset itself, no PC needed while playing. It is shown through a
-head-tracked stereo window with passthrough around it: each eye looks through the window from its
-own position, at life size, so leaning and moving your head reveal depth and parallax as if you
-were looking through a real window into Khorinis. Move, resize and curve the window, switch to a
-quiet VR landscape, and play with a Bluetooth keyboard and mouse, an Xbox-style gamepad or the
-Quest controllers.
+**Play Gothic II: Night of the Raven on your Meta Quest, through a 3D window floating in your room.**
 
-This is a fork of [OpenGothic](https://github.com/Try/OpenGothic), the open-source Gothic II
-engine. **No game data is included:** you need your own copy of *Gothic II Gold Edition* /
-*Night of the Raven* (Steam or GOG).
+The game runs on the headset itself, with no PC needed while you play. You see Khorinis through a
+life-size, head-tracked stereo window: lean in and the world behind it shifts with real depth, as
+if it were an actual window in your wall. Move it, resize it, curve it, and play with a keyboard
+and mouse, a gamepad or the Quest controllers.
 
-## Features
+**Project page, videos and news: [kwrona.com/gothic2-3d](https://kwrona.com/gothic2-3d)**
 
-- Head-tracked stereo window into the game world, in passthrough or a VR dusk landscape
-- Grab, move, resize and curve the window with hands or controllers; aspect lock, edge styles,
-  room dimming
-- The selected inventory item floats out of the window as a real 3D object
-- Optional Application SpaceWarp (72 fps motion at half the rendering cost), foveated lighting and
-  surface light that spills the game's colours onto your table or floor
-- Keyboard and mouse, gamepad and Quest controller support
-- Settings tuned for the Quest's mobile GPU
+**No game data is included.** You need your own copy of *Gothic II Gold Edition* (Gothic II +
+Night of the Raven) from [Steam](https://store.steampowered.com/app/39510/) or
+[GOG](https://www.gog.com/game/gothic_2_gold_edition).
 
-## Requirements
+---
 
-- Meta Quest 3 or 3S (developed and tested on Quest 3; Quest 2 and Pro are allowed by the app but
-  untested)
-- Developer mode enabled on the headset (free; needed to install apps from outside the Meta store)
-- A Windows PC and a USB cable to install the app and copy the game files once
-- Gothic II Gold Edition / Night of the Raven installed on that PC
+## What you need
+
+- **Meta Quest 3 or 3S.** Developed and tested on Quest 3. Quest 2 and Pro may install, but are
+  untested.
+- **A Windows PC** with **Gothic II Gold Edition** installed, used once to install the app and copy
+  the game files to the headset.
+- **A USB cable** that connects the headset to the PC (the charging cable works if it carries data).
+- About **3.5 GB free** on the headset.
+- Optional: a Bluetooth keyboard and mouse or an Xbox-style controller. The Quest controllers
+  work too.
 
 ## Install
 
-1. Enable developer mode for the headset in the Meta Horizon phone app, connect the headset to the
-   PC with a USB cable, put it on and allow USB debugging.
-2. Download `OpenGothicWindow3D-Quest-Installer.exe` from the
-   [latest release](https://github.com/krzychuwr1/OpenGothicWindow3D/releases/latest) and run it.
-   It finds your Gothic II installation, installs the app and copies the game files (about 3 GB).
-3. On the headset: Library > Unknown Sources > OpenGothic Window3D.
+### 1. Turn on developer mode (once)
 
-A PowerShell script is available too, and the full guide covers updating, uninstalling, the window
-controls and the gamepad layout: **[Quest guide](android/quest/README.md)**.
+Apps from outside the Meta store need developer mode. It is free.
+
+1. Create a developer organization at
+   [developers.meta.com](https://developers.meta.com/horizon/manage/organizations/create/), signed
+   in with the same Meta account as your headset. Any name works.
+2. In the **Meta Horizon** app on your phone: **Menu → Devices →** your headset **→ Headset
+   settings → Developer mode**, and turn it on.
+3. Restart the headset.
+
+### 2. Run the installer
+
+1. Download **`OpenGothicWindow3D-Quest-Installer.exe`** from the
+   [latest release](https://github.com/krzychuwr1/OpenGothicWindow3D/releases/latest).
+2. Connect the headset to the PC with the USB cable. Put the headset on and choose **Allow** when it
+   asks to allow USB debugging (tick *Always allow from this computer*).
+3. Run the installer. If Windows SmartScreen warns about an unknown program, choose
+   **More info → Run anyway**.
+4. Check both sections:
+   - **1. Gothic II Installation:** it finds Steam and GOG copies by itself. Otherwise click
+     **Browse...** and pick the folder that contains `Data`, `_work` and `System`.
+   - **2. Meta Quest Headset:** should say *Connected*.
+5. Click **Install to Quest**. Copying the game files (about 3 GB) takes a few minutes.
+
+<details>
+<summary>Prefer a script instead of the .exe?</summary>
+
+1. Download `OpenGothicWindow3D.apk` and `install-quest.ps1` from the release into one folder.
+2. Download [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools)
+   and unzip them into the same folder, so that `platform-tools\adb.exe` exists.
+3. Connect the headset as above, then in PowerShell, in that folder:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File install-quest.ps1
+   ```
+
+   Add `-GameDir "D:\path\to\Gothic II"` if your game is not found automatically.
+</details>
+
+### 3. Start the game
+
+On the headset open the **Library**, switch the filter to **Unknown Sources** and start
+**OpenGothic Window3D**. Or click **Launch on Quest** in the installer.
+
+## Setting up
+
+**Controls.** Pair a Bluetooth keyboard and mouse or gamepad in the headset's
+**Settings → Bluetooth** before starting the game. Keyboard and mouse use the standard Gothic II
+keys. With a gamepad or the Quest controllers, the left stick moves, the right stick turns, the
+right trigger attacks, **A** jumps, **B** draws your weapon and **X** opens the inventory.
+[Full controls](android/quest/README.md#controls).
+
+**Placing the window.** The window opens in front of you. Point at the **handle** under the window
+and pinch (hands) or squeeze grip (controllers) to move it. Grab a **bottom corner** to resize it.
+Hold the **Meta button** to bring it back in front of you.
+
+**Window buttons.** Point at the handle and a row of buttons appears under it:
+
+| Button | What it does |
+| --- | --- |
+| Hands | Show your hands as outlines with pointer rays: off, automatic or always |
+| Curve | Curve the window around you like a curved monitor |
+| Edges | Square, rounded or soft window edges |
+| Padlock | Keep the window's shape while resizing |
+| Cube | Show the selected inventory item as a 3D object outside the window |
+| Surface light | Let the game's light fall on your table or floor (experimental) |
+| Moon / window | Switch between your room (passthrough) and a dusk VR landscape |
+| Slider | Dim the room around the window |
+
+**Graphics.** The Quest version starts with lighter settings than the PC version. In the game's
+**Settings → Video settings** you can change the refresh rate, try **Application SpaceWarp**
+(smoother motion at half the rendering cost; experimental) and **Foveation** (cheaper lighting at
+the edges of your view).
+
+## Updating and uninstalling
+
+- **Update:** download the new installer and run it. Tick *Update app only* to skip copying the
+  game files again. Your saves and settings are kept.
+- **Uninstall:** in the headset's Library, open the app's **···** menu and choose **Uninstall**.
+  This also removes saves and settings. The game files stay in `/sdcard/OpenGothic`; delete that
+  folder (for example with a file manager app on the headset) to free the space.
+
+## Troubleshooting
+
+- **The installer says "No Quest detected".** Check that developer mode is on, try another USB
+  cable or port, and look in the headset for the *Allow USB debugging* prompt.
+- **"Quest detected — put on your headset...".** The headset is waiting for you to allow USB
+  debugging. Put it on and choose **Allow**.
+- **Gothic II is not found.** Click **Browse...** and select the game folder, the one that contains
+  `Data`, `_work` and `System`. The original *Gothic II* without *Night of the Raven* is not
+  enough: you need the Gold Edition.
+- **The app is not in the Library.** Set the Library filter to **Unknown Sources**.
+- **Something else.** [Open an issue](https://github.com/krzychuwr1/OpenGothicWindow3D/issues),
+  and say which headset you use and what happened.
 
 ## Building from source
+
+For developers. The build runs on Windows:
 
 ```powershell
 git clone --recursive -c core.longpaths=true https://github.com/krzychuwr1/OpenGothicWindow3D.git
@@ -53,25 +139,12 @@ cd OpenGothicWindow3D
 ./tools/build-quest.ps1 -Install
 ```
 
-Requirements (Android SDK, NDK, CMake, Ninja, Python, glslangValidator) and options are in the
-[Quest guide](android/quest/README.md#build-from-source). For desktop builds (Windows, Linux, macOS)
-see the [upstream README](docs/OpenGothic.md); this fork is developed and tested for the Quest.
-
-## Known limitations
-
-- Experimental: expect bugs. Gothic II can be played, but not everything has been tested on the
-  headset.
-- Mods are untested on the headset. Those that need Ikarus/LeGo, Union or other memory hacks do
-  not work in OpenGothic at all.
-- Release APKs are signed with a development key. To switch between a release and your own build,
-  uninstall the app first.
-
-Bugs and ideas: [issues](https://github.com/krzychuwr1/OpenGothicWindow3D/issues). Problems that
-also happen in desktop OpenGothic belong in the [upstream tracker](https://github.com/Try/OpenGothic/issues).
+Requirements (Android SDK and NDK, CMake, Ninja, Python, glslangValidator), developer options and
+the Polish package variant are described in the [Quest guide](android/quest/README.md#build-from-source).
 
 ## Credits and license
 
-Built on [OpenGothic](https://github.com/Try/OpenGothic) by Try and its contributors, with
+Built on [OpenGothic](https://github.com/Try/OpenGothic) by Try and contributors, with
 [Tempest](https://github.com/Try/Tempest), [ZenKit](https://github.com/GothicKit/ZenKit),
 [dmusic](https://github.com/GothicKit/dmusic), [Bullet](https://github.com/bulletphysics/bullet3)
 and the [OpenXR loader](https://github.com/KhronosGroup/OpenXR-SDK). Released under the
