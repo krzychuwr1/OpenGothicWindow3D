@@ -89,6 +89,9 @@ class XrWindow final {
     // The game shows its 3D scene (not the main menu, a loading screen or a video): only then
     // can the window be curved; flat pictures are shown on a flat window
     void              setSceneShown(bool shown);
+    // The game is paused or a game menu is open: controller rays and triggers work the window
+    // controls (move, resize, the buttons below) and the triggers stop reaching the game
+    void              setPointerMode(bool on);
 #ifdef OPENGOTHIC_XR
     // Selected inventory item rendered as a true 3D stereo model outside the window
     void              drawInventoryItem(Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t eye, const Item* item);
