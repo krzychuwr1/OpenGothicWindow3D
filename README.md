@@ -47,7 +47,7 @@ controls and the gamepad layout: **[Quest guide](android/quest/README.md)**.
 ## Building from source
 
 ```powershell
-git clone --recursive https://github.com/krzychuwr1/OpenGothicWindow3D.git
+git clone --recursive -c core.longpaths=true https://github.com/krzychuwr1/OpenGothicWindow3D.git
 cd OpenGothicWindow3D
 ./tools/fetch-quest-deps.ps1
 ./tools/build-quest.ps1 -Install

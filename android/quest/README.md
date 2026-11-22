@@ -128,7 +128,7 @@ The build runs on Windows. Requirements:
   -storepass android -keypass android -keyalg RSA -validity 10000 -dname "CN=Android Debug"`)
 
 ```powershell
-git clone --recursive https://github.com/krzychuwr1/OpenGothicWindow3D.git
+git clone --recursive -c core.longpaths=true https://github.com/krzychuwr1/OpenGothicWindow3D.git
 cd OpenGothicWindow3D
 ./tools/fetch-quest-deps.ps1     # Vulkan headers and the OpenXR loader into toolchain/
 ./tools/build-quest.ps1 -Install -GameDir 'E:\Games\Gothic II'
