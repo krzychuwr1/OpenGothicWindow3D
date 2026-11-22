@@ -490,6 +490,9 @@ class Npc final {
     bool      implLookAtWp(uint64_t dt);
     bool      implLookAtNpc(uint64_t dt);
     bool      implLookAt (float dx, float dy, float dz, uint64_t dt);
+#if defined(OPENGOTHIC_XR)
+    void      updateArmTracking(uint64_t dt);
+#endif
     bool      implTurnAway(const Npc& oth, uint64_t dt);
     bool      implTurnToFai(const Npc& oth, uint64_t dt);
     bool      implTurnTo (const Npc& oth, uint64_t dt);

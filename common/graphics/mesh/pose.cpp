@@ -319,9 +319,11 @@ void Pose::processLayers(AnimationSolver& solver, uint64_t tickCount) {
   }
 
 bool Pose::update(uint64_t tickCount, bool force) {
+  // Tracked arms move every frame, whatever the animation does (held frames included)
+  const bool armIkDirty = hasArmTargets() || std::exchange(armIk.settle,false);
   if(lay.size()==0) {
-    const bool ret = needToUpdate;
-    if(needToUpdate || lastUpdate==0)
+    const bool ret = needToUpdate || armIkDirty;
+    if(needToUpdate || lastUpdate==0 || armIkDirty)
       mkSkeleton(pos);
     needToUpdate = false;
     lastUpdate   = tickCount;
@@ -353,7 +355,7 @@ bool Pose::update(uint64_t tickCount, bool force) {
     needToUpdate = needMkSkeleton && !holdFrame;
     }
 
-  if(needMkSkeleton || force) {
+  if(needMkSkeleton || force || armIkDirty) {
     mkSkeleton(pos);
     return true;
     }
@@ -464,6 +466,8 @@ void Pose::mkSkeleton(const Tempest::Matrix4x4& mt) {
   if(skeleton->ordered)
     implMkSkeleton(m); else
     implMkSkeleton(m,size_t(-1));
+  if(hasArmTargets())
+    applyArmIk(mt);
   }
 
 void Pose::implMkSkeleton(const Matrix4x4 &mt) {
@@ -497,6 +501,251 @@ void Pose::implMkSkeleton(const Tempest::Matrix4x4 &mt, size_t parent) {
     auto mat = hasSamples[i] ? mkMatrix(base[i]) : nodes[i].tr;
     tr[i] = mt*mat;
     implMkSkeleton(tr[i],i);
+    }
+  }
+
+namespace {
+
+Vec3 bonePos(const Matrix4x4& m) {
+  return Vec3(m.at(3,0), m.at(3,1), m.at(3,2));
+  }
+
+Vec3 boneAxis(const Matrix4x4& m, int c) {
+  return Vec3(m.at(c,0), m.at(c,1), m.at(c,2));
+  }
+
+float component(const Vec3& v, int k) {
+  return k==0 ? v.x : (k==1 ? v.y : v.z);
+  }
+
+// World bone matrix turned by `angle` radians around the unit `axis` through `pivot`: T(pivot)*R*T(-pivot)*m
+void rotateAround(Matrix4x4& m, const Vec3& pivot, const Vec3& axis, float angle) {
+  const float c = std::cos(angle), s = std::sin(angle);
+  auto rot = [&](const Vec3& v) {
+    return v*c + Vec3::crossProduct(axis,v)*s + axis*(Vec3::dotProduct(axis,v)*(1.f-c));
+    };
+  for(int k=0; k<3; ++k) {
+    const Vec3 v = rot(boneAxis(m,k));
+    m.set(k,0,v.x);
+    m.set(k,1,v.y);
+    m.set(k,2,v.z);
+    }
+  const Vec3 p = pivot + rot(bonePos(m)-pivot);
+  m.set(3,0,p.x);
+  m.set(3,1,p.y);
+  m.set(3,2,p.z);
+  }
+
+// Shortest rotation around `pivot` that turns direction `from` onto `to`
+void rotateOnto(Matrix4x4& m, const Vec3& pivot, const Vec3& from, const Vec3& to) {
+  const Vec3  axis = Vec3::crossProduct(from,to);
+  const float s    = axis.length();
+  if(s<=1e-6f*from.length()*to.length())
+    return;
+  rotateAround(m, pivot, axis/s, std::atan2(s,Vec3::dotProduct(from,to)));
+  }
+
+}
+
+Matrix4x4 Pose::localMatrix(size_t i) const {
+  return hasSamples[i] ? mkMatrix(base[i]) : skeleton->nodes[i].tr;
+  }
+
+void Pose::calibrateArms() {
+  const auto& nodes = skeleton->nodes;
+  const auto& rest  = skeleton->tr; // bind pose, model space
+  armIk.skeleton = skeleton;
+  armIk.finger.assign(nodes.size(),0);
+
+  auto descends = [&](size_t i, size_t ancestor) {
+    for(size_t n=0; n<nodes.size() && i<nodes.size(); ++n) {
+      i = nodes[i].parent;
+      if(i==ancestor)
+        return true;
+      }
+    return false;
+    };
+
+  for(size_t h=0; h<2; ++h) {
+    ArmChain& c = armIk.chain[h];
+    c = ArmChain();
+    const std::string side = h==0 ? "BIP01 L" : "BIP01 R";
+    const size_t upper = skeleton->findNode(side+" UPPERARM");
+    const size_t fore  = skeleton->findNode(side+" FOREARM");
+    const size_t hand  = skeleton->findNode(side+" HAND");
+    if(upper>=nodes.size() || fore>=nodes.size() || hand>=nodes.size() ||
+       nodes[fore].parent!=upper || nodes[hand].parent!=fore) {
+      Log::d("arm tracking: no ",side," arm chain in ",skeleton->name());
+      continue;
+      }
+
+    // Biped names: FINGER0* is the thumb (kept animated), FINGER1 the index finger
+    const std::string thumbName = side+" FINGER0", indexName = side+" FINGER1";
+    size_t thumb = size_t(-1), finger = size_t(-1);
+    for(size_t i=0; i<nodes.size(); ++i) {
+      const auto& name = nodes[i].name;
+      if(name.find("FINGER")==std::string::npos || !descends(i,hand))
+        continue;
+      if(name==thumbName)
+        thumb = i;
+      if(name.starts_with(thumbName))
+        continue;
+      armIk.finger[i] = uint8_t(1+h);
+      if(name==indexName || (finger>=nodes.size() && nodes[i].parent==hand))
+        finger = i;
+      }
+
+    // Calibration frame in hand bone space: towards the finger root (else along the forearm) and
+    // towards the thumb root (else the back of the hand, up in the palms-down bind pose)
+    Matrix4x4 toHand = rest[hand];
+    toHand.inverse();
+    auto local = [&](Vec3 p) { toHand.project(p); return p; };
+    const Vec3 hp     = bonePos(rest[hand]);
+    const Vec3 distal = local(finger<nodes.size() ? bonePos(rest[finger]) : hp*2.f-bonePos(rest[fore]));
+    c.byThumb         = thumb<nodes.size();
+    const Vec3 second = local(c.byThumb ? bonePos(rest[thumb]) : hp+Vec3(0,1,0));
+    c.frame[0] = Vec3::normalize(distal);
+    c.frame[1] = Vec3::normalize(second-c.frame[0]*Vec3::dotProduct(second,c.frame[0]));
+    c.frame[2] = Vec3::crossProduct(c.frame[0],c.frame[1]);
+    if(c.frame[0].quadLength()<0.5f || c.frame[1].quadLength()<0.5f)
+      continue;
+    c.upper = upper;
+    c.fore  = fore;
+    c.hand  = hand;
+    Log::d("arm tracking: ",side," arm, finger root: ",finger<nodes.size() ? nodes[finger].name : "none",
+           ", thumb: ",c.byThumb ? nodes[thumb].name : "none");
+    }
+
+  // Model space X points to the right arm when the right shoulder has the larger X
+  const auto& l = armIk.chain[0];
+  const auto& r = armIk.chain[1];
+  if(l.upper<nodes.size() && r.upper<nodes.size())
+    armIk.rightSide = bonePos(rest[r.upper]).x>=bonePos(rest[l.upper]).x ? 1.f : -1.f;
+  else if(r.upper<nodes.size())
+    armIk.rightSide = bonePos(rest[r.upper]).x>=0.f ? 1.f : -1.f;
+  else if(l.upper<nodes.size())
+    armIk.rightSide = bonePos(rest[l.upper]).x>=0.f ? -1.f : 1.f;
+  }
+
+void Pose::applyArmIk(const Matrix4x4& obj) {
+  if(armIk.skeleton!=skeleton)
+    calibrateArms();
+  const auto&  nodes = skeleton->nodes;
+  const size_t head  = skeleton->BIP01_HEAD;
+  if(head>=nodes.size())
+    return;
+
+  const Vec3 headPos = bonePos(tr[head]);
+  // Body frame -> object space -> world (direction)
+  auto world = [&](const Vec3& v) {
+    return boneAxis(obj,0)*(armIk.rightSide*v.x) + boneAxis(obj,1)*v.y + boneAxis(obj,2)*v.z;
+    };
+  const Vec3 down = -Vec3::normalize(boneAxis(obj,1));
+
+  for(size_t h=0; h<2; ++h) {
+    const ArmChain&  c = armIk.chain[h];
+    const ArmTarget& t = armIk.target[h];
+    const float      w = armIk.weight[h];
+    if(w<=0.f || c.upper>=nodes.size())
+      continue;
+
+    const Vec3  S  = bonePos(tr[c.upper]);
+    const Vec3  F  = bonePos(tr[c.fore]);
+    const Vec3  H  = bonePos(tr[c.hand]);
+    const float l1 = (F-S).length(), l2 = (H-F).length();
+    if(l1<=1e-3f || l2<=1e-3f)
+      continue;
+
+    // The wrist goal, blended from the animated hand and clamped to the arm's reach
+    Vec3  goal = H + (headPos+world(t.wrist)-H)*w;
+    Vec3  dir  = goal-S;
+    float dist = dir.length();
+    if(dist<=1e-3f)
+      continue;
+    dir = dir/dist;
+    const float reach = 0.999f*(l1+l2);
+    dist = std::clamp(dist, std::min(std::abs(l1-l2)+0.01f*(l1+l2),reach), reach);
+    goal = S + dir*dist;
+
+    // Elbow: down and away from the body; from the animated elbow while fading
+    auto across = [&](const Vec3& v) { return v - dir*Vec3::dotProduct(v,dir); };
+    const size_t clavicle = nodes[c.upper].parent;
+    const Vec3   outward  = clavicle<nodes.size() ? Vec3::normalize(S-bonePos(tr[clavicle])) : Vec3();
+    const Vec3   pole     = Vec3::normalize(across(down + outward*0.5f));
+    Vec3 bend = Vec3::normalize(across(Vec3::normalize(across(F-S))*(1.f-w) + pole*w));
+    if(bend.quadLength()<0.5f)
+      bend = pole;
+    const float a = (l1*l1 - l2*l2 + dist*dist)/(2.f*dist);
+    const float b = std::sqrt(std::max(l1*l1-a*a, 0.f));
+    const Vec3  E = S + dir*a + bend*b;
+
+    // Upper arm onto the elbow, rolled so the elbow's hinge bends towards the goal
+    rotateOnto(tr[c.upper], S, F-S, E-S);
+    tr[c.fore] = tr[c.upper]*localMatrix(c.fore);
+    tr[c.hand] = tr[c.fore]*localMatrix(c.hand);
+    {
+      const Vec3 axis  = Vec3::normalize(bonePos(tr[c.fore])-S);
+      const Vec3 elbow = bonePos(tr[c.fore]);
+      Vec3 p1 = bonePos(tr[c.hand])-elbow, p2 = goal-elbow;
+      p1 = p1 - axis*Vec3::dotProduct(p1,axis);
+      p2 = p2 - axis*Vec3::dotProduct(p2,axis);
+      const float eps = 1e-4f*l2*l2;
+      if(p1.quadLength()>eps && p2.quadLength()>eps) {
+        rotateAround(tr[c.upper], S, axis, std::atan2(Vec3::dotProduct(axis,Vec3::crossProduct(p1,p2)),Vec3::dotProduct(p1,p2)));
+        tr[c.fore] = tr[c.upper]*localMatrix(c.fore);
+        tr[c.hand] = tr[c.fore]*localMatrix(c.hand);
+        }
+    }
+    // Forearm onto the goal
+    const Vec3 elbow = bonePos(tr[c.fore]);
+    rotateOnto(tr[c.fore], elbow, bonePos(tr[c.hand])-elbow, goal-elbow);
+    tr[c.hand] = tr[c.fore]*localMatrix(c.hand);
+
+    // Hand: the calibration frame (hand bone space) mapped onto the tracked frame (world)
+    Matrix4x4& m = tr[c.hand];
+    auto handToWorld = [&](const Vec3& v) { return boneAxis(m,0)*v.x + boneAxis(m,1)*v.y + boneAxis(m,2)*v.z; };
+    const Vec3 t1 = Vec3::normalize(world(t.distal));
+    const Vec3 t2 = Vec3::normalize(world(c.byThumb ? t.thumb : t.dorsal));
+    const Vec3 e1 = Vec3::normalize(Vec3::normalize(handToWorld(c.frame[0]))*(1.f-w) + t1*w);
+    Vec3       e2 = Vec3::normalize(handToWorld(c.frame[1]))*(1.f-w) + t2*w;
+    e2 = Vec3::normalize(e2 - e1*Vec3::dotProduct(e2,e1));
+    const Vec3 e3 = Vec3::crossProduct(e1,e2);
+    float curl = 0;
+    Vec3  curlAxis;
+    if(e1.quadLength()>0.5f && e2.quadLength()>0.5f) {
+      const float scale = boneAxis(m,0).length();
+      for(int k=0; k<3; ++k) {
+        const Vec3 v = (e1*component(c.frame[0],k) + e2*component(c.frame[1],k) + e3*component(c.frame[2],k))*scale;
+        m.set(k,0,v.x);
+        m.set(k,1,v.y);
+        m.set(k,2,v.z);
+        }
+      // Fingers bend around the knuckle line, towards the palm: the target's back of the hand
+      // expressed in its own frame, then carried over to the blended frame
+      const Vec3 tx = Vec3::normalize(t2 - t1*Vec3::dotProduct(t2,t1));
+      const Vec3 tz = Vec3::crossProduct(t1,tx);
+      const Vec3 td = Vec3::normalize(world(t.dorsal));
+      const Vec3 dorsal = e1*Vec3::dotProduct(td,t1) + e2*Vec3::dotProduct(td,tx) + e3*Vec3::dotProduct(td,tz);
+      curlAxis = Vec3::normalize(Vec3::crossProduct(e1,-dorsal));
+      if(curlAxis.quadLength()>0.5f)
+        curl = std::clamp(t.curl,0.f,1.f)*w; // radians per finger joint: up to ~57 degrees
+      }
+
+    updateArmChildren(c.upper, c.fore, curlAxis, 0.f);
+    updateArmChildren(c.fore,  c.hand, curlAxis, 0.f);
+    updateArmChildren(c.hand,  size_t(-1), curlAxis, curl);
+    }
+  }
+
+void Pose::updateArmChildren(size_t parent, size_t skip, const Vec3& curlAxis, float curl) {
+  const auto& nodes = skeleton->nodes;
+  for(size_t i=0; i<nodes.size(); ++i) {
+    if(nodes[i].parent!=parent || i==skip)
+      continue;
+    tr[i] = tr[parent]*localMatrix(i);
+    if(curl!=0.f && armIk.finger[i]!=0)
+      rotateAround(tr[i], bonePos(tr[i]), curlAxis, curl);
+    updateArmChildren(i, size_t(-1), curlAxis, curl);
     }
   }
 
@@ -869,6 +1118,27 @@ void Pose::setHeadRotation(float dx, float dz) {
 
 Vec2 Pose::headRotation() const {
   return Vec2(headRotX,headRotY);
+  }
+
+void Pose::setArmTargets(const ArmTarget (&target)[2], uint64_t dt) {
+  const float step = float(dt)/200.f;
+  for(size_t i=0; i<2; ++i) {
+    if(target[i].valid)
+      armIk.target[i] = target[i];
+    const float w = std::clamp(armIk.weight[i]+(target[i].valid ? step : -step), 0.f, 1.f);
+    armIk.settle   |= (w==0.f && armIk.weight[i]>0.f);
+    armIk.weight[i] = w;
+    }
+  }
+
+void Pose::clearArmTargets() {
+  armIk.settle   |= hasArmTargets();
+  armIk.weight[0] = 0;
+  armIk.weight[1] = 0;
+  }
+
+bool Pose::hasArmTargets() const {
+  return armIk.weight[0]>0.f || armIk.weight[1]>0.f;
   }
 
 void Pose::setAnimRotate(const AnimationSolver &solver, Npc &npc, WeaponState fightMode, AnimationSolver::TurnType turn, int dir) {

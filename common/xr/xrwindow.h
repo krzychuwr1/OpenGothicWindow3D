@@ -3,6 +3,7 @@
 #include <Tempest/Device>
 #include <Tempest/Attachment>
 #include <Tempest/Size>
+#include <Tempest/Vec>
 
 #include <memory>
 #include <string>
@@ -15,6 +16,24 @@
 // XrWindow::inst() is always null and the game uses its normal window.
 class Renderer;
 class Item;
+
+// One tracked hand (XR_EXT_hand_tracking) relative to the HEAD (the VIEW reference space), in metres.
+// Axes are OpenXR's: +X right, +Y up, -Z forward (where the eyes look).
+// The orientation is the wrist joint's: -Z along the hand towards the fingers, +Y out of the back of
+// the hand, X = Y x Z (towards the little finger on the right hand, towards the thumb on the left).
+struct XrHandTarget {
+  bool          valid = false;
+  Tempest::Vec3 wrist;
+  Tempest::Vec4 orientation = {0,0,0,1}; // quaternion x,y,z,w
+  Tempest::Vec3 palm;
+  Tempest::Vec3 knuckle;                 // index finger root (proximal joint)
+  Tempest::Vec3 thumbBase;               // thumb root (metacarpal joint)
+  float         curl = 0.f;              // mean bend of the four fingers: 0 open, 1 fist
+  };
+
+struct XrHandTargets {
+  XrHandTarget hand[2]; // 0 left, 1 right
+  };
 
 class XrWindow final {
   public:
@@ -101,6 +120,15 @@ class XrWindow final {
 #endif
     // The session shows frames (headset worn and the app in front, possibly under a system menu)
     bool              isVisible() const;
+
+    // The hero's arms follow the user's hands: hand tracking is available, the hands (not
+    // controllers) are tracked and the xrArmTracking setting is on
+    bool              armTrackingActive() const;
+    // This frame's hands relative to the head; false while arm tracking is inactive
+    bool              handTargets(XrHandTargets& out) const;
+    // Head (VIEW space) orientation relative to the room (LOCAL space), quaternion x,y,z,w;
+    // located with the hands, so only while arm tracking is active
+    bool              headOrientation(Tempest::Vec4& out) const;
 
   private:
     XrWindow();

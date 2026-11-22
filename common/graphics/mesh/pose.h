@@ -84,6 +84,23 @@ class Pose final {
 
     void               setHeadRotation(float dx, float dz);
     Tempest::Vec2      headRotation() const;
+
+    // Arms reaching for tracked hands (two-bone IK on BIP01 L/R UPPERARM, FOREARM, HAND).
+    // Body frame, centimetres: x towards the model's right side, y up, z forward; positions are
+    // relative to the BIP01 HEAD bone, directions are unit vectors.
+    struct ArmTarget {
+      bool          valid = false;
+      Tempest::Vec3 wrist;
+      Tempest::Vec3 distal;   // along the hand, towards the fingers
+      Tempest::Vec3 dorsal;   // out of the back of the hand
+      Tempest::Vec3 thumb;    // towards the thumb side of the hand
+      float         curl = 0; // 0 open, 1 fist
+      };
+    // 0 left, 1 right. Each arm fades in or out over 0.2 s as its target turns valid or invalid.
+    void               setArmTargets(const ArmTarget (&target)[2], uint64_t dt);
+    void               clearArmTargets();
+    bool               hasArmTargets() const;
+
     void               setAnimRotate(const AnimationSolver &solver, Npc &npc, WeaponState fightMode, AnimationSolver::TurnType turn, int dir);
     auto               setAnimItem(const AnimationSolver &solver, Npc &npc, std::string_view scheme, int state) -> const Animation::Sequence*;
     bool               stopItemStateAnim(const AnimationSolver &solver, uint64_t tickCount);
@@ -118,6 +135,25 @@ class Pose final {
     void implMkSkeleton(const Tempest::Matrix4x4 &mt);
     void implMkSkeleton(const Tempest::Matrix4x4 &mt, size_t parent);
 
+    struct ArmChain {
+      size_t        upper = size_t(-1), fore = size_t(-1), hand = size_t(-1);
+      bool          byThumb = false;     // calibration frame from the thumb bone, else from the back of the hand
+      Tempest::Vec3 frame[3];            // orthonormal: distal, thumb or dorsal, their cross; hand bone space
+      };
+    struct ArmIk {
+      const Skeleton*      skeleton = nullptr; // the one the bones below belong to
+      float                rightSide = 1.f;    // sign of model space X towards the right arm
+      ArmChain             chain[2];
+      std::vector<uint8_t> finger;             // per bone: 1+hand for bones that curl with that hand
+      ArmTarget            target[2];
+      float                weight[2] = {};
+      bool                 settle = false;     // one more skeleton after fading out
+      };
+    void calibrateArms();
+    void applyArmIk(const Tempest::Matrix4x4& obj);
+    void updateArmChildren(size_t parent, size_t skip, const Tempest::Vec3& curlAxis, float curl);
+    auto localMatrix(size_t i) const -> Tempest::Matrix4x4;
+
     bool updateFrame(const Animation::Sequence &s, BodyState bs, uint64_t sBlend, uint64_t barrier, uint64_t sTime, uint64_t now);
 
 #if defined(OPENGOTHIC_XR)
@@ -149,6 +185,7 @@ class Pose final {
     uint8_t                         hasTransitions = 0;
 
     float                           headRotX = 0, headRotY = 0;
+    ArmIk                           armIk;
 
     size_t                          numBones = 0;
     SampleStatus                    hasSamples[Resources::MAX_NUM_SKELETAL_NODES] = {};

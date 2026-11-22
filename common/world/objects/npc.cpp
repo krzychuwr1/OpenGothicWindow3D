@@ -18,6 +18,9 @@
 #include "camera.h"
 #include "gothic.h"
 #include "resources.h"
+#if defined(OPENGOTHIC_XR)
+#include "xr/xrwindow.h"
+#endif
 
 using namespace Tempest;
 
@@ -4801,6 +4804,48 @@ void Npc::updateAnimationLod(uint64_t dt, const Vec3& viewer, uint64_t frame) {
     pendingPoseTime = 0;
     }
   }
+
+static Vec3 rotateByQuat(const Vec4& q, const Vec3& v) {
+  const Vec3 u = Vec3(q.x,q.y,q.z);
+  const Vec3 t = Vec3::crossProduct(u,v)*2.f;
+  return v + t*q.w + Vec3::crossProduct(u,t);
+  }
+
+void Npc::updateArmTracking(uint64_t dt) {
+  // The hero's arms follow the user's tracked hands while nothing else needs them; else they fade out
+  Pose::ArmTarget arm[2];
+  auto* xr = XrWindow::inst();
+  auto  locomotion = [this]() {
+    const uint32_t bs = uint32_t(bodyState()) & BS_MAX;
+    return bs==(BS_STAND & BS_MAX) || bs==(BS_WALK & BS_MAX) || bs==(BS_SNEAK & BS_MAX) || bs==BS_RUN ||
+           bs==BS_SPRINT || bs==BS_JUMP || bs==BS_FALL;
+    };
+  const bool free = isPlayer() && xr!=nullptr && xr->armTrackingActive() && locomotion() &&
+                    weaponState()==WeaponState::NoWeapon && interactive()==nullptr && !isDown() &&
+                    !isAttackAnim() && !Gothic::inst().isInDialog();
+  XrHandTargets hands;
+  Vec4          head;
+  if(free && xr->handTargets(hands) && xr->headOrientation(head)) {
+    // Head-relative hands turned into room (LOCAL) axes, whose forward the hero's yaw stands for.
+    // MERGE: the VR camera puts the head orientation on top of the hero's yaw; if it takes a
+    // reference yaw out of the head orientation, take the same one out of `head` here.
+    auto room = [&](const Vec3& v) { return rotateByQuat(head,v); };
+    // OpenXR (+X right, +Y up, -Z forward, metres) -> Pose body frame (x right, y up, z forward, centimetres)
+    auto body = [](const Vec3& v, float scale) { return Vec3(v.x*scale, v.y*scale, -v.z*scale); };
+    for(size_t i=0; i<2; ++i) {
+      const auto& h = hands.hand[i];
+      if(!h.valid)
+        continue;
+      arm[i].valid  = true;
+      arm[i].wrist  = body(room(h.wrist),100.f);
+      arm[i].distal = Vec3::normalize(body(room(h.knuckle-h.wrist),1.f));
+      arm[i].thumb  = Vec3::normalize(body(room(h.thumbBase-h.wrist),1.f));
+      arm[i].dorsal = body(room(rotateByQuat(h.orientation,Vec3(0,1,0))),1.f);
+      arm[i].curl   = h.curl;
+      }
+    }
+  visual.armPose().setArmTargets(arm,dt);
+  }
 #endif
 
 void Npc::updateAnimation(uint64_t dt, bool force) {
@@ -4830,6 +4875,10 @@ void Npc::updateAnimation(uint64_t dt, bool force) {
     durtyTranform = 0;
     }
 
+#if defined(OPENGOTHIC_XR)
+  if(isPlayer() || visual.pose().hasArmTargets())
+    updateArmTracking(dt);
+#endif
   bool syncAtt = visual.updateAnimation(this,nullptr,owner,dt,force);
   if(syncAtt)
     visual.syncAttaches();
