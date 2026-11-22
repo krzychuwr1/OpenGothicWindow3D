@@ -411,6 +411,11 @@ struct XrWindow::Impl {
   enum PadControl : size_t { StickLeft=PadState::Count, StickRight, TriggerLeft, TriggerRight, ControlCount };
   std::bitset<ControlCount> blockedControls;
   bool                     padInterrupted = false;
+  // Game paused or a game menu open: the triggers point at the window controls instead of playing
+  bool                     pointerMode = false;
+  // Per hand: a controller of any make (true until the runtime says otherwise) or a tracked hand
+  bool                     controllerHand[2] = {true, true};
+  void updateInteractionProfiles();
 
   ~Impl();
 
@@ -1610,6 +1615,14 @@ bool XrWindow::Impl::pollEvents() {
           recenterTimes.push_back(change.changeTime);
         break;
         }
+      case XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED: {
+        if(reinterpret_cast<const XrEventDataInteractionProfileChanged&>(ev).session!=session)
+          break;
+        // Controllers picked up or put down: whatever was held or dragged belongs to the old device
+        updateInteractionProfiles();
+        cancelInput();
+        break;
+        }
       case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
         stopSession();
         break;
@@ -1620,6 +1633,25 @@ bool XrWindow::Impl::pollEvents() {
   if(!attempted && transitionFailures!=0)
     updateSessionRunning();
   return interrupted;
+  }
+
+void XrWindow::Impl::updateInteractionProfiles() {
+  XrPath handProfile = XR_NULL_PATH;
+  if(XR_FAILED(xrStringToPath(instance, "/interaction_profiles/ext/hand_interaction_ext", &handProfile)))
+    handProfile = XR_NULL_PATH;
+  for(size_t i=0; i<hands.size(); ++i) {
+    XrInteractionProfileState st = {XR_TYPE_INTERACTION_PROFILE_STATE};
+    if(hands[i].path==XR_NULL_PATH || XR_FAILED(xrGetCurrentInteractionProfile(session, hands[i].path, &st)))
+      continue;
+    // Any profile but tracked hands is a controller with a trigger, whatever its make
+    controllerHand[i] = st.interactionProfile==XR_NULL_PATH || st.interactionProfile!=handProfile;
+    char name[XR_MAX_PATH_LENGTH] = "none";
+    uint32_t len = 0;
+    if(st.interactionProfile!=XR_NULL_PATH &&
+       XR_FAILED(xrPathToString(instance, st.interactionProfile, sizeof(name), &len, name)))
+      std::snprintf(name, sizeof(name), "unknown");
+    Log::i("OpenXR: ", i==0 ? "left" : "right", " hand profile ", name);
+    }
   }
 
 void XrWindow::Impl::placeWindow() {
@@ -1832,6 +1864,9 @@ void XrWindow::Impl::updateInput() {
   const int64_t steadyNow = std::chrono::duration_cast<std::chrono::nanoseconds>(
                               std::chrono::steady_clock::now().time_since_epoch()).count();
   const bool gameInputRecent = steadyNow-lastGameInput.load() < 1000000000;
+  // Paused, the buttons below the window stay out for the pointer (they fade as usual afterwards)
+  if(pointerMode && canManipulate)
+    lastChromeHover = frame.predictedDisplayTime;
   const V3 wNormal = rotate(windowPose.orientation, V3{0,0,1});
   auto rayHit = [&](const XrPosef& aim) -> std::optional<V3> {
     const V3 origin = toV3(aim.position);
@@ -1884,7 +1919,8 @@ void XrWindow::Impl::updateInput() {
       smokeHand(h);
     h.hover     = Grip::None;
     h.hoverNear = false;
-    if(gameInputRecent && grabbedBy!=int(i))
+    // Menu navigation on the pad does not hide the controls from the pointer
+    if(gameInputRecent && !pointerMode && grabbedBy!=int(i))
       continue;
 
     // Direct touch first: the pinch point (or controller grip) close to a frame part
@@ -1955,7 +1991,8 @@ void XrWindow::Impl::updateInput() {
       };
     const bool gripDown = freshPress(h.grab,h.grabHeld);
     const bool triggerDown = freshPress(h.trigger,h.triggerHeld);
-    const bool startTrigger = h.hover==Grip::Dim && triggerDown;
+    // In pointer mode the trigger works every control; otherwise it only drags the dimming slider
+    const bool startTrigger = (h.hover==Grip::Dim || (pointerMode && h.hover!=Grip::None)) && triggerDown;
     auto moveDim = [&](const V3& worldPoint) {
       const float x = toLocal(windowPose,worldPoint).x;
       const float level = std::clamp((x-sliderCenter().x-dimLeft())/dimTravel(),0.f,1.f);
@@ -1971,7 +2008,8 @@ void XrWindow::Impl::updateInput() {
     if(grabbedBy==int(i)) {
       const bool tracked = grabNear ? h.nearValid : h.aimValid;
       const auto& action = grabTrigger ? h.trigger : h.grab;
-      if(!action || *action<0.35f || !tracked ||
+      // A trigger drag ends with pointer mode: the trigger then belongs to the game again
+      if(!action || *action<0.35f || !tracked || (grabTrigger && !pointerMode && grabbed!=Grip::Dim) ||
          ((grabbed==Grip::Environment || grabbed==Grip::Dim) && !roomAvailable()) ||
          (grabbed==Grip::Dim && !(immersive ? hasColorScale : dimStyleAvailable))) {
         saveDim();
@@ -2137,7 +2175,8 @@ void XrWindow::Impl::updateInput() {
       const float y = tracked ? joints[i][XR_HAND_JOINT_PALM_EXT].pose.position.y
                               : (h.aimValid ? h.aim.position.y : -1e9f);
       const bool raised = headValid && y>headPos.y-0.45f;
-      const bool show = handsMode==2 || (handsMode==1 && quiet && raised);
+      // A controller in pointer mode always shows its ray, even with hands and rays off
+      const bool show = handsMode==2 || (handsMode==1 && quiet && raised) || (pointerMode && controllerHand[i]);
       handsAlpha[i] = std::clamp(handsAlpha[i]+(show ? step : -step), 0.f, 1.f);
       if(handsAlpha[i]<=0.f || (!tracked && !h.aimValid))
         continue;
@@ -2174,7 +2213,9 @@ void XrWindow::Impl::updateInput() {
           capsule(toXr(h.hit), toXr(h.hit), 0.008f, 0.9f*fade, tint, true);
           } else if(auto hit = rayHit(h.aim)) {
           const V3 l = unroll(toLocal(windowPose,*hit));
-          if(std::abs(l.x)<halfW+0.4f && l.y>-halfH-0.5f && l.y<halfH+0.2f) {
+          // In pointer mode the ray reaches further around the window, so it can be walked onto the controls
+          const float reach = pointerMode ? 0.4f : 0.f;
+          if(std::abs(l.x)<halfW+0.4f+reach && l.y>-halfH-0.5f-reach && l.y<halfH+0.2f+reach) {
             const bool target = h.hover!=Grip::None;
             const V3 tint = target ? V3{1.f,0.88f,0.55f} : ghost;
             capsule(h.aim.position, toXr(*hit), 0.0012f, (target ? 0.7f : 0.45f)*fade, tint, true);
@@ -2227,8 +2268,10 @@ void XrWindow::Impl::updateInput() {
   stick(StickLeft, sticks[0],padState.lx,padState.ly,releasePad.lx,releasePad.ly);
   stick(StickRight,sticks[1],padState.rx,padState.ry,releasePad.rx,releasePad.ry);
 
+  // In pointer mode the triggers never reach the game (A still confirms in menus). Withheld like a
+  // lost action, a trigger still held when pointer mode ends must be released before it can attack.
   auto trigger = [&](size_t id,const std::optional<float>& value,float& dst,float& old) {
-    if(admit(id,value.has_value(),value.value_or(0.f)>0.35f,old>0.35f))
+    if(admit(id,value.has_value() && !pointerMode,value.value_or(0.f)>0.35f,old>0.35f))
       dst = *value;
     else
       old = 0.f;
@@ -4155,6 +4198,10 @@ void XrWindow::setSceneShown(bool shown) {
   s.sceneShown = shown;
   }
 
+void XrWindow::setPointerMode(bool on) {
+  impl->pointerMode = on;
+  }
+
 void XrWindow::noteGameInput() {
   impl->lastGameInput = std::chrono::duration_cast<std::chrono::nanoseconds>(
                           std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -4213,6 +4260,7 @@ bool XrWindow::takePadInterruption(PadState&) { return false; }
 bool      XrWindow::isFocused() const { return false; }
 void      XrWindow::noteGameInput() {}
 void      XrWindow::setSceneShown(bool) {}
+void      XrWindow::setPointerMode(bool) {}
 bool      XrWindow::isVisible() const { return false; }
 
 #endif

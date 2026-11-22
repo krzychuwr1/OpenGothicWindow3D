@@ -1707,6 +1707,7 @@ void MainWindow::render(){
         auto* world = Gothic::inst().world();
         xr->setSceneShown(world!=nullptr && world->view()!=nullptr && !video.isActive() && !rootMenu.isActive() &&
                           Gothic::inst().checkLoading()==Gothic::LoadState::Idle);
+        xr->setPointerMode(rootMenu.isActive() || Gothic::inst().isPause());
       }
       const uint64_t t0 = nowUs();
       const bool waited = xr->waitFrame();
