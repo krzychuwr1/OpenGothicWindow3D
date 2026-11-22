@@ -344,6 +344,13 @@ struct XrWindow::Impl {
   bool                     handsButtonReady = false;
   int                      handsMode = 0;
   float                    handsAlpha[2] = {};
+  // Hero arm tracking: hand joints located against the head every frame while enabled
+  bool                     armTracking = false;
+  std::array<XrHandJointLocationEXT,XR_HAND_JOINT_COUNT_EXT> armJoints[2] = {};
+  XrHandTarget             armTarget[2];
+  XrQuaternionf            armHead = {0,0,0,1};
+  bool                     armHeadValid = false;
+  void updateArmTargets();
   std::atomic<int64_t>     lastGameInput{0};             // steady clock, nanoseconds
   float                    curveRadius = 0.f;            // metres: the arc's radius, centred near the viewer
   uint8_t                  recordingEye = 0;
@@ -2286,6 +2293,78 @@ Grip XrWindow::Impl::targetAt(float x, float y) const {
   return Grip::None;
   }
 
+void XrWindow::Impl::updateArmTargets() {
+  const bool enabled = hasHandTracking && xrLocateHandJoints!=nullptr && state==XR_SESSION_STATE_FOCUSED &&
+                       AndroidApi::activityFocused() && Gothic::settingsGetI("INTERNAL","xrArmTracking")!=0;
+  // MERGE: AND isVrMode() into `enabled`: the arms follow the hands only while the user stands in the world as the hero
+  armTracking  = enabled;
+  armHeadValid = false;
+  for(auto& t:armTarget)
+    t.valid = false;
+  if(!enabled)
+    return;
+
+  XrSpaceLocation head = {XR_TYPE_SPACE_LOCATION};
+  if(XR_SUCCEEDED(xrLocateSpace(viewSpace, localSpace, frame.predictedDisplayTime, &head)) &&
+     (head.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+    armHead      = head.pose.orientation;
+    armHeadValid = true;
+    }
+
+  constexpr XrSpaceLocationFlags posed = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+  for(size_t i=0; i<2; ++i) {
+    if(handTracker[i]==XR_NULL_HANDLE)
+      continue;
+    auto& j = armJoints[i];
+    XrHandJointsLocateInfoEXT li = {XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT};
+    li.baseSpace = viewSpace;
+    li.time      = frame.predictedDisplayTime;
+    XrHandJointLocationsEXT locs = {XR_TYPE_HAND_JOINT_LOCATIONS_EXT};
+    locs.jointCount     = XR_HAND_JOINT_COUNT_EXT;
+    locs.jointLocations = j.data();
+    // The tracker is inactive while controllers are held
+    if(!XR_SUCCEEDED(xrLocateHandJoints(handTracker[i],&li,&locs)) || !locs.isActive)
+      continue;
+    const auto& wrist = j[XR_HAND_JOINT_WRIST_EXT];
+    const auto& palm  = j[XR_HAND_JOINT_PALM_EXT];
+    if((wrist.locationFlags & posed)!=posed || !(palm.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
+      continue;
+
+    // Curl: bend summed over the three finger joints (metacarpal..tip), ~230 degrees for a fist
+    float bend = 0;
+    int   fingers = 0;
+    for(int f : {int(XR_HAND_JOINT_INDEX_METACARPAL_EXT), int(XR_HAND_JOINT_MIDDLE_METACARPAL_EXT),
+                 int(XR_HAND_JOINT_RING_METACARPAL_EXT), int(XR_HAND_JOINT_LITTLE_METACARPAL_EXT)}) {
+      bool valid = true;
+      for(int k=0; k<5; ++k)
+        valid &= (j[size_t(f+k)].locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)!=0;
+      if(!valid)
+        continue;
+      for(int k=0; k<3; ++k) {
+        const V3 a = toV3(j[size_t(f+k)].pose.position), b = toV3(j[size_t(f+k+1)].pose.position), c = toV3(j[size_t(f+k+2)].pose.position);
+        bend += std::acos(std::clamp(dot(normalize(b-a),normalize(c-b)), -1.f, 1.f));
+        }
+      ++fingers;
+      }
+
+    // Finger and thumb roots, or where they sit on an average hand
+    auto joint = [&](XrHandJointEXT id, const V3& fallback) {
+      const auto& l = j[size_t(id)];
+      const V3 v = (l.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) ? toV3(l.pose.position) : toWorld(wrist.pose,fallback);
+      return Vec3(v.x, v.y, v.z);
+      };
+    auto& t = armTarget[i];
+    const auto& p = wrist.pose;
+    t.valid       = true;
+    t.wrist       = Vec3(p.position.x, p.position.y, p.position.z);
+    t.orientation = Vec4(p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w);
+    t.palm        = Vec3(palm.pose.position.x, palm.pose.position.y, palm.pose.position.z);
+    t.knuckle     = joint(XR_HAND_JOINT_INDEX_PROXIMAL_EXT, V3{i==0 ? 0.02f : -0.02f, 0.f, -0.09f});
+    t.thumbBase   = joint(XR_HAND_JOINT_THUMB_METACARPAL_EXT, V3{i==0 ? 0.025f : -0.025f, -0.01f, -0.02f});
+    t.curl        = fingers>0 ? std::clamp(bend/(float(fingers)*4.f), 0.f, 1.f) : 0.f;
+    }
+  }
+
 void XrWindow::Impl::locateEyes() {
   const bool scale = Gothic::settingsGetI("INTERNAL","xrResizeMode")==0;
   skipExtrapolation |= scale!=scalePicture;
@@ -2907,6 +2986,7 @@ bool XrWindow::waitFrame() {
     // A focused game keeps ticking even when the runtime requests zero layers.
     // Refresh XR input for this frame before simulation runs.
     s.updateInput();
+    s.updateArmTargets();
     s.updateSurface();
     if(s.frame.shouldRender)
       return true;
@@ -4169,6 +4249,27 @@ bool XrWindow::isVisible() const {
          (impl->state==XR_SESSION_STATE_VISIBLE || impl->state==XR_SESSION_STATE_FOCUSED);
   }
 
+bool XrWindow::armTrackingActive() const {
+  auto& s = *impl;
+  return s.armTracking && s.state==XR_SESSION_STATE_FOCUSED && (s.armTarget[0].valid || s.armTarget[1].valid);
+  }
+
+bool XrWindow::handTargets(XrHandTargets& out) const {
+  if(!armTrackingActive())
+    return false;
+  out.hand[0] = impl->armTarget[0];
+  out.hand[1] = impl->armTarget[1];
+  return true;
+  }
+
+bool XrWindow::headOrientation(Tempest::Vec4& out) const {
+  auto& s = *impl;
+  if(!s.armTracking || !s.armHeadValid)
+    return false;
+  out = Vec4(s.armHead.x, s.armHead.y, s.armHead.z, s.armHead.w);
+  return true;
+  }
+
 #else
 
 struct XrWindow::Impl {};
@@ -4214,5 +4315,8 @@ bool      XrWindow::isFocused() const { return false; }
 void      XrWindow::noteGameInput() {}
 void      XrWindow::setSceneShown(bool) {}
 bool      XrWindow::isVisible() const { return false; }
+bool      XrWindow::armTrackingActive() const { return false; }
+bool      XrWindow::handTargets(XrHandTargets&) const { return false; }
+bool      XrWindow::headOrientation(Tempest::Vec4&) const { return false; }
 
 #endif

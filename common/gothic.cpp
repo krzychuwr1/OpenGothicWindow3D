@@ -247,6 +247,7 @@ Gothic::Gothic(GameModDescriptor desc) {
   defaults->set("INTERNAL",     "xrWindowEdges", 2); // rounded, soft edge
   defaults->set("INTERNAL",     "xrRefreshRate", 1); // 72 Hz
   defaults->set("INTERNAL",     "xrHands",       0); // ghost hands off
+  defaults->set("INTERNAL",     "xrArmTracking", 1); // in VR mode the hero's arms follow tracked hands
 #endif
 
   defaults->set("VIDEO", "zVidBrightness", 0.5f);

@@ -75,6 +75,7 @@ class MdlVisual final {
     bool                           isUsingTorch() const;
 
     const Pose&                    pose() const { return *skInst; }
+    Pose&                          armPose() { return *skInst; } // Pose::setArmTargets
     bool                           updateAnimation(Npc* npc, Interactive* mobsi, World& world, uint64_t dt, bool force);
     void                           processLayers  (World& world);
     bool                           processEvents(World& world, uint64_t &barrier, Animation::EvCount &ev);
