@@ -441,7 +441,7 @@ struct XrWindow::Impl {
   bool                     vrRefValid = false;
   float                    vrRefYaw   = 0.f;    // head yaw (radians) when the view started
   V3                       vrRefPos;            // head position then, LOCAL space
-  V3                       vrBodyOffset;        // head motion since then: hero body frame (x right, y up, z forward), cm
+  V3                       vrEyeAnchor;         // VR eye minus the hero's head bone, game world axes, cm
   XrQuaternionf            vrBase     = {0,0,0,1}; // head yaw and pitch handed to the camera
   V3                       vrBasePos;           // head position handed to the camera
   XrTime                   vrLastTap = 0, vrToggleAfter = 0, vrGripSince = 0;
@@ -1523,10 +1523,10 @@ void XrWindow::Impl::createActions() {
   if(hasMicrogestures)
     make(aThumbTap, "thumb_tap",    "Thumb tap",        XR_ACTION_TYPE_BOOLEAN_INPUT,  true);
 
-  auto suggest = [&](const char* profile, std::initializer_list<std::pair<XrAction,const char*>> list) {
+  auto suggest = [&](const char* profile, std::initializer_list<std::pair<XrAction,const char*>> list) -> bool {
     const auto profilePath = path(profile);
     if(profilePath==XR_NULL_PATH)
-      return;
+      return false;
     std::vector<XrActionSuggestedBinding> b;
     for(auto [action,component]:list) {
       if(action==XR_NULL_HANDLE)
@@ -1538,17 +1538,18 @@ void XrWindow::Impl::createActions() {
         b.push_back({action,binding});
       }
     if(b.empty())
-      return;
+      return false;
     XrInteractionProfileSuggestedBinding s = {XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
     s.interactionProfile     = profilePath;
     s.countSuggestedBindings = uint32_t(b.size());
     s.suggestedBindings      = b.data();
     // A rejected profile leaves the others usable
     if(!ok(xrSuggestInteractionProfileBindings(instance, &s), profile))
-      return;
+      return false;
     if(!boundProfiles.empty())
       boundProfiles += ',';
     boundProfiles += std::string_view(profile).substr(std::strlen("/interaction_profiles/"));
+    return true;
     };
   suggest("/interaction_profiles/oculus/touch_controller", {
     {aAim,        "/user/hand/left/input/aim/pose"},
@@ -1570,17 +1571,24 @@ void XrWindow::Impl::createActions() {
     {aMenu,       "/user/hand/left/input/menu/click"},
     });
   if(hasHandInteraction) {
-    suggest("/interaction_profiles/ext/hand_interaction_ext", {
-      {aAim,  "/user/hand/left/input/aim/pose"},
-      {aAim,  "/user/hand/right/input/aim/pose"},
-      {aNear, "/user/hand/left/input/pinch_ext/pose"},
-      {aNear, "/user/hand/right/input/pinch_ext/pose"},
-      {aGrab, "/user/hand/left/input/pinch_ext/value"},
-      {aGrab, "/user/hand/right/input/pinch_ext/value"},
-      // Skipped (null action) unless XR_META_hand_tracking_microgestures is enabled
-      {aThumbTap, "/user/hand/left/input/tap_thumb_meta/click"},
-      {aThumbTap, "/user/hand/right/input/tap_thumb_meta/click"},
-      });
+    auto handProfile = [&](XrAction thumbTap) {
+      return suggest("/interaction_profiles/ext/hand_interaction_ext", {
+        {aAim,  "/user/hand/left/input/aim/pose"},
+        {aAim,  "/user/hand/right/input/aim/pose"},
+        {aNear, "/user/hand/left/input/pinch_ext/pose"},
+        {aNear, "/user/hand/right/input/pinch_ext/pose"},
+        {aGrab, "/user/hand/left/input/pinch_ext/value"},
+        {aGrab, "/user/hand/right/input/pinch_ext/value"},
+        // Skipped (null action) unless XR_META_hand_tracking_microgestures is enabled
+        {thumbTap, "/user/hand/left/input/tap_thumb_meta/click"},
+        {thumbTap, "/user/hand/right/input/tap_thumb_meta/click"},
+        });
+      };
+    // A runtime that rejects the microgesture paths must not cost the hands their pinch and aim
+    if(!handProfile(aThumbTap) && aThumbTap!=XR_NULL_HANDLE) {
+      Log::e("OpenXR: hand profile rejected with microgestures, retrying without the thumb tap");
+      handProfile(XR_NULL_HANDLE);
+      }
     }
   // Other runtimes (SteamVR, generic OpenXR); component paths per the OpenXR spec.
   // The simple profile only where hands have no profile of their own: a runtime could map them to it.
@@ -2423,16 +2431,18 @@ void XrWindow::Impl::updateInput() {
   stick(StickLeft, sticks[0],padState.lx,padState.ly,releasePad.lx,releasePad.ly);
   stick(StickRight,sticks[1],padState.rx,padState.ry,releasePad.rx,releasePad.ry);
 
-  // In pointer mode the triggers never reach the game (A still confirms in menus). Withheld like a
-  // lost action, a trigger still held when pointer mode ends must be released before it can attack.
-  auto trigger = [&](size_t id,const std::optional<float>& value,float& dst,float& old) {
-    if(admit(id,value.has_value() && !pointerMode,value.value_or(0.f)>0.35f,old>0.35f))
+  // In pointer mode a trigger aimed at (or dragging) a window control never reaches the game; aimed
+  // elsewhere it still confirms in menus, the only way to on a controller without an A button.
+  // Withheld like a lost action, a trigger still held when that ends must be released before it acts.
+  auto trigger = [&](size_t id,int hand,const std::optional<float>& value,float& dst,float& old) {
+    const bool onControl = pointerMode && (hands[size_t(hand)].hover!=Grip::None || grabbedBy==hand);
+    if(admit(id,value.has_value() && !onControl,value.value_or(0.f)>0.35f,old>0.35f))
       dst = *value;
     else
       old = 0.f;
     };
-  trigger(TriggerLeft, hands[0].trigger,padState.lt,releasePad.lt);
-  trigger(TriggerRight,hands[1].trigger,padState.rt,releasePad.rt);
+  trigger(TriggerLeft, 0,hands[0].trigger,padState.lt,releasePad.lt);
+  trigger(TriggerRight,1,hands[1].trigger,padState.rt,releasePad.rt);
   }
 
 V3 XrWindow::Impl::handleCenter() const {
@@ -4640,7 +4650,6 @@ bool XrWindow::updateVrView(bool allowed, float heroYaw, Tempest::Vec3& spin, Te
     d.x /= h;
     d.z /= h;
     }
-  s.vrBodyOffset = V3{d.x, d.y, -d.z}*100.f;
   // Game world for a body facing heroYaw: forward (cos, 0, sin), right (sin, 0, -cos), centimetres
   const float c = std::cos(heroYaw/deg), sn = std::sin(heroYaw/deg);
   offset = Tempest::Vec3(-d.z*c + d.x*sn, d.y, -d.z*sn - d.x*c)*100.f;
@@ -4700,11 +4709,15 @@ bool XrWindow::headOrientation(Tempest::Vec4& out) const {
   return true;
   }
 
-bool XrWindow::vrHeadOffset(Tempest::Vec3& out) const {
+void XrWindow::setVrEyeAnchor(const Tempest::Vec3& eyeFromHead) {
+  impl->vrEyeAnchor = V3{eyeFromHead.x, eyeFromHead.y, eyeFromHead.z};
+  }
+
+bool XrWindow::vrEyeAnchor(Tempest::Vec3& out) const {
   auto& s = *impl;
   if(!s.vrActive || !s.vrRefValid)
     return false;
-  out = Tempest::Vec3(s.vrBodyOffset.x, s.vrBodyOffset.y, s.vrBodyOffset.z);
+  out = Tempest::Vec3(s.vrEyeAnchor.x, s.vrEyeAnchor.y, s.vrEyeAnchor.z);
   return true;
   }
 
@@ -4760,6 +4773,7 @@ bool      XrWindow::isVisible() const { return false; }
 bool      XrWindow::armTrackingActive() const { return false; }
 bool      XrWindow::handTargets(XrHandTargets&) const { return false; }
 bool      XrWindow::headOrientation(Tempest::Vec4&) const { return false; }
-bool      XrWindow::vrHeadOffset(Tempest::Vec3&) const { return false; }
+void      XrWindow::setVrEyeAnchor(const Tempest::Vec3&) {}
+bool      XrWindow::vrEyeAnchor(Tempest::Vec3&) const { return false; }
 
 #endif

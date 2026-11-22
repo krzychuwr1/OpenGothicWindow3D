@@ -1128,6 +1128,11 @@ void Camera::debugDraw(DbgPainter& p) {
   }
 
 float Camera::azimuth() const {
+#if defined(OPENGOTHIC_XR)
+  // In VR the head turns the camera, not the game: no lag behind the hero to lean the run into
+  if(vrPose)
+    return 0.f;
+#endif
   return angleMod(state.spin.y-angles.y);
   }
 

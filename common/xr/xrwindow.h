@@ -140,9 +140,10 @@ class XrWindow final {
     // Head (VIEW space) orientation relative to the room (LOCAL space), quaternion x,y,z,w;
     // located with the hands, so only while arm tracking is active
     bool              headOrientation(Tempest::Vec4& out) const;
-    // VR view: the wearer's head motion since the view started, in the hero's body frame
-    // (x right, y up, z forward, centimetres); false when the VR view is not shown
-    bool              vrHeadOffset(Tempest::Vec3& out) const;
+    // VR view: where the eyes are relative to the hero's head bone (game world axes, centimetres),
+    // set by the VR camera each frame; vrEyeAnchor() is false when the VR view is not shown
+    void              setVrEyeAnchor(const Tempest::Vec3& eyeFromHead);
+    bool              vrEyeAnchor(Tempest::Vec3& out) const;
 
   private:
     XrWindow();

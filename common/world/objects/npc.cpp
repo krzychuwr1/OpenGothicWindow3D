@@ -4826,11 +4826,11 @@ void Npc::updateArmTracking(uint64_t dt) {
   XrHandTargets hands;
   Vec4          head;
   Vec3          eyes;
-  if(free && xr->handTargets(hands) && xr->headOrientation(head) && xr->vrHeadOffset(eyes)) {
+  if(free && xr->handTargets(hands) && xr->headOrientation(head) && xr->vrEyeAnchor(eyes)) {
     // Head-relative hands turned into the frame the VR view started in, whose forward the hero's
-    // yaw stands for. The VR camera sits 12 cm ahead of and 6 cm above the head bone (see
-    // MainWindow::tickXrVrCamera) and follows the wearer's head motion: anchor the hands there too.
-    eyes += Vec3(0.f,6.f,12.f);
+    // yaw stands for, and anchored where the VR camera puts the eyes (MainWindow::tickXrVrCamera)
+    const float a = rotationRad();
+    eyes = Vec3(eyes.x*std::sin(a) - eyes.z*std::cos(a), eyes.y, eyes.x*std::cos(a) + eyes.z*std::sin(a));
     auto room = [&](const Vec3& v) { return rotateByQuat(head,v); };
     // OpenXR (+X right, +Y up, -Z forward, metres) -> Pose body frame (x right, y up, z forward, centimetres)
     auto body = [](const Vec3& v, float scale) { return Vec3(v.x*scale, v.y*scale, -v.z*scale); };

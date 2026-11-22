@@ -1188,10 +1188,14 @@ void MainWindow::tickXrVrCamera(Camera& camera, uint64_t dt) {
   const float k = xrVrHeadValid ? 1.f-std::exp(-float(dt)/300.f) : 1.f;
   xrVrHead      = xrVrHead + (head-xrVrHead)*k;
   xrVrHeadValid = true;
-  // The eyes a little ahead of and above the head bone, outside the face (its back faces are culled)
-  const float a = pl->rotationRad();
+  // The eyes a little ahead of and above the head bone, outside the face (its back faces are
+  // culled). Ahead along where the wearer looks, so looking over a shoulder does not see the face.
+  const float a = spin.y*float(M_PI)/180.f;
   const Vec3  forward(std::cos(a), 0.f, std::sin(a));
-  camera.setVrPose(true, root + xrVrHead + forward*12.f + Vec3(0.f,6.f,0.f) + offset, spin);
+  const Vec3  eye = root + xrVrHead + forward*12.f + Vec3(0.f,6.f,0.f) + offset;
+  camera.setVrPose(true, eye, spin);
+  // Arm tracking anchors the hands at the eyes, measured from the (unsmoothed) head bone
+  xr->setVrEyeAnchor(eye-(root+head));
 #else
   (void)camera;
   (void)dt;
