@@ -38,6 +38,12 @@
         <meta-data android:name="com.oculus.supportedDevices" android:value="quest2|questpro|quest3|quest3s" />
         <meta-data android:name="com.oculus.handtracking.version" android:value="V2.0" />
         <meta-data android:name="com.oculus.handtracking.frequency" android:value="HIGH" />
+        <!-- System splash: assets/vr_splash.png, shown before the first frame. Over passthrough when the
+             user is in passthrough at home (the app starts with its passthrough layer running, so
+             the room stays put from launch into the window); otherwise over black. -->
+        <meta-data android:name="com.oculus.ossplash" android:value="true" />
+        <meta-data android:name="com.oculus.ossplash.type" android:value="mono" />
+        <meta-data android:name="com.oculus.ossplash.background" android:value="passthrough-contextual" />
         <activity android:name="android.app.NativeActivity"
             android:exported="true"
             android:launchMode="singleTask"

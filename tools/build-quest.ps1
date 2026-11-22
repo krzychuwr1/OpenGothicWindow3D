@@ -77,7 +77,8 @@ if ($Variant -eq 'pl') {
 Set-Content -Path $manifest -Value $manifestText -NoNewline -Encoding utf8
 
 $unsigned = "$stage\unsigned.apk"
-& "$buildTools\aapt2.exe" link -o $unsigned --manifest $manifest -I "$platform\android.jar"
+# assets/vr_splash.png: the system splash (com.oculus.ossplash in the manifest)
+& "$buildTools\aapt2.exe" link -o $unsigned --manifest $manifest -I "$platform\android.jar" -A "$root\android\quest\assets"
 if ($LASTEXITCODE) { throw 'aapt2 link failed' }
 python "$root\android\quest\add-libs.py" $unsigned "$stage\libGothic2Notr.so" "$stage\libopenxr_loader.so"
 if ($LASTEXITCODE) { throw 'Adding native libraries failed' }
