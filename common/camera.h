@@ -131,14 +131,22 @@ class Camera final {
 #if defined(OPENGOTHIC_XR)
     bool               takeCameraCut();
     // VR mode: while active the camera sits at `pos` and looks along `spin` (pitch, yaw), whatever
-    // the game camera would do; stepping out returns to the game camera at once
-    void               setVrPose(bool active, const Tempest::Vec3& pos, const Tempest::Vec3& spin);
+    // the game camera would do; stepping out returns to the game camera at once.
+    // blend < 1: the passage between window and VR, the camera that far (0..1) on its way from
+    // the game camera to the VR pose; the game camera keeps moving underneath (restored by tick())
+    void               setVrPose(bool active, const Tempest::Vec3& pos, const Tempest::Vec3& spin, float blend = 1.f);
 #endif
 
   private:
 #if defined(OPENGOTHIC_XR)
     bool               cameraCut = true;
     bool               vrPose = false;
+    struct {
+      bool             applied = false;
+      Tempest::Vec3    origin, angles;          // the game camera's own
+      Tempest::Vec3    shownOrigin, shownAngles; // what the blend showed
+      } vrBlend;
+    void               restoreVrBlend();
     bool               dialogSpeaker = false, appliedSpeaker = false;
 #endif
     mutable Tempest::Vec3 shadowLight = {0,1,0};

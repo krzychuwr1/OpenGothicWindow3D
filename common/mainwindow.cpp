@@ -1176,7 +1176,7 @@ void MainWindow::tickXrVrCamera(Camera& camera, uint64_t dt) {
                        Gothic::inst().checkLoading()==Gothic::LoadState::Idle &&
                        mode!=Camera::Dialog && mode!=Camera::Inventory && mode!=Camera::Mobsi && mode!=Camera::Death;
   Vec3 spin, offset;
-  if(!xr->updateVrView(allowed, pl!=nullptr ? pl->rotation() : 0.f, spin, offset)) {
+  if(!xr->updateVrView(allowed, pl!=nullptr ? pl->rotation() : 0.f, spin, offset) || pl==nullptr) {
     xrVrHeadValid = false;
     camera.setVrPose(false, Vec3(), Vec3());
     return;
@@ -1193,7 +1193,8 @@ void MainWindow::tickXrVrCamera(Camera& camera, uint64_t dt) {
   const float a = spin.y*float(M_PI)/180.f;
   const Vec3  forward(std::cos(a), 0.f, std::sin(a));
   const Vec3  eye = root + xrVrHead + forward*12.f + Vec3(0.f,6.f,0.f) + offset;
-  camera.setVrPose(true, eye, spin);
+  // Below 1 the passage between window and VR is under way: the camera glides to the eyes or back
+  camera.setVrPose(true, eye, spin, xr->vrTransition());
   // Arm tracking anchors the hands at the eyes, measured from the (unsmoothed) head bone
   xr->setVrEyeAnchor(eye-(root+head));
 #else
