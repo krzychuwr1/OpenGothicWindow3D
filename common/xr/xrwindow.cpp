@@ -352,7 +352,7 @@ struct XrWindow::Impl {
   std::array<Tempest::StorageBuffer,8> handsBuffer;
   Tempest::RenderPipeline  handsPipeline, handsFill;
   bool                     handsButtonReady = false;
-  int                      handsMode = 0;
+  int                      handsMode = 1;   // 0 off, 1 auto (raised and idle), 2 always
   float                    handsAlpha[2] = {};
   // Hero arm tracking: hand joints located against the head every frame while enabled
   bool                     armTracking = false;
