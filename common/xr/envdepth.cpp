@@ -120,8 +120,8 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
   const float maxHeight = std::min(-0.005f, view.pose.position.y-foot.y-0.025f);
   if(maxHeight< -2.3f)
     return {};
-  const float halfW = std::clamp(0.46f*size.width,0.22f,1.2f);
   const float reach = std::clamp(0.35f+0.28f*size.width,0.55f,1.35f);
+  const float halfW = std::clamp(0.5f*size.width+0.45f*reach,0.35f,1.8f);
   std::vector<Sample> cloud;
   cloud.reserve(gridW*gridH);
   std::vector<Point> wide; // horizontal surfaces under and near the window
@@ -264,11 +264,12 @@ std::optional<EnvironmentDepth::Surface> fitSurface(const float* samples, uint32
       // footprint to the surface's distance below the window, not to a fixed reach
       const float h = std::max(0.f,-c)+0.25f*size.height;
       const float depthM = std::clamp(2.5f*h,0.4f,2.5f);
+      const float coneHalfW = std::clamp(0.5f*size.width+0.45f*depthM,halfW,2.2f);
       out.pose.position = foot+front*(depthM*0.5f)+up*(c+0.004f);
       out.uvOffset = {0.f,0.f};
       out.uvScale  = {1.f,1.f};
-      out.size     = {2.f*halfW,depthM};
-      out.fullSize = {2.f*halfW,depthM};
+      out.size     = {2.f*coneHalfW,depthM};
+      out.fullSize = {2.f*coneHalfW,depthM};
       out.drop     = std::max(0.f,-c);
       return out;
       }

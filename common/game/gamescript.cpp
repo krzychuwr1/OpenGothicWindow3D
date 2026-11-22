@@ -975,12 +975,83 @@ void GameScript::exec(const GameScript::DlgChoice &dlg, Npc& player, Npc& npc) {
   vm.call_function(vm.find_symbol_by_index(dlg.scriptFn));
   }
 
-bool GameScript::devChangeChapter(int32_t chapter) {
+bool GameScript::devFinishIntro(Npc& hero) {
+  auto clearInvincible = [&](Npc& npc) {
+    if(auto* sym = vm.find_symbol_by_name("AIV_INVINCIBLE")) {
+      const int32_t idx = sym->get_int();
+      if(idx>=0 && idx<100)
+        npc.handle().aivar[idx] = 0;
+      }
+    };
+
+  auto* w = owner.world();
+  if(w==nullptr)
+    return false;
+
+  auto* heroSym = vm.find_symbol_by_instance(hero.handle());
+  Npc*  xardas  = nullptr;
+  const size_t xardasId = findSymbolIndex("NONE_100_XARDAS");
+  if(xardasId!=size_t(-1))
+    xardas = w->findNpcByInstance(xardasId);
+
+  if(xardas!=nullptr) {
+    ScopeVar self (*vm.global_self(),  xardas->handlePtr());
+    ScopeVar other(*vm.global_other(), hero.handlePtr());
+    static const char* infos[] = {
+      "DIA_Xardas_Hello",
+      "DIA_Xardas_ToDo",
+      "DIA_Xardas_FirstPal",
+      "DIA_Xardas_FirstEXIT"
+      };
+    for(const char* name : infos) {
+      if(heroSym!=nullptr) {
+        if(auto* infoSym = vm.find_symbol_by_name(name))
+          dlgKnownInfos.insert(std::make_pair(heroSym->index(), infoSym->index()));
+        }
+      std::string fnName = std::string(name) + "_Info";
+      if(auto* fn = vm.find_symbol_by_name(fnName))
+        vm.call_function<void>(fn);
+      }
+    xardas->clearAiQueue();
+    xardas->setAiOutputBarrier(0, false);
+    xardas->stopDlgAnim();
+    xardas->clearState(false);
+    clearInvincible(*xardas);
+    }
+
+  hero.clearAiQueue();
+  hero.setAiOutputBarrier(0, false);
+  hero.stopDlgAnim();
+  hero.clearState(false);
+  clearInvincible(hero);
+
+  w->detectNpcNear([&](Npc& npc) {
+    if(npc.isTalk()) {
+      npc.clearAiQueue();
+      npc.setAiOutputBarrier(0, false);
+      npc.stopDlgAnim();
+      npc.clearState(false);
+      }
+    clearInvincible(npc);
+    });
+  return true;
+  }
+
+bool GameScript::devChangeChapter(Npc& hero, int32_t chapter) {
   auto fn    = vm.find_symbol_by_name("B_Kapitelwechsel");
   auto world = vm.find_symbol_by_name("NEWWORLD_ZEN");
   if(fn==nullptr || world==nullptr)
     return false;
-  vm.call_function<void>(fn, chapter, world->get_int());
+  ScopeVar self (*vm.global_self(),  hero.handlePtr());
+  ScopeVar other(*vm.global_other(), hero.handlePtr());
+  auto kap = vm.find_symbol_by_name("KAPITEL");
+  const int32_t cur = kap!=nullptr ? kap->get_int() : 1;
+  if(chapter<=cur) {
+    vm.call_function<void>(fn, chapter, world->get_int());
+    return true;
+    }
+  for(int32_t c = std::max<int32_t>(2, cur+1); c<=chapter; ++c)
+    vm.call_function<void>(fn, c, world->get_int());
   return true;
   }
 

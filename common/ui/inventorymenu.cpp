@@ -456,6 +456,19 @@ InventoryMenu::PageLocal &InventoryMenu::activePageSel() {
     return (page==0 ? pageLocal[0] : pageLocal[1]);
   return pageLocal[1];
   }
+
+const Item* InventoryMenu::selectedItem() const {
+  if(state==State::Closed || state==State::LockPicking)
+    return nullptr;
+  const Page* pg = pageOth!=nullptr ? (page==0 ? pageOth.get() : pagePl.get()) : pagePl.get();
+  if(pg==nullptr)
+    return nullptr;
+  const auto& sel = pageOth!=nullptr ? (page==0 ? pageLocal[0] : pageLocal[1]) : pageLocal[1];
+  auto it = pg->get(sel.sel);
+  if(!it.isValid())
+    return nullptr;
+  return &(*it);
+  }
   
 void InventoryMenu::onItemAction(uint8_t slotHint, Event::KeyType key) {
   auto& page = activePage();

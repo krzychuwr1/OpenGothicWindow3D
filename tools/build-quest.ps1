@@ -18,6 +18,8 @@ param(
   [string]$Glslang       = '',
   [ValidateSet('Release','RelWithDebInfo','Debug')]
   [string]$BuildType     = 'Release',
+  [ValidateSet('en','pl')]
+  [string]$Variant       = 'en',
   [switch]$Install,
   [string]$GameDir       = '',
   [switch]$Launch
@@ -25,7 +27,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $root    = (Resolve-Path "$PSScriptRoot\..").Path
 $build   = Join-Path $root 'build\quest'
-$package = 'org.opengothic.window3d'
+$package = if ($Variant -eq 'pl') { 'org.opengothic.window3d.pl' } else { 'org.opengothic.window3d' }
+$appLabel = if ($Variant -eq 'pl') { 'OpenGothic Window3D PL' } else { 'OpenGothic Window3D' }
+$apkName  = if ($Variant -eq 'pl') { 'OpenGothicWindow3D-PL.apk' } else { 'OpenGothicWindow3D.apk' }
 
 if (-not $Ndk) {
   $Ndk = Get-ChildItem (Join-Path $AndroidSdk 'ndk') -Directory | Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
@@ -63,15 +67,23 @@ $strip = Join-Path $Ndk 'toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-strip.
 & $strip --strip-unneeded -o "$stage\libGothic2Notr.so" "$build\opengothic\libGothic2Notr.so"
 Copy-Item "$root\toolchain\openxr-aar\jni\arm64-v8a\libopenxr_loader.so" $stage
 
+$manifest = "$stage\AndroidManifest.xml"
+$manifestText = Get-Content "$root\android\quest\AndroidManifest.xml" -Raw
+if ($Variant -eq 'pl') {
+  $manifestText = $manifestText -replace 'package="org\.opengothic\.window3d"', "package=`"$package`""
+  $manifestText = $manifestText -replace 'android:label="OpenGothic Window3D"', "android:label=`"$appLabel`""
+}
+Set-Content -Path $manifest -Value $manifestText -NoNewline -Encoding utf8
+
 $unsigned = "$stage\unsigned.apk"
-& "$buildTools\aapt2.exe" link -o $unsigned --manifest "$root\android\quest\AndroidManifest.xml" -I "$platform\android.jar"
+& "$buildTools\aapt2.exe" link -o $unsigned --manifest $manifest -I "$platform\android.jar"
 if ($LASTEXITCODE) { throw 'aapt2 link failed' }
 python "$root\android\quest\add-libs.py" $unsigned "$stage\libGothic2Notr.so" "$stage\libopenxr_loader.so"
 if ($LASTEXITCODE) { throw 'Adding native libraries failed' }
 & "$buildTools\zipalign.exe" -f -P 16 4 $unsigned "$stage\aligned.apk"
 if ($LASTEXITCODE) { throw 'zipalign failed' }
 
-$apk = Join-Path $build 'OpenGothicWindow3D.apk'
+$apk = Join-Path $build $apkName
 $keystore = "$env:USERPROFILE\.android\debug.keystore"
 if (-not (Test-Path $keystore)) { throw "Debug keystore not found: $keystore (create one with Android Studio or keytool)" }
 & "$buildTools\apksigner.bat" sign --ks $keystore --ks-pass pass:android --key-pass pass:android --out $apk "$stage\aligned.apk"

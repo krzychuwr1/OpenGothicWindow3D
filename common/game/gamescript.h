@@ -48,7 +48,8 @@ class GameScript final {
     ~GameScript();
 
     // Development (test saves): the game's own chapter change and fight training
-    bool         devChangeChapter(int32_t chapter);
+    bool         devFinishIntro(Npc& hero);
+    bool         devChangeChapter(Npc& hero, int32_t chapter);
     bool         devRaiseFightTalent(Npc& hero, int32_t talent, int32_t percent);
 
     struct DlgChoice final {

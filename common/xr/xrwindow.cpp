@@ -11,6 +11,9 @@
 #include "spatialpermission.h"
 #include "shader.h"
 #include "graphics/renderer.h"
+#include "graphics/inventoryrenderer.h"
+#include "graphics/mesh/protomesh.h"
+#include "world/objects/item.h"
 
 #include <Tempest/VulkanInterop>
 #include <Tempest/StorageBuffer>
@@ -122,7 +125,7 @@ static std::array<float,4> windowFovMargins(const XrView& view, const XrPosef& w
   }
 
 // Parts of the window frame a hand can grab
-enum class Grip : uint8_t { None, Handle, CornerLeft, CornerRight, Environment, Dim, Aspect, Curve, Hands };
+enum class Grip : uint8_t { None, Handle, CornerLeft, CornerRight, Environment, Dim, Aspect, Curve, Hands, Edges, Inventory3D, SurfaceLight, ItemHandle };
 
 struct Hand {
   XrPath         path        = XR_NULL_PATH;
@@ -249,17 +252,44 @@ struct XrWindow::Impl {
   bool createSpaceWarpSwapchains();
   void destroySpaceWarpSwapchains();
   bool releaseSpaceWarp();
-  // Window frame parts: grab handle (idle/hover/held) and resize corners (left/right, hover/held)
+  // Window frame parts: grab handle (idle/hover/held), resize corners, and a single
+  // consolidated chrome panel (4 buttons + dimming slider) redrawn only when dirty.
   XrSwapchain              handleSwapchain = XR_NULL_HANDLE;
   XrSwapchain              cornerSwapchain = XR_NULL_HANDLE;
   XrSwapchain              panorama = XR_NULL_HANDLE;
-  XrSwapchain              environmentButton = XR_NULL_HANDLE;
-  XrSwapchain              aspectButton = XR_NULL_HANDLE; // aspect lock: open/closed padlock, idle or hovered
+  XrSwapchain              chromeSwapchain = XR_NULL_HANDLE;
+  bool                     chromeReady = false;
   bool                     aspectReady = false, aspectLocked = false;
-  XrSwapchain              curveButton = XR_NULL_HANDLE; // curved window: flat or curved, idle or hovered
   bool                     curveReady = false, curved = false;
   int                      curveLevel = 0;               // 0 flat, 1 slight, 2 strong
   bool                     sceneShown = false;
+  static constexpr uint32_t ChromeW = 800, ChromeH = 135;
+  static constexpr float    ChromePhysW = 0.80f, ChromePhysH = 0.135f;
+  struct ChromeState {
+    bool showEnv          = false;
+    bool immersive        = false;
+    bool aspectLocked     = false;
+    bool showSlider       = false;
+    bool inventory3D      = false;
+    bool showSurfaceLight = false;
+    bool surfaceLightOn   = false;
+    int  handsMode        = 0;
+    int  curveLevel       = 0;
+    int  edgeStyle        = 0;
+    int  dimStep          = -1;
+    Grip hover            = Grip::None;
+    bool operator==(const ChromeState& o) const {
+      return showEnv==o.showEnv && immersive==o.immersive && aspectLocked==o.aspectLocked &&
+             showSlider==o.showSlider && inventory3D==o.inventory3D &&
+             showSurfaceLight==o.showSurfaceLight && surfaceLightOn==o.surfaceLightOn &&
+             handsMode==o.handsMode && curveLevel==o.curveLevel && edgeStyle==o.edgeStyle &&
+             dimStep==o.dimStep && hover==o.hover;
+      }
+    };
+  ChromeState              lastChromeState;
+  bool                     chromeUploaded = false;
+  bool                     inventory3DEnabled = false;
+  bool                     surfaceLightEnabled = false;
   // The buttons below the handle appear when the handle (or one of them) is pointed at, and
   // fade out five seconds after the last time anything there was pointed at
   bool                     hasColorScale = false;
@@ -274,6 +304,26 @@ struct XrWindow::Impl {
     return std::clamp(float(ChromeLinger-age)/float(ChromeFade), 0.f, 1.f);
     }
   bool chromeShown() const { return chromeReveal()>0.f; }
+  // 3D inventory item preview rendered outside the window with its own grabbable handle
+  XrSwapchain              itemSwapchain[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+  std::vector<Tempest::Attachment> itemTargets[2];
+  Tempest::ZBuffer         itemDepth;
+  int32_t                  itemAcquired[2] = {-1,-1};
+  bool                     itemDrawn[2] = {};
+  static constexpr uint32_t ItemPreviewSize = 1024;
+  Tempest::RenderPipeline  itemPipeline;
+  bool                     itemPreviewActive = false;
+  bool                     itemOffsetLoaded = false;
+  V3                       itemOffset = {0.f, -0.15f, 0.45f}; // window-local offset from window center
+  V3                       grabItemOffset;
+  std::string              cachedItemVisual;
+  const ProtoMesh*         cachedItemMesh = nullptr;
+  Tempest::Vec3            cachedItemMid;
+  float                    cachedItemScale = 0.002f;
+  V3   itemCenter() const { return itemOffset; }
+  V3   itemHandleCenter() const { return itemCenter() + V3{0.f, -0.15f, 0.f}; }
+  void loadItemOffset();
+  void saveItemOffset();
   // Ghost hands and pointer rays
   bool                     hasHandTracking = false;
   PFN_xrCreateHandTrackerEXT  xrCreateHandTracker = nullptr;
@@ -291,17 +341,14 @@ struct XrWindow::Impl {
   std::vector<Capsule>     handCapsules;
   std::array<Tempest::StorageBuffer,8> handsBuffer;
   Tempest::RenderPipeline  handsPipeline, handsFill;
-  XrSwapchain              handsButton = XR_NULL_HANDLE;  // off / auto / always, idle or hovered
   bool                     handsButtonReady = false;
   int                      handsMode = 0;
   float                    handsAlpha[2] = {};
-  void fillHands(VkCommandBuffer cmd, VkFence fence);
   std::atomic<int64_t>     lastGameInput{0};             // steady clock, nanoseconds
   float                    curveRadius = 0.f;            // metres: the arc's radius, centred near the viewer
   uint8_t                  recordingEye = 0;
   std::array<std::array<float,4>,2> eyeRect = {};        // per eye: left, right, bottom, top on the window plane
   Tempest::RenderPipeline  curveCoverage, curveMotion;
-  XrSwapchain              dimSlider = XR_NULL_HANDLE;
   static constexpr int     RailW = 160, KnobW = 24, SliderRows = 16;
   // Window controls scale with the window (1 at the default size), not below half size
   static constexpr float   DefaultWindowHeight = 0.9f;
@@ -391,16 +438,19 @@ struct XrWindow::Impl {
   bool applyDim(float level);
   void saveDim();
   int sliderRow() const;
-  void fillSlider(VkCommandBuffer cmd, VkFence fence);
+  void updateChromePanel(bool showEnv, bool showSlider, bool showSurfaceLight, Grip hover);
   V3   buttonCenter() const { return handleCenter() + V3{0,-0.10f*chromeScale(),0}; }
-  // The row below the handle, centred: hands, curve, aspect lock, VR/passthrough; the
-  // dimming slider below the row
-  V3   environmentCenter() const { return buttonCenter() + V3{ 0.18f*chromeScale(),0,0}; }
-  V3   aspectCenter() const { return buttonCenter() + V3{ 0.06f*chromeScale(),0,0}; }
-  V3   sliderCenter() const { return buttonCenter() + V3{0,-0.07f*chromeScale(),0}; }
-  V3   curveCenter() const { return buttonCenter() + V3{-0.06f*chromeScale(),0,0}; }
-  V3   handsCenter() const { return buttonCenter() + V3{-0.18f*chromeScale(),0,0}; }
-  void fillCurve(VkCommandBuffer cmd, VkFence fence);
+  V3   chromeCenter() const { return buttonCenter() + V3{0,-0.0325f*chromeScale(),0}; }
+  // The row below the handle, centred: hands, curve, edges, aspect lock, 3D inventory, surface light, VR/passthrough;
+  // the dimming slider sits below the row
+  V3   handsCenter() const        { return buttonCenter() + V3{-0.33f*chromeScale(),0,0}; }
+  V3   curveCenter() const        { return buttonCenter() + V3{-0.22f*chromeScale(),0,0}; }
+  V3   edgesCenter() const        { return buttonCenter() + V3{-0.11f*chromeScale(),0,0}; }
+  V3   aspectCenter() const       { return buttonCenter() + V3{ 0.00f*chromeScale(),0,0}; }
+  V3   inventory3DCenter() const  { return buttonCenter() + V3{ 0.11f*chromeScale(),0,0}; }
+  V3   surfaceLightCenter() const { return buttonCenter() + V3{ 0.22f*chromeScale(),0,0}; }
+  V3   environmentCenter() const  { return buttonCenter() + V3{ 0.33f*chromeScale(),0,0}; }
+  V3   sliderCenter() const       { return buttonCenter() + V3{0,-0.07f*chromeScale(),0}; }
   bool isCurved() const { return curved && curveRadius>0.f && sceneShown; }
   // The arc is centred on the viewer at the moment the window is placed or curved
   // Slight: the arc centred on the viewer. Strong: a tighter arc (the viewer stays inside it).
@@ -434,7 +484,6 @@ struct XrWindow::Impl {
     const float R = effectiveCurveRadius(), a = u.x/R, r = R-u.z;
     return V3{r*std::sin(a), u.y, R-r*std::cos(a)};
     }
-  void fillAspect(VkCommandBuffer cmd, VkFence fence);
   Grip targetAt(float x, float y) const;
   V3   handleCenter() const;
   bool releaseEyes();
@@ -485,28 +534,27 @@ XrWindow::Impl::~Impl() {
       b = Tempest::StorageBuffer();
     handsPipeline = Tempest::RenderPipeline();
     handsFill     = Tempest::RenderPipeline();
+    itemPipeline  = Tempest::RenderPipeline();
+    itemDepth     = Tempest::ZBuffer();
+    for(auto& t:itemTargets)
+      t.clear();
     }
   for(auto& t:handTracker)
     if(t!=XR_NULL_HANDLE && xrDestroyHandTracker)
       xrDestroyHandTracker(t);
+  for(auto& sc:itemSwapchain)
+    if(sc!=XR_NULL_HANDLE)
+      xrDestroySwapchain(sc);
   for(auto& sc:handsSwapchain)
     if(sc!=XR_NULL_HANDLE)
       xrDestroySwapchain(sc);
-  if(handsButton!=XR_NULL_HANDLE)
-    xrDestroySwapchain(handsButton);
   environmentDepth.reset();
   surfaceLight.reset();
   destroyPassthrough();
   if(panorama!=XR_NULL_HANDLE)
     xrDestroySwapchain(panorama);
-  if(dimSlider!=XR_NULL_HANDLE)
-    xrDestroySwapchain(dimSlider);
-  if(environmentButton!=XR_NULL_HANDLE)
-    xrDestroySwapchain(environmentButton);
-  if(aspectButton!=XR_NULL_HANDLE)
-    xrDestroySwapchain(aspectButton);
-  if(curveButton!=XR_NULL_HANDLE)
-    xrDestroySwapchain(curveButton);
+  if(chromeSwapchain!=XR_NULL_HANDLE)
+    xrDestroySwapchain(chromeSwapchain);
   if(handleSwapchain!=XR_NULL_HANDLE)
     xrDestroySwapchain(handleSwapchain);
   if(cornerSwapchain!=XR_NULL_HANDLE)
@@ -946,6 +994,26 @@ void XrWindow::Impl::createSwapchains() {
       for(auto& im:swapchainImages(handsSwapchain[eye]))
         handsTargets[eye].push_back(vulkanBorrowColorAttachment(*device,im.image,HandsSize,HandsSize));
       }
+    hi.width  = ItemPreviewSize;
+    hi.height = ItemPreviewSize;
+    for(int eye=0; eye<2; ++eye) {
+      itemSwapchain[eye] = makeSwapchain(session,hi,"inventory item preview swapchain");
+      if(itemSwapchain[eye]==XR_NULL_HANDLE)
+        break;
+      for(auto& im:swapchainImages(itemSwapchain[eye]))
+        itemTargets[eye].push_back(vulkanBorrowColorAttachment(*device,im.image,ItemPreviewSize,ItemPreviewSize));
+      }
+  }
+
+  // Single dynamic swapchain for the consolidated chrome toolbar (4 buttons + dimming slider)
+  {
+    XrSwapchainCreateInfo ci = info;
+    ci.createFlags = 0;
+    ci.usageFlags  = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+    ci.width       = ChromeW;
+    ci.height      = ChromeH;
+    ci.arraySize   = 1;
+    chromeSwapchain = makeSwapchain(session, ci, "chrome panel swapchain");
   }
 
   info.createFlags = XR_SWAPCHAIN_CREATE_STATIC_IMAGE_BIT;
@@ -958,14 +1026,6 @@ void XrWindow::Impl::createSwapchains() {
   info.height      = CornerSize;
   info.arraySize   = 4;
   cornerSwapchain = makeSwapchain(session, info, "corner swapchain");
-  info.width       = ButtonW;
-  info.height      = ButtonH;
-  info.arraySize   = 4;
-  aspectButton = makeSwapchain(session, info, "aspect lock swapchain");
-  info.arraySize   = 6; // flat, slight, strong: idle or hovered
-  curveButton  = makeSwapchain(session, info, "curve button swapchain");
-  handsButton  = makeSwapchain(session, info, "hands button swapchain"); // off, auto, always
-  info.arraySize   = 4;
 
   if(hasPanorama) {
     info.width = SkyW;
@@ -983,16 +1043,6 @@ void XrWindow::Impl::createSwapchains() {
           sampler.wrapModeT = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
           ok(xrUpdateSwapchain(panorama, state), "set sky sampler");
           }
-        }
-      info.width = ButtonW;
-      info.height = ButtonH;
-      info.arraySize = 4; // room / sky icons, each idle or hovered
-      environmentButton = makeSwapchain(session, info, "environment button swapchain");
-      if(environmentButton && xrSetPassthroughStyle) {
-        info.width = RailW+KnobW;
-        info.height = KnobW*SliderRows;
-        info.arraySize = 1;
-        dimSlider = makeSwapchain(session, info, "dimming slider swapchain");
         }
       }
     }
@@ -1839,6 +1889,16 @@ void XrWindow::Impl::updateInput() {
 
     // Direct touch first: the pinch point (or controller grip) close to a frame part
     if(h.nearValid) {
+      if(itemPreviewActive && handleReady) {
+        const V3 nl  = toLocal(windowPose, toV3(h.nearPose.position));
+        const V3 ihc = itemHandleCenter();
+        if(std::abs(nl.x-ihc.x)<0.09f && std::abs(nl.y-ihc.y)<0.045f && std::abs(nl.z-ihc.z)<0.07f) {
+          h.hover     = Grip::ItemHandle;
+          h.hoverNear = true;
+          h.hit       = toV3(h.nearPose.position);
+          continue;
+          }
+        }
       const V3 n = unroll(toLocal(windowPose, toV3(h.nearPose.position)));
       if(std::abs(n.z)<0.08f) {
         const Grip g = targetAt(n.x, n.y);
@@ -1850,9 +1910,25 @@ void XrWindow::Impl::updateInput() {
           }
         }
       }
-    // Then pointing: the aim ray against the window plane
+    // Then pointing: the aim ray against the 3D item handle (in front) or the window plane
     if(!h.aimValid)
       continue;
+    if(itemPreviewActive && handleReady) {
+      const V3 ihc = itemHandleCenter();
+      const V3 o = toLocal(windowPose, toV3(h.aim.position));
+      const V3 d = rotate(conjugate(windowPose.orientation), rotate(h.aim.orientation, V3{0,0,-1}));
+      if(std::abs(d.z)>1e-5f) {
+        const float t = (ihc.z - o.z)/d.z;
+        if(t>0.02f && t<10.f) {
+          const V3 l = o + d*t;
+          if(std::abs(l.x-ihc.x)<0.09f && std::abs(l.y-ihc.y)<0.045f) {
+            h.hover = Grip::ItemHandle;
+            h.hit   = toWorld(windowPose, l);
+            continue;
+            }
+          }
+        }
+      }
     const auto p = rayHit(h.aim);
     if(!p)
       continue;
@@ -1899,6 +1975,8 @@ void XrWindow::Impl::updateInput() {
          ((grabbed==Grip::Environment || grabbed==Grip::Dim) && !roomAvailable()) ||
          (grabbed==Grip::Dim && !(immersive ? hasColorScale : dimStyleAvailable))) {
         saveDim();
+        if(grabbed==Grip::ItemHandle)
+          saveItemOffset();
         if(grabbed==Grip::Handle && curved) {
           updateCurveRadius();
           skipExtrapolation = true;
@@ -1918,7 +1996,7 @@ void XrWindow::Impl::updateInput() {
         continue;
         }
       if(!canManipulate || grabbed==Grip::Environment || grabbed==Grip::Aspect || grabbed==Grip::Curve ||
-         grabbed==Grip::Hands) {
+         grabbed==Grip::Hands || grabbed==Grip::Edges || grabbed==Grip::Inventory3D || grabbed==Grip::SurfaceLight) {
         lastGrabTime = frame.predictedDisplayTime;
         continue;
         }
@@ -1944,6 +2022,11 @@ void XrWindow::Impl::updateInput() {
         center = point - rotate(windowPose.orientation, grabWindow);
         windowPose.position = toXr(center);
         skipExtrapolation = true;
+        } else if(grabbed==Grip::ItemHandle) {
+        const V3 delta = toLocal(windowPose, point) - grabWindow;
+        itemOffset = V3{std::clamp(grabItemOffset.x + delta.x, -1.5f, 1.5f),
+                        std::clamp(grabItemOffset.y + delta.y, -1.0f, 1.2f),
+                        std::clamp(grabItemOffset.z + delta.z,  0.12f, 1.5f)};
         } else {
         // A corner follows the hand across the window plane; the centre stays put
         const V3    l  = unroll(toLocal(windowPose, point));
@@ -1992,12 +2075,27 @@ void XrWindow::Impl::updateInput() {
         aspectLocked = !aspectLocked;
         Gothic::settingsSetI("INTERNAL", "xrAspectLock", aspectLocked ? 1 : 0);
         Gothic::flushSettings();
+        } else if(grabbed==Grip::Edges) {
+        edgeStyle = (edgeStyle+1)%3;
+        skipExtrapolation = true;
+        Gothic::settingsSetI("INTERNAL", "xrWindowEdges", edgeStyle);
+        Gothic::flushSettings();
+        } else if(grabbed==Grip::Inventory3D) {
+        inventory3DEnabled = !inventory3DEnabled;
+        Gothic::settingsSetI("INTERNAL", "xrInventory3D", inventory3DEnabled ? 1 : 0);
+        Gothic::flushSettings();
+        } else if(grabbed==Grip::SurfaceLight) {
+        surfaceLightEnabled = !surfaceLightEnabled;
+        Gothic::settingsSetI("INTERNAL", "xrSurfaceLight", surfaceLightEnabled ? 1 : 0);
+        Gothic::flushSettings();
         } else if(grabbed==Grip::Environment) {
         if(setEnvironment(!immersive)) {
           restoreSky = false;
           Gothic::settingsSetI("INTERNAL", "xrEnvironment", immersive ? 1 : 0);
           Gothic::flushSettings();
           }
+        } else if(grabbed==Grip::ItemHandle) {
+        grabItemOffset = itemOffset;
         } else if(grabbed!=Grip::Handle) {
         grabExtent = Tempest::Vec2(windowWidth,physicalHeight);
         }
@@ -2006,10 +2104,11 @@ void XrWindow::Impl::updateInput() {
 
   for(size_t i=0; i<hands.size(); ++i) {
     const Grip g = hands[i].hover;
-    if(g==Grip::Handle || g==Grip::Environment || g==Grip::Dim || g==Grip::Aspect || g==Grip::Curve || g==Grip::Hands)
+    if(g==Grip::Handle || g==Grip::Environment || g==Grip::Dim || g==Grip::Aspect || g==Grip::Curve ||
+       g==Grip::Hands || g==Grip::Edges || g==Grip::Inventory3D || g==Grip::SurfaceLight)
       lastChromeHover = frame.predictedDisplayTime;
     }
-  if(grabbed!=Grip::None && grabbed!=Grip::CornerLeft && grabbed!=Grip::CornerRight)
+  if(grabbed!=Grip::None && grabbed!=Grip::CornerLeft && grabbed!=Grip::CornerRight && grabbed!=Grip::ItemHandle)
     lastChromeHover = frame.predictedDisplayTime;
 
   // Ghost hands and rays: always, or (auto) after three quiet seconds of keyboard, mouse and
@@ -2067,9 +2166,13 @@ void XrWindow::Impl::updateInput() {
         bone(XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT, XR_HAND_JOINT_RING_PROXIMAL_EXT);
         bone(XR_HAND_JOINT_RING_PROXIMAL_EXT, XR_HAND_JOINT_LITTLE_PROXIMAL_EXT);
         }
-      // The ray, only towards the window and its controls
+      // The ray, only towards the window and its controls (or the 3D item handle)
       if(h.aimValid) {
-        if(auto hit = rayHit(h.aim)) {
+        if(h.hover==Grip::ItemHandle) {
+          const V3 tint{1.f,0.88f,0.55f};
+          capsule(h.aim.position, toXr(h.hit), 0.0012f, 0.7f*fade, tint, true);
+          capsule(toXr(h.hit), toXr(h.hit), 0.008f, 0.9f*fade, tint, true);
+          } else if(auto hit = rayHit(h.aim)) {
           const V3 l = unroll(toLocal(windowPose,*hit));
           if(std::abs(l.x)<halfW+0.4f && l.y>-halfH-0.5f && l.y<halfH+0.2f) {
             const bool target = h.hover!=Grip::None;
@@ -2162,11 +2265,20 @@ Grip XrWindow::Impl::targetAt(float x, float y) const {
   const V3 bend = curveCenter();
   if(curveReady && std::abs(x-bend.x)<0.05f*k && std::abs(y-bend.y)<0.04f*k)
     return Grip::Curve;
+  const V3 edges = edgesCenter();
+  if(chromeReady && std::abs(x-edges.x)<0.05f*k && std::abs(y-edges.y)<0.04f*k)
+    return Grip::Edges;
   const V3 lock = aspectCenter();
   if(aspectReady && std::abs(x-lock.x)<0.05f*k && std::abs(y-lock.y)<0.04f*k)
     return Grip::Aspect;
+  const V3 inv3d = inventory3DCenter();
+  if(chromeReady && std::abs(x-inv3d.x)<0.05f*k && std::abs(y-inv3d.y)<0.04f*k)
+    return Grip::Inventory3D;
+  const V3 surf = surfaceLightCenter();
+  if(chromeReady && hasDepth && std::abs(x-surf.x)<0.05f*k && std::abs(y-surf.y)<0.04f*k)
+    return Grip::SurfaceLight;
   const V3 button = environmentCenter();
-  if(buttonReady && roomAvailable() && std::abs(x-button.x)<0.065f*k && std::abs(y-button.y)<0.04f*k)
+  if(buttonReady && roomAvailable() && std::abs(x-button.x)<0.055f*k && std::abs(y-button.y)<0.04f*k)
     return Grip::Environment;
   const V3 slide = sliderCenter();
   if(sliderRow()>=0 && x>=slide.x+dimLeft()-0.025f*k && x<=slide.x+dimLeft()+dimTravel()+0.025f*k && std::abs(y-slide.y)<0.025f*k)
@@ -2305,6 +2417,207 @@ bool XrWindow::eyeView(uint8_t eye, float verticalFovDeg, Camera::EyeView& out) 
   out.bottom = (-r[3]*unitsY - ey)*k;
   out.top    = (-r[2]*unitsY - ey)*k;
   return true;
+  }
+
+void XrWindow::Impl::loadItemOffset() {
+  if(itemOffsetLoaded)
+    return;
+  itemOffsetLoaded = true;
+  if(Gothic::settingsGetI("INTERNAL","xrInventory3DPlaced")<2)
+    return;
+  const float x = Gothic::settingsGetF("INTERNAL","xrInventory3DOffsetX");
+  const float y = Gothic::settingsGetF("INTERNAL","xrInventory3DOffsetY");
+  const float z = Gothic::settingsGetF("INTERNAL","xrInventory3DOffsetZ");
+  if(std::isfinite(x) && std::isfinite(y) && std::isfinite(z))
+    itemOffset = V3{std::clamp(x,-1.5f,1.5f), std::clamp(y,-1.0f,1.2f), std::clamp(z,0.12f,1.5f)};
+  }
+
+void XrWindow::Impl::saveItemOffset() {
+  Gothic::settingsSetI("INTERNAL","xrInventory3DPlaced", 2);
+  Gothic::settingsSetF("INTERNAL","xrInventory3DOffsetX", itemOffset.x);
+  Gothic::settingsSetF("INTERNAL","xrInventory3DOffsetY", itemOffset.y);
+  Gothic::settingsSetF("INTERNAL","xrInventory3DOffsetZ", itemOffset.z);
+  Gothic::flushSettings();
+  }
+
+void XrWindow::drawInventoryItem(Encoder<CommandBuffer>& cmd, uint8_t eye, const Item* item) {
+  auto& s = *impl;
+  if(eye>1 || s.itemTargets[eye].empty() || !s.eyesValid || !s.placed) {
+    if(eye==0)
+      s.itemPreviewActive = false;
+    return;
+    }
+  const bool enabled = Gothic::settingsGetI("INTERNAL","xrInventory3D")!=0;
+  if(!enabled || item==nullptr) {
+    if(eye==0) {
+      s.itemPreviewActive = false;
+      if(s.grabbed==Grip::ItemHandle) {
+        s.saveItemOffset();
+        s.grabbedBy = -1;
+        s.grabbed   = Grip::None;
+        }
+      }
+    return;
+    }
+  if(eye==0)
+    s.loadItemOffset();
+
+  const auto& itData = item->handle();
+  if(s.cachedItemVisual!=itData.visual || s.cachedItemMesh==nullptr) {
+    s.cachedItemVisual = itData.visual;
+    s.cachedItemMesh   = Resources::loadMesh(itData.visual);
+    if(s.cachedItemMesh!=nullptr) {
+      const auto* bbox = s.cachedItemMesh->bbox();
+      const float diag = (bbox[1]-bbox[0]).length();
+      s.cachedItemMid  = (bbox[0]+bbox[1])*0.5f;
+      s.cachedItemScale = diag>1e-4f ? (0.24f/diag) : 0.002f;
+      }
+    }
+  if(s.cachedItemMesh==nullptr) {
+    if(eye==0)
+      s.itemPreviewActive = false;
+    return;
+    }
+  if(eye==0)
+    s.itemPreviewActive = true;
+
+  if(s.itemAcquired[eye]<0) {
+    std::lock_guard<std::mutex> guard(*s.vk.queueLock);
+    uint32_t index = 0;
+    XrSwapchainImageAcquireInfo acq = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    if(!ok(xrAcquireSwapchainImage(s.itemSwapchain[eye], &acq, &index), "acquire item preview image"))
+      return;
+    XrSwapchainImageWaitInfo wait = {XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wait.timeout = XR_INFINITE_DURATION;
+    s.itemAcquired[eye] = int32_t(index);
+    if(xrWaitSwapchainImage(s.itemSwapchain[eye], &wait)!=XR_SUCCESS)
+      return;
+    }
+  if(s.itemPipeline.isEmpty()) {
+    auto shader = [&](const char* name) {
+      const auto code = GothicShader::get(name);
+      return s.device->shader(code.data,code.len);
+      };
+    RenderState st;
+    st.setCullFaceMode(RenderState::CullMode::NoCull);
+    st.setZTestMode(RenderState::ZTestMode::LEqual);
+    st.setZWriteEnabled(true);
+    s.itemPipeline = s.device->pipeline(Triangles,st,shader("item_xr.vert.sprv"),shader("item_xr.frag.sprv"));
+    }
+  if(s.itemDepth.isEmpty())
+    s.itemDepth = s.device->zbuffer(Tempest::TextureFormat::Depth16, Impl::ItemPreviewSize, Impl::ItemPreviewSize);
+
+  // Stereo perspective projection (Vulkan clip, y down, z in [0, 1]) and eye view in LOCAL space
+  const auto& v = s.eyeViews[eye];
+  const float tL = std::tan(v.fov.angleLeft), tR = std::tan(v.fov.angleRight);
+  const float tU = std::tan(v.fov.angleUp),   tD = std::tan(v.fov.angleDown);
+  constexpr float zn = 0.05f, zf = 20.f;
+  const float P[4][4] = {{2.f/(tR-tL), 0.f, (tR+tL)/(tR-tL), 0.f},
+                         {0.f, -2.f/(tU-tD), -(tU+tD)/(tU-tD), 0.f},
+                         {0.f, 0.f, -zf/(zf-zn), -(zf*zn)/(zf-zn)},
+                         {0.f, 0.f, -1.f, 0.f}};
+  const XrQuaternionf q = conjugate(v.pose.orientation);
+  const V3 ex = rotate(q,V3{1,0,0}), ey = rotate(q,V3{0,1,0}), ez = rotate(q,V3{0,0,1});
+  const V3 t  = rotate(q,toV3(v.pose.position));
+  const float V[4][4] = {{ex.x, ey.x, ez.x, -t.x},
+                         {ex.y, ey.y, ez.y, -t.y},
+                         {ex.z, ey.z, ez.z, -t.z},
+                         {0.f, 0.f, 0.f, 1.f}};
+  float vpData[16] = {};
+  for(int r=0; r<4; ++r)
+    for(int c=0; c<4; ++c) {
+      float sum = 0;
+      for(int k=0; k<4; ++k)
+        sum += P[r][k]*V[k][c];
+      vpData[c*4+r] = sum;
+      }
+  const Tempest::Matrix4x4 vp(vpData);
+
+  // Place item in front and slightly below the window (or wherever its handle was dragged)
+  const XrQuaternionf wq = s.windowPose.orientation;
+  const V3 wx = rotate(wq,V3{1,0,0}), wy = rotate(wq,V3{0,1,0}), wz = rotate(wq,V3{0,0,1});
+  const V3 wpos = toWorld(s.windowPose, s.itemCenter());
+  const float wm[16] = {wx.x,wx.y,wx.z,0.f, wy.x,wy.y,wy.z,0.f, wz.x,wz.y,wz.z,0.f, wpos.x,wpos.y,wpos.z,1.f};
+  Tempest::Matrix4x4 baseModel(wm);
+  const float spinDeg = float(std::fmod(double(s.frame.predictedDisplayTime)*1e-9*28.0, 360.0));
+  baseModel.rotateOY(spinDeg);
+  baseModel.scale(1.f, -1.f, 1.f); // InventoryRenderer::itemRotation targets Vulkan Y-down
+
+  Tempest::Matrix4x4 itemMat = Tempest::Matrix4x4::mkIdentity();
+  const auto rot = InventoryRenderer::itemRotation(itData);
+  itemMat.rotateOX(rot.x);
+  itemMat.rotateOZ(rot.z);
+  itemMat.rotateOY(rot.y);
+  for(int i=0; i<3; ++i) {
+    const float trX = itemMat.at(i,0);
+    const float trZ = itemMat.at(i,2);
+    itemMat.set(i,0,trZ);
+    itemMat.set(i,2,trX);
+    }
+  itemMat.scale(s.cachedItemScale);
+  itemMat.translate(-s.cachedItemMid);
+  baseModel.mul(itemMat);
+
+  auto& target = s.itemTargets[eye][size_t(s.itemAcquired[eye])];
+  cmd.setDebugMarker("XR 3D inventory item");
+  cmd.setFramebuffer({{target, Vec4(0,0,0,0), Tempest::Preserve}}, {s.itemDepth, 1.f, Tempest::Discard});
+  cmd.setViewport(0, 0, int(Impl::ItemPreviewSize), int(Impl::ItemPreviewSize));
+  cmd.setPipeline(s.itemPipeline);
+
+  struct Push { Tempest::Matrix4x4 mvp; Tempest::Matrix4x4 model; };
+  auto drawAttach = [&](const ProtoMesh::Attach& att, const Tempest::Matrix4x4& model) {
+    Push push;
+    push.model = model;
+    push.mvp   = vp;
+    push.mvp.mul(model);
+    cmd.setPushData(&push, sizeof(push));
+    for(const auto& sub:att.sub) {
+      if(sub.material.tex==nullptr || sub.iboLength==0)
+        continue;
+      cmd.setBinding(0, *sub.material.tex);
+      cmd.draw(att.vbo, att.ibo, sub.iboOffset, sub.iboLength);
+      }
+    };
+
+  const auto& pm = *s.cachedItemMesh;
+  if(pm.nodes.empty()) {
+    for(const auto& att:pm.attach)
+      drawAttach(att, baseModel);
+    } else {
+    std::vector<Tempest::Matrix4x4> nodeTr(pm.nodes.size());
+    for(size_t i=0; i<pm.nodes.size(); ++i) {
+      const auto& n = pm.nodes[i];
+      if(n.parentId<i) {
+        nodeTr[i] = nodeTr[n.parentId];
+        nodeTr[i].mul(n.transform);
+        } else {
+        nodeTr[i] = n.transform;
+        }
+      if(n.submeshIdB>=n.submeshIdE)
+        continue;
+      Tempest::Matrix4x4 m = baseModel;
+      m.mul(nodeTr[i]);
+      Push push;
+      push.model = m;
+      push.mvp   = vp;
+      push.mvp.mul(m);
+      cmd.setPushData(&push, sizeof(push));
+      for(size_t sid=n.submeshIdB; sid<n.submeshIdE && sid<pm.submeshId.size(); ++sid) {
+        const auto& ref = pm.submeshId[sid];
+        if(ref.id>=pm.attach.size())
+          continue;
+        const auto& att = pm.attach[ref.id];
+        if(ref.subId>=att.sub.size())
+          continue;
+        const auto& sub = att.sub[ref.subId];
+        if(sub.material.tex==nullptr || sub.iboLength==0)
+          continue;
+        cmd.setBinding(0, *sub.material.tex);
+        cmd.draw(att.vbo, att.ibo, sub.iboOffset, sub.iboLength);
+        }
+      }
+    }
+  s.itemDrawn[eye] = true;
   }
 
 void XrWindow::drawHands(Encoder<CommandBuffer>& cmd, uint8_t eye, uint8_t slot) {
@@ -2962,7 +3275,7 @@ void XrWindow::Impl::fillStaticImages() {
   resources.fence = fence;
 
   // All artwork uploads are synchronous and share these resources for this frame only.
-  for(auto fill : {&Impl::fillHandle, &Impl::fillCorners, &Impl::fillEnvironment, &Impl::fillSlider, &Impl::fillAspect, &Impl::fillCurve, &Impl::fillHands}) {
+  for(auto fill : {&Impl::fillHandle, &Impl::fillCorners, &Impl::fillEnvironment}) {
     try {
       (this->*fill)(cmd,fence);
       }
@@ -2973,176 +3286,257 @@ void XrWindow::Impl::fillStaticImages() {
   }
 
 void XrWindow::Impl::fillEnvironment(VkCommandBuffer cmd, VkFence fence) {
-  if(panorama==XR_NULL_HANDLE)
-    return;
-  panoramaReady = uploadStatic(vk, cmd, fence, panorama, SkyW, SkyH, 1, duskPanorama(SkyW,SkyH));
-  if(!panoramaReady)
-    return;
-  if(environmentButton!=XR_NULL_HANDLE && hasPassthrough) {
-    std::vector<uint32_t> px(size_t(ButtonW)*ButtonH*4);
-    for(unsigned layer=0; layer<4; ++layer) {
-      const bool sky = layer>=2, hover = (layer&1)!=0;
-      for(uint32_t y=0; y<ButtonH; ++y)
-        for(uint32_t x=0; x<ButtonW; ++x) {
-          const float u = float(x)+0.5f-float(ButtonW)*0.5f;
-          const float v = float(y)+0.5f-float(ButtonH)*0.5f;
-          const float rim = std::hypot(std::max(std::abs(u)-22.f,0.f), v);
-          // A crescent invites entering VR. A window icon returns to the room.
-          const float moon = std::min(16.f-std::hypot(u,v), std::hypot(u-8.f,v+5.f)-14.f);
-          const float window = 2.f-std::abs(std::max(std::abs(u)-17.f, std::abs(v)-12.f));
-          const float ink = std::clamp((sky ? window : moon)+0.5f,0.f,1.f);
-          const float edge = std::clamp(1.5f-std::abs(rim-32.f),0.f,1.f);
-          const float light = std::max(ink,edge*0.62f);
-          px[(size_t(layer)*ButtonH+y)*ButtonW+x] =
-              pixel(0.12f+0.84f*light,0.15f+0.82f*light,0.20f+0.8f*light,
-                    hover ? 0.97f : 0.12f+0.16f*light, 34.f-rim); // faint until hovered
-          }
-      }
-    buttonReady = uploadStatic(vk, cmd, fence, environmentButton, ButtonW, ButtonH, 4, px);
-    }
+  chromeReady      = chromeSwapchain!=XR_NULL_HANDLE;
+  handsMode        = std::clamp(Gothic::settingsGetI("INTERNAL","xrHands"),0,2);
+  handsButtonReady = chromeReady;
+  curveLevel       = std::clamp(Gothic::settingsGetI("INTERNAL","xrCurved"),0,2);
+  curved           = curveLevel>0;
+  if(curved && placed && headValid)
+    updateCurveRadius();
+  curveReady       = chromeReady;
+  aspectLocked       = Gothic::settingsGetI("INTERNAL","xrAspectLock")!=0;
+  aspectReady        = chromeReady;
+  edgeStyle          = std::clamp(Gothic::settingsGetI("INTERNAL","xrWindowEdges"),0,2);
+  inventory3DEnabled = Gothic::settingsGetI("INTERNAL","xrInventory3D")!=0;
+  surfaceLightEnabled= Gothic::settingsGetI("INTERNAL","xrSurfaceLight")!=0;
+  const float saved  = Gothic::settingsGetF("INTERNAL","xrPassthroughDim");
+  passthroughDim   = std::isfinite(saved) ? std::clamp(saved,0.f,1.f) : 0.f;
+
+  if(panorama!=XR_NULL_HANDLE)
+    panoramaReady = uploadStatic(vk, cmd, fence, panorama, SkyW, SkyH, 1, duskPanorama(SkyW,SkyH));
+  buttonReady = chromeReady && panoramaReady && hasPassthrough;
+  sliderReady = buttonReady && xrSetPassthroughStyle!=nullptr;
+  if(sliderReady && passthroughDim>0.f)
+    applyDim(passthroughDim);
   // Settings exist by the first rendered frame. An incomplete button should
   // never strand a wearer in VR when passthrough is available.
   if(buttonReady && Gothic::settingsGetI("INTERNAL","xrEnvironment")==1)
     restoreSky = !setEnvironment(true);
   }
 
-void XrWindow::Impl::fillHands(VkCommandBuffer cmd, VkFence fence) {
-  handsMode = std::clamp(Gothic::settingsGetI("INTERNAL","xrHands"),0,2);
-  if(handsButton==XR_NULL_HANDLE)
+void XrWindow::Impl::updateChromePanel(bool showEnv, bool showSlider, bool showSurfaceLight, Grip hover) {
+  if(!chromeReady || chromeSwapchain==XR_NULL_HANDLE)
     return;
-  // An open hand: crossed out (off), with a small "A" dot (auto), plain (always)
-  std::vector<uint32_t> px(size_t(ButtonW)*ButtonH*6);
-  for(unsigned layer=0; layer<6; ++layer) {
-    const unsigned mode = layer/2;
-    const bool hover = (layer&1)!=0;
-    for(uint32_t y=0; y<ButtonH; ++y)
-      for(uint32_t x=0; x<ButtonW; ++x) {
-        const float u = float(x)+0.5f-float(ButtonW)*0.5f;
-        const float v = float(y)+0.5f-float(ButtonH)*0.5f;
-        const float rim = std::hypot(std::max(std::abs(u)-22.f,0.f), v);
-        auto seg = [&](float ax, float ay, float bx, float by) {
-          const float dx = bx-ax, dy = by-ay;
-          const float t = std::clamp(((u-ax)*dx+(v-ay)*dy)/(dx*dx+dy*dy), 0.f, 1.f);
-          return std::hypot(u-ax-dx*t, v-ay-dy*t);
-          };
-        float d = std::max(std::abs(u)-6.f, std::abs(v-6.f)-5.f);          // palm
-        d = std::min(d, seg(-6.f,0.f,-7.f,-11.f)-1.6f);                     // fingers
-        d = std::min(d, seg(-2.f,0.f,-2.f,-14.f)-1.6f);
-        d = std::min(d, seg( 2.f,0.f, 2.f,-13.f)-1.6f);
-        d = std::min(d, seg( 6.f,0.f, 7.f,-10.f)-1.6f);
-        d = std::min(d, seg(-6.f,8.f,-13.f,2.f)-1.8f);                      // thumb
-        if(mode==0)
-          d = std::min(d, seg(-14.f,13.f,14.f,-13.f)-1.4f);                 // crossed out
-        if(mode==1)
-          d = std::min(d, std::hypot(u-15.f,v+10.f)-3.f);                   // auto: a dot
-        const float ink = std::clamp(0.5f-d,0.f,1.f);
-        const float edge = std::clamp(1.5f-std::abs(rim-32.f),0.f,1.f);
-        const float light = std::max(ink,edge*0.62f);
-        px[(size_t(layer)*ButtonH+y)*ButtonW+x] =
-            pixel(0.12f+0.84f*light,0.15f+0.82f*light,0.20f+0.8f*light,
-                  hover ? 0.97f : 0.12f+0.16f*light, 34.f-rim);
-        }
-    }
-  handsButtonReady = uploadStatic(vk, cmd, fence, handsButton, ButtonW, ButtonH, 6, px);
-  }
+  ChromeState st;
+  st.showEnv          = showEnv;
+  st.immersive        = immersive;
+  st.aspectLocked     = aspectLocked;
+  st.showSlider       = showSlider;
+  st.inventory3D      = inventory3DEnabled;
+  st.showSurfaceLight = showSurfaceLight;
+  st.surfaceLightOn   = surfaceLightEnabled;
+  st.handsMode        = handsMode;
+  st.curveLevel       = curveLevel;
+  st.edgeStyle        = edgeStyle;
+  st.dimStep          = showSlider ? int(std::lround(passthroughDim*200.f)) : -1;
+  st.hover            = hover;
+  if(chromeUploaded && st==lastChromeState)
+    return;
 
-void XrWindow::Impl::fillCurve(VkCommandBuffer cmd, VkFence fence) {
-  curveLevel = std::clamp(Gothic::settingsGetI("INTERNAL","xrCurved"),0,2);
-  curved = curveLevel>0;
-  if(curved && placed && headValid)
-    updateCurveRadius();
-  if(curveButton==XR_NULL_HANDLE)
-    return;
-  // A window outline seen from above: a straight line (flat) or an arc (slight, strong)
-  std::vector<uint32_t> px(size_t(ButtonW)*ButtonH*6);
-  for(unsigned layer=0; layer<6; ++layer) {
-    const unsigned level = layer/2;
-    const bool bent = level>0, hover = (layer&1)!=0;
-    for(uint32_t y=0; y<ButtonH; ++y)
-      for(uint32_t x=0; x<ButtonW; ++x) {
-        const float u = float(x)+0.5f-float(ButtonW)*0.5f;
-        const float v = float(y)+0.5f-float(ButtonH)*0.5f;
+  std::vector<uint32_t> px(size_t(ChromeW)*ChromeH, 0u);
+  constexpr float ppm = float(ChromeW)/ChromePhysW; // 1000 px/m (exact square pixels)
+  constexpr float btnScale = (0.096f*ppm)/float(ButtonW);
+  constexpr float btnCy = float(ChromeH)*0.5f - 0.0325f*ppm;
+
+  auto seg = [](float u, float v, float ax, float ay, float bx, float by) {
+    const float dx = bx-ax, dy = by-ay;
+    const float t = std::clamp(((u-ax)*dx+(v-ay)*dy)/(dx*dx+dy*dy), 0.f, 1.f);
+    return std::hypot(u-ax-dx*t, v-ay-dy*t);
+    };
+
+  auto drawButton = [&](float lx, bool isHover, auto&& iconSdf) {
+    const float cx = float(ChromeW)*0.5f + lx*ppm;
+    const int x0 = std::max(0, int(std::floor(cx - float(ButtonW)*0.5f*btnScale)) - 1);
+    const int x1 = std::min(int(ChromeW), int(std::ceil(cx + float(ButtonW)*0.5f*btnScale)) + 1);
+    const int y0 = std::max(0, int(std::floor(btnCy - float(ButtonH)*0.5f*btnScale)) - 1);
+    const int y1 = std::min(int(ChromeH), int(std::ceil(btnCy + float(ButtonH)*0.5f*btnScale)) + 1);
+    for(int y=y0; y<y1; ++y)
+      for(int x=x0; x<x1; ++x) {
+        const float u = (float(x)+0.5f - cx)/btnScale;
+        const float v = (float(y)+0.5f - btnCy)/btnScale;
         const float rim = std::hypot(std::max(std::abs(u)-22.f,0.f), v);
-        float line;
-        if(bent) {
-          // An arc bulging away from the viewer (its centre lies below the icon)
-          const float R = level>=2 ? 17.f : 26.f;
-          line = std::abs(std::hypot(u, v-R+8.f)-R)-2.f;
-          line = std::max(line, std::abs(u)-17.f);
-          } else {
-          line = std::max(std::abs(v+2.f)-2.f, std::abs(u)-17.f);
+        if(rim>35.5f)
+          continue;
+        const float ink = iconSdf(u, v);
+        const float edge = std::clamp(1.5f-std::abs(rim-32.f),0.f,1.f);
+        const float light = std::max(ink, edge*0.62f);
+        px[size_t(y)*ChromeW+size_t(x)] =
+            pixel(0.12f+0.84f*light, 0.15f+0.82f*light, 0.20f+0.8f*light,
+                  isHover ? 0.97f : 0.12f+0.16f*light, 34.f-rim);
+        }
+    };
+
+  // 1. Hands button (-0.33 m)
+  if(handsButtonReady) {
+    const int mode = handsMode;
+    drawButton(-0.33f, hover==Grip::Hands, [&](float u, float v) {
+      float d = std::max(std::abs(u)-6.f, std::abs(v-6.f)-5.f);
+      d = std::min(d, seg(u,v,-6.f,0.f,-7.f,-11.f)-1.6f);
+      d = std::min(d, seg(u,v,-2.f,0.f,-2.f,-14.f)-1.6f);
+      d = std::min(d, seg(u,v, 2.f,0.f, 2.f,-13.f)-1.6f);
+      d = std::min(d, seg(u,v, 6.f,0.f, 7.f,-10.f)-1.6f);
+      d = std::min(d, seg(u,v,-6.f,8.f,-13.f,2.f)-1.8f);
+      if(mode==0)
+        d = std::min(d, seg(u,v,-14.f,13.f,14.f,-13.f)-1.4f);
+      if(mode==1)
+        d = std::min(d, std::hypot(u-15.f,v+10.f)-3.f);
+      return std::clamp(0.5f-d, 0.f, 1.f);
+      });
+    }
+
+  // 2. Curve button (-0.22 m)
+  if(curveReady) {
+    const int level = curveLevel;
+    drawButton(-0.22f, hover==Grip::Curve, [&](float u, float v) {
+      float line;
+      if(level>0) {
+        const float R = level>=2 ? 17.f : 26.f;
+        line = std::abs(std::hypot(u, v-R+8.f)-R)-2.f;
+        line = std::max(line, std::abs(u)-17.f);
+        } else {
+        line = std::max(std::abs(v+2.f)-2.f, std::abs(u)-17.f);
+        }
+      const float eye = std::hypot(u, v-11.f)-2.5f;
+      return std::clamp(0.5f-std::min(line,eye), 0.f, 1.f);
+      });
+    }
+
+  // 3. Corner / edge style button (-0.11 m): square, rounded, or rounded + soft edge
+  {
+    const int style = edgeStyle;
+    drawButton(-0.11f, hover==Grip::Edges, [&](float u, float v) {
+      // Rounded rectangle outline; corner radius grows from 0 (square) to 9 (rounded / soft)
+      const float rad = style==0 ? 0.f : 9.f;
+      const float qx = std::abs(u) - (16.f - rad);
+      const float qy = std::abs(v) - (12.f - rad);
+      const float box = std::hypot(std::max(qx,0.f), std::max(qy,0.f)) + std::min(std::max(qx,qy),0.f) - rad;
+      const float outline = std::abs(box) - 1.9f;
+      float ink = std::clamp(0.5f - outline, 0.f, 1.f);
+      if(style==2) {
+        // Soft outer feather glow around the rounded outline
+        const float glow = std::clamp(1.f - std::abs(box)/7.5f, 0.f, 1.f);
+        ink = std::max(ink, glow*0.65f);
+        }
+      return ink;
+      });
+    }
+
+  // 4. Aspect lock button (0.00 m)
+  if(aspectReady) {
+    const bool locked = aspectLocked;
+    drawButton(0.00f, hover==Grip::Aspect, [&](float u, float v) {
+      const float body = std::max(std::abs(u)-11.f, std::abs(v-5.f)-8.f);
+      const float sx = locked ? 0.f : 5.f, sy = locked ? 0.f : -5.f;
+      const float au = u-sx, av = v-sy+3.f;
+      const float arch = av<0.f ? std::abs(std::hypot(au,av)-8.f)-2.f
+                                : std::abs(std::abs(au)-8.f)-2.f + (av>4.f ? 99.f : 0.f);
+      return std::clamp(0.5f-std::min(body,arch), 0.f, 1.f);
+      });
+    }
+
+  // 5. 3D Inventory preview button (+0.11 m): isometric 3D cube (crossed when off)
+  {
+    const bool on = inventory3DEnabled;
+    drawButton(0.11f, hover==Grip::Inventory3D, [&](float u, float v) {
+      // Isometric cube vertices
+      const float r = 14.f, dx = r*0.866f, dy = r*0.5f;
+      float d = seg(u,v, 0.f,-r,  dx,-dy);
+      d = std::min(d, seg(u,v, dx,-dy, dx, dy));
+      d = std::min(d, seg(u,v, dx, dy, 0.f, r));
+      d = std::min(d, seg(u,v, 0.f, r,-dx, dy));
+      d = std::min(d, seg(u,v,-dx, dy,-dx,-dy));
+      d = std::min(d, seg(u,v,-dx,-dy, 0.f,-r));
+      // Inner Y edges meeting at center
+      d = std::min(d, seg(u,v, 0.f, 0.f, dx,-dy));
+      d = std::min(d, seg(u,v, 0.f, 0.f,-dx,-dy));
+      d = std::min(d, seg(u,v, 0.f, 0.f, 0.f, r));
+      d -= 1.6f;
+      if(!on)
+        d = std::min(d, seg(u,v,-15.f,13.f,15.f,-13.f)-1.5f);
+      return std::clamp(0.5f-d, 0.f, 1.f);
+      });
+    }
+
+  // 6. Surface light button (+0.22 m): screen bar casting cone onto table (crossed when off)
+  if(showSurfaceLight) {
+    const bool on = surfaceLightEnabled;
+    drawButton(0.22f, hover==Grip::SurfaceLight, [&](float u, float v) {
+      float d = seg(u,v,-12.f,-11.f, 12.f,-11.f)-2.0f; // screen top bar
+      d = std::min(d, seg(u,v,-17.f, 11.f, 17.f, 11.f)-1.6f); // table surface line
+      d = std::min(d, seg(u,v,-10.f,-8.f, -15.f, 9.f)-1.3f);  // left cone ray
+      d = std::min(d, seg(u,v, 10.f,-8.f,  15.f, 9.f)-1.3f);  // right cone ray
+      d = std::min(d, seg(u,v,  0.f,-8.f,   0.f, 9.f)-1.3f);  // center ray
+      if(!on)
+        d = std::min(d, seg(u,v,-15.f,13.f,15.f,-13.f)-1.5f);
+      return std::clamp(0.5f-d, 0.f, 1.f);
+      });
+    }
+
+  // 7. Environment button (+0.33 m)
+  if(showEnv) {
+    const bool sky = immersive;
+    drawButton(0.33f, hover==Grip::Environment, [&](float u, float v) {
+      const float moon = std::min(16.f-std::hypot(u,v), std::hypot(u-8.f,v+5.f)-14.f);
+      const float window = 2.f-std::abs(std::max(std::abs(u)-17.f, std::abs(v)-12.f));
+      return std::clamp((sky ? window : moon)+0.5f, 0.f, 1.f);
+      });
+    }
+
+  // Dimming slider below the button row
+  if(showSlider) {
+    const float scx = float(ChromeW)*0.5f;
+    const float scy = float(ChromeH)*0.5f + 0.0375f*ppm;
+    const float railHalf = 0.10f*ppm;
+    const float railR    = 6.8f;
+    const float knobX    = scx + (-0.10f + 0.20f*passthroughDim)*ppm;
+    const float knobR    = 13.5f;
+    const int y0 = std::max(0, int(std::floor(scy - knobR - 2.f)));
+    const int y1 = std::min(int(ChromeH), int(std::ceil(scy + knobR + 2.f)));
+    const int x0 = std::max(0, int(std::floor(scx - railHalf - knobR - 2.f)));
+    const int x1 = std::min(int(ChromeW), int(std::ceil(scx + railHalf + knobR + 2.f)));
+    for(int y=y0; y<y1; ++y)
+      for(int x=x0; x<x1; ++x) {
+        const float fx = float(x)+0.5f, fy = float(y)+0.5f;
+        const float dy = fy - scy;
+        const float rd = std::hypot(std::max(std::abs(fx-scx)-railHalf, 0.f), dy);
+        const float kd = std::hypot(fx-knobX, dy);
+        // Knob composites over the rail
+        const float ka = std::clamp(knobR - kd + 0.5f, 0.f, 1.f);
+        if(ka>0.f) {
+          const float ink = std::clamp(knobR-3.f-kd, 0.f, 1.f);
+          px[size_t(y)*ChromeW+size_t(x)] =
+              pixel(0.12f+0.83f*ink, 0.15f+0.82f*ink, 0.20f+0.8f*ink, 0.96f, knobR-kd+0.5f);
+          } else if(rd<railR+1.f) {
+          const float ink = std::clamp(1.6f-std::abs(rd-railR+1.3f), 0.f, 1.f)*0.45f;
+          px[size_t(y)*ChromeW+size_t(x)] =
+              pixel(0.12f+0.83f*ink, 0.15f+0.82f*ink, 0.20f+0.8f*ink, 0.55f, railR-rd+0.5f);
           }
-        // A small eye below, looking at the window
-        const float eye = std::hypot(u, v-11.f)-2.5f;
-        const float ink = std::clamp(0.5f-std::min(line,eye),0.f,1.f);
-        const float edge = std::clamp(1.5f-std::abs(rim-32.f),0.f,1.f);
-        const float light = std::max(ink,edge*0.62f);
-        px[(size_t(layer)*ButtonH+y)*ButtonW+x] =
-            pixel(0.12f+0.84f*light,0.15f+0.82f*light,0.20f+0.8f*light,
-                  hover ? 0.97f : 0.12f+0.16f*light, 34.f-rim); // faint until hovered
         }
     }
-  curveReady = uploadStatic(vk, cmd, fence, curveButton, ButtonW, ButtonH, 6, px);
-  }
 
-void XrWindow::Impl::fillAspect(VkCommandBuffer cmd, VkFence fence) {
-  aspectLocked = Gothic::settingsGetI("INTERNAL","xrAspectLock")!=0;
-  if(aspectButton==XR_NULL_HANDLE)
+  VkCommandPoolCreateInfo pi = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+  pi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  pi.queueFamilyIndex = vk.queueFamily;
+  VkCommandPool pool = VK_NULL_HANDLE;
+  if(vkCreateCommandPool(vk.device, &pi, nullptr, &pool)!=VK_SUCCESS)
     return;
-  // A padlock in the style of the environment button: open (resize freely) or closed (keep shape)
-  std::vector<uint32_t> px(size_t(ButtonW)*ButtonH*4);
-  for(unsigned layer=0; layer<4; ++layer) {
-    const bool locked = layer>=2, hover = (layer&1)!=0;
-    for(uint32_t y=0; y<ButtonH; ++y)
-      for(uint32_t x=0; x<ButtonW; ++x) {
-        const float u = float(x)+0.5f-float(ButtonW)*0.5f;
-        const float v = float(y)+0.5f-float(ButtonH)*0.5f;
-        const float rim = std::hypot(std::max(std::abs(u)-22.f,0.f), v);
-        // Body: a rounded block; shackle: an arch above it, lifted and shifted when open
-        const float body = std::max(std::abs(u)-11.f, std::abs(v-5.f)-8.f);
-        const float sx = locked ? 0.f : 5.f, sy = locked ? 0.f : -5.f;
-        const float au = u-sx, av = v-sy+3.f;
-        const float arch = av<0.f ? std::abs(std::hypot(au,av)-8.f)-2.f
-                                  : std::abs(std::abs(au)-8.f)-2.f + (av>4.f ? 99.f : 0.f);
-        const float ink = std::clamp(0.5f-std::min(body,arch),0.f,1.f);
-        const float edge = std::clamp(1.5f-std::abs(rim-32.f),0.f,1.f);
-        const float light = std::max(ink,edge*0.62f);
-        px[(size_t(layer)*ButtonH+y)*ButtonW+x] =
-            pixel(0.12f+0.84f*light,0.15f+0.82f*light,0.20f+0.8f*light,
-                  hover ? 0.97f : 0.12f+0.16f*light, 34.f-rim); // faint until hovered
-        }
-    }
-  aspectReady = uploadStatic(vk, cmd, fence, aspectButton, ButtonW, ButtonH, 4, px);
-  }
-
-void XrWindow::Impl::fillSlider(VkCommandBuffer cmd, VkFence fence) {
-  // Settings become available on the first rendered frame. A replacement
-  // passthrough layer receives the same style from createPassthrough().
-  const float saved = Gothic::settingsGetF("INTERNAL","xrPassthroughDim");
-  passthroughDim = std::isfinite(saved) ? std::clamp(saved,0.f,1.f) : 0.f;
-  if(!buttonReady || dimSlider==XR_NULL_HANDLE)
+  struct Guard {
+    VkDevice dev; VkCommandPool pool; VkFence fence = VK_NULL_HANDLE;
+    ~Guard() { vkDestroyFence(dev, fence, nullptr); vkDestroyCommandPool(dev, pool, nullptr); }
+    } g{vk.device, pool};
+  VkCommandBufferAllocateInfo alloc = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+  alloc.commandPool = pool;
+  alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  alloc.commandBufferCount = 1;
+  VkCommandBuffer cb = VK_NULL_HANDLE;
+  VkFenceCreateInfo fi = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+  if(vkAllocateCommandBuffers(vk.device, &alloc, &cb)!=VK_SUCCESS ||
+     vkCreateFence(vk.device, &fi, nullptr, &g.fence)!=VK_SUCCESS)
     return;
-
-  constexpr int width = RailW+KnobW, height = SliderRows*KnobW;
-  std::vector<uint32_t> px(size_t(width)*height);
-  for(int y=0; y<height; ++y) {
-    const float fade = float(y/KnobW+1)/float(SliderRows);
-    const float dy = float(y%KnobW)+0.5f-float(KnobW)/2.f;
-    for(int x=0; x<width; ++x) {
-      const bool knob = x>=RailW;
-      const float dx = knob ? float(x-RailW)+0.5f-float(KnobW)*0.5f :
-                              std::max(std::abs(float(x)+0.5f-float(RailW)*0.5f)-73.f,0.f);
-      const float radius = knob ? 9.f : 5.f;
-      const float d = std::hypot(dx,dy);
-      const float ink = knob ? std::clamp(radius-2.f-d,0.f,1.f) :
-                               std::clamp(1.35f-std::abs(d-radius+1.f),0.f,1.f)*0.45f;
-      px[size_t(y)*width+size_t(x)] = pixel(0.12f+0.83f*ink,0.15f+0.82f*ink,0.2f+0.8f*ink,
-                                    fade*(knob ? 0.96f : 0.55f),radius-d+0.5f);
-      }
+  if(uploadStatic(vk, cb, g.fence, chromeSwapchain, ChromeW, ChromeH, 1, px)) {
+    lastChromeState = st;
+    chromeUploaded  = true;
     }
-  sliderReady = uploadStatic(vk,cmd,fence,dimSlider,width,height,1,px);
-  if(sliderReady && passthroughDim>0.f)
-    applyDim(passthroughDim);
   }
 
 void XrWindow::Impl::fillHandle(VkCommandBuffer cmd, VkFence fence) {
@@ -3152,8 +3546,8 @@ void XrWindow::Impl::fillHandle(VkCommandBuffer cmd, VkFence fence) {
     std::vector<uint32_t> px(size_t(w)*h*3);
     const float r   = float(h)*0.5f - 2.f;
     const float len = float(w)*0.5f - float(h)*0.5f;
-    // Idle: faint, so it does not draw the eye; hovered and held: clearly visible
-    const struct { float r,g,b,o; } st[3] = {{0.9f,0.9f,0.9f,0.16f}, {1.f,1.f,1.f,0.9f}, {0.8f,0.9f,1.f,1.f}};
+    // Idle: very faint, so it does not draw the eye; hovered and held: clearly visible
+    const struct { float r,g,b,o; } st[3] = {{0.9f,0.9f,0.9f,0.06f}, {1.f,1.f,1.f,0.9f}, {0.8f,0.9f,1.f,1.f}};
     for(uint32_t l=0; l<3; ++l)
       for(uint32_t y=0; y<h; ++y)
         for(uint32_t x=0; x<w; ++x) {
@@ -3441,86 +3835,31 @@ bool XrWindow::submit(bool rendered) {
   fade.colorScale = {1.f,1.f,1.f,reveal};
   const void* fadeNext = s.hasColorScale && reveal<1.f ? &fade : nullptr;
   const bool showButtons = hasImage && reveal>0.f;
-  XrCompositionLayerQuad button = {XR_TYPE_COMPOSITION_LAYER_QUAD};
-  button.next = fadeNext;
-  if(s.buttonReady && s.roomAvailable() && showButtons) {
-    const bool hover = s.grabbed==Grip::Environment || s.hands[0].hover==Grip::Environment || s.hands[1].hover==Grip::Environment;
-    button.layerFlags = chromeFlags;
-    button.space = s.localSpace;
-    button.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-    button.subImage.swapchain = s.environmentButton;
-    button.subImage.imageRect.extent = {int32_t(Impl::ButtonW), int32_t(Impl::ButtonH)};
-    button.subImage.imageArrayIndex = (s.immersive ? 2u : 0u) + (hover ? 1u : 0u);
-    button.pose = s.windowPose;
-    button.pose.position = toXr(toWorld(s.windowPose, s.environmentCenter()));
-    button.size = {0.104f*s.chromeScale(),0.065f*s.chromeScale()};
-    addLayer(button);
-    }
-  XrCompositionLayerQuad lockButton = {XR_TYPE_COMPOSITION_LAYER_QUAD};
-  lockButton.next = fadeNext;
-  if(s.aspectReady && showButtons) {
-    const bool hover = s.grabbed==Grip::Aspect || s.hands[0].hover==Grip::Aspect || s.hands[1].hover==Grip::Aspect;
-    lockButton.layerFlags = chromeFlags;
-    lockButton.space = s.localSpace;
-    lockButton.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-    lockButton.subImage.swapchain = s.aspectButton;
-    lockButton.subImage.imageRect.extent = {int32_t(Impl::ButtonW), int32_t(Impl::ButtonH)};
-    lockButton.subImage.imageArrayIndex = (s.aspectLocked ? 2u : 0u) + (hover ? 1u : 0u);
-    lockButton.pose = s.windowPose;
-    lockButton.pose.position = toXr(toWorld(s.windowPose, s.aspectCenter()));
-    lockButton.size = {0.104f*s.chromeScale(),0.065f*s.chromeScale()};
-    addLayer(lockButton);
-    }
-  XrCompositionLayerQuad palmButton = {XR_TYPE_COMPOSITION_LAYER_QUAD};
-  palmButton.next = fadeNext;
-  if(s.handsButtonReady && showButtons) {
-    const bool hover = s.grabbed==Grip::Hands || s.hands[0].hover==Grip::Hands || s.hands[1].hover==Grip::Hands;
-    palmButton.layerFlags = chromeFlags;
-    palmButton.space = s.localSpace;
-    palmButton.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-    palmButton.subImage.swapchain = s.handsButton;
-    palmButton.subImage.imageRect.extent = {int32_t(Impl::ButtonW), int32_t(Impl::ButtonH)};
-    palmButton.subImage.imageArrayIndex = uint32_t(s.handsMode)*2u + (hover ? 1u : 0u);
-    palmButton.pose = s.windowPose;
-    palmButton.pose.position = toXr(toWorld(s.windowPose, s.handsCenter()));
-    palmButton.size = {0.104f*s.chromeScale(),0.065f*s.chromeScale()};
-    addLayer(palmButton);
-    }
-  XrCompositionLayerQuad bendButton = {XR_TYPE_COMPOSITION_LAYER_QUAD};
-  bendButton.next = fadeNext;
-  if(s.curveReady && showButtons) {
-    const bool hover = s.grabbed==Grip::Curve || s.hands[0].hover==Grip::Curve || s.hands[1].hover==Grip::Curve;
-    bendButton.layerFlags = chromeFlags;
-    bendButton.space = s.localSpace;
-    bendButton.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-    bendButton.subImage.swapchain = s.curveButton;
-    bendButton.subImage.imageRect.extent = {int32_t(Impl::ButtonW), int32_t(Impl::ButtonH)};
-    bendButton.subImage.imageArrayIndex = uint32_t(s.curveLevel)*2u + (hover ? 1u : 0u);
-    bendButton.pose = s.windowPose;
-    bendButton.pose.position = toXr(toWorld(s.windowPose, s.curveCenter()));
-    bendButton.size = {0.104f*s.chromeScale(),0.065f*s.chromeScale()};
-    addLayer(bendButton);
-    }
-  XrCompositionLayerQuad slider[2] = {{XR_TYPE_COMPOSITION_LAYER_QUAD},{XR_TYPE_COMPOSITION_LAYER_QUAD}};
-  const int row = s.sliderRow();
-  if(hasImage && row>=0) {
-    const auto center = s.sliderCenter();
-    for(unsigned part=0; part<2; ++part) {
-      const bool knob = part==1;
-      auto& q = slider[part];
-      q.next = fadeNext;
-      q.layerFlags = chromeFlags;
-      q.space = s.localSpace;
-      q.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-      q.subImage.swapchain = s.dimSlider;
-      q.subImage.imageRect = {{knob ? Impl::RailW : 0,row*Impl::KnobW},
-                              {knob ? Impl::KnobW : Impl::RailW,Impl::KnobW}};
-      q.pose = s.windowPose;
-      const float x = s.dimLeft()+s.dimTravel()*(knob ? s.passthroughDim : 0.5f);
-      q.pose.position = toXr(toWorld(s.windowPose,center+V3{x,0.f,0.f}));
-      const float k = s.chromeScale();
-      q.size = knob ? XrExtent2Df{0.034f*k,0.034f*k} : XrExtent2Df{0.22f*k,0.033f*k};
-      addLayer(q);
+  XrCompositionLayerQuad chromePanel = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+  if(s.chromeReady && showButtons) {
+    const bool showEnv          = s.buttonReady && s.roomAvailable();
+    const bool showSlider       = s.sliderRow()>=0;
+    const bool showSurfaceLight = s.hasDepth;
+    Grip chromeHover = Grip::None;
+    for(const Grip g : {s.grabbed, s.hands[0].hover, s.hands[1].hover}) {
+      if(g==Grip::Hands || g==Grip::Curve || g==Grip::Edges || g==Grip::Aspect ||
+         g==Grip::Inventory3D || g==Grip::SurfaceLight || g==Grip::Environment || g==Grip::Dim) {
+        chromeHover = g;
+        break;
+        }
+      }
+    s.updateChromePanel(showEnv, showSlider, showSurfaceLight, chromeHover);
+    if(s.chromeUploaded) {
+      chromePanel.next = fadeNext;
+      chromePanel.layerFlags = chromeFlags;
+      chromePanel.space = s.localSpace;
+      chromePanel.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+      chromePanel.subImage.swapchain = s.chromeSwapchain;
+      chromePanel.subImage.imageRect = {{0,0},{int32_t(Impl::ChromeW),int32_t(Impl::ChromeH)}};
+      chromePanel.pose = s.windowPose;
+      chromePanel.pose.position = toXr(toWorld(s.windowPose, s.chromeCenter()));
+      chromePanel.size = {Impl::ChromePhysW*s.chromeScale(), Impl::ChromePhysH*s.chromeScale()};
+      addLayer(chromePanel);
       }
     }
   XrCompositionLayerQuad handle = {XR_TYPE_COMPOSITION_LAYER_QUAD};
@@ -3566,6 +3905,43 @@ bool XrWindow::submit(bool rendered) {
       q.pose.position            = toXr(toWorld(s.windowPose, s.roll(at)));
       q.size                     = {sz, sz};
       addLayer(q);
+      }
+    }
+
+  XrCompositionLayerProjection     itemLayer = {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+  XrCompositionLayerProjectionView itemView[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
+  XrCompositionLayerQuad           itemHandle = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+  const bool itemShown = hasImage && s.itemDrawn[0] && s.itemDrawn[1];
+  for(int eye=0; eye<2; ++eye) {
+    s.itemDrawn[eye] = false;
+    if(!releaseImage(s.itemSwapchain[eye], s.itemAcquired[eye]))
+      SystemApi::exit();
+    }
+  if(itemShown && layerCount<layers.size()) {
+    for(int eye=0; eye<2; ++eye) {
+      auto& v = itemView[eye];
+      v.pose = s.eyeViews[eye].pose;
+      v.fov  = s.eyeViews[eye].fov;
+      v.subImage.swapchain = s.itemSwapchain[eye];
+      v.subImage.imageRect = {{0,0},{int32_t(Impl::ItemPreviewSize),int32_t(Impl::ItemPreviewSize)}};
+      }
+    itemLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT; // premultiplied
+    itemLayer.space      = s.localSpace;
+    itemLayer.viewCount  = 2;
+    itemLayer.views      = itemView;
+    addLayer(itemLayer);
+    if(s.handleReady && layerCount<layers.size()) {
+      const bool hoverItem = s.hands[0].hover==Grip::ItemHandle || s.hands[1].hover==Grip::ItemHandle;
+      itemHandle.layerFlags               = chromeFlags;
+      itemHandle.space                    = s.localSpace;
+      itemHandle.eyeVisibility            = XR_EYE_VISIBILITY_BOTH;
+      itemHandle.subImage.swapchain       = s.handleSwapchain;
+      itemHandle.subImage.imageRect       = {{0,0},{int32_t(Impl::HandleW),int32_t(Impl::HandleH)}};
+      itemHandle.subImage.imageArrayIndex = s.grabbed==Grip::ItemHandle ? 2u : (hoverItem ? 1u : 0u);
+      itemHandle.pose.orientation         = s.windowPose.orientation;
+      itemHandle.pose.position            = toXr(toWorld(s.windowPose, s.itemHandleCenter()));
+      itemHandle.size                     = {0.11f, 0.015f};
+      addLayer(itemHandle);
       }
     }
 
@@ -3822,6 +4198,8 @@ void      XrWindow::drawWindowEdges(Tempest::Encoder<Tempest::CommandBuffer>&, b
 Tempest::Rect XrWindow::uiViewport(uint8_t) const { return Tempest::Rect(); }
 void      XrWindow::drawSurfaceLight(Renderer&, Tempest::Encoder<Tempest::CommandBuffer>&, bool) {}
 void      XrWindow::prepareLightingRate(Tempest::Encoder<Tempest::CommandBuffer>&, uint8_t, uint8_t, uint32_t, uint32_t) {}
+void      XrWindow::drawInventoryItem(Tempest::Encoder<Tempest::CommandBuffer>&, uint8_t, const Item*) {}
+void      XrWindow::drawHands(Tempest::Encoder<Tempest::CommandBuffer>&, uint8_t, uint8_t) {}
 #endif
 bool      XrWindow::prepareSpaceWarp(bool, bool) { return false; }
 Tempest::Attachment* XrWindow::motionTarget(uint8_t) { return nullptr; }

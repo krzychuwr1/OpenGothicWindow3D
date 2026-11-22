@@ -10,6 +10,7 @@
 #>
 param(
   [Parameter(Mandatory)] [string]$GameDir,
+  [string]$Subdir  = 'Gothic2',
   [string]$Package = 'org.opengothic.window3d'
 )
 $ErrorActionPreference = 'Stop'
@@ -17,7 +18,7 @@ $questSerial = & (Join-Path $PSScriptRoot 'install-quest.ps1') -GetQuestSerial
 foreach ($d in 'Data', '_work', 'System') {
   if (-not (Test-Path (Join-Path $GameDir $d))) { throw "Not a Gothic installation (missing $d): $GameDir" }
 }
-$target = '/sdcard/OpenGothic/Gothic2'
+$target = "/sdcard/OpenGothic/$Subdir"
 adb -s $questSerial shell mkdir -p $target
 foreach ($d in 'Data', '_work', 'System') {
   Write-Host "Copying $d ..."

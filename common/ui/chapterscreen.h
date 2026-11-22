@@ -17,6 +17,7 @@ class ChapterScreen : public Tempest::Widget {
       };
 
     void show(const Show& image);
+    void close();
     bool isActive() const { return active; }
 
     void keyDownEvent(Tempest::KeyEvent &e);
@@ -31,6 +32,4 @@ class ChapterScreen : public Tempest::Widget {
     Tempest::Timer            timer;
 
     std::string               title, subTitle;
-
-    void                      close();
   };

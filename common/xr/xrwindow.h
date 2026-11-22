@@ -14,6 +14,7 @@
 // through OpenXR. Only available in Android builds with OPENGOTHIC_XR; elsewhere
 // XrWindow::inst() is always null and the game uses its normal window.
 class Renderer;
+class Item;
 
 class XrWindow final {
   public:
@@ -89,6 +90,8 @@ class XrWindow final {
     // can the window be curved; flat pictures are shown on a flat window
     void              setSceneShown(bool shown);
 #ifdef OPENGOTHIC_XR
+    // Selected inventory item rendered as a true 3D stereo model outside the window
+    void              drawInventoryItem(Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t eye, const Item* item);
     // Ghost hands and pointer rays, drawn into their own layer over everything (off, auto
     // or always, from the hand button below the window). slot: the eye's frame slot.
     void              drawHands(Tempest::Encoder<Tempest::CommandBuffer>& cmd, uint8_t eye, uint8_t slot);

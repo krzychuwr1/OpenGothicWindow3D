@@ -63,15 +63,19 @@ void main() {
     dist  = R-length(vec2(x,R-z));
     along = R*atan(x,R-z);
     }
-  // A vertical screen h above a surface lights it with E ~ d*h/(d^2+h^2)^2: highest at d = h/sqrt(3),
-  // so a window just above a table lights the table right in front of it.
+  // A vertical screen h above a surface lights it with E ~ d*h/(d^2+dx^2+h^2)^2:
+  // highest at d = h/sqrt(3) in front of the window, and spreading sideways into a
+  // cone as distance from the screen grows.
   const float h  = max(push.emitter.x, 0.04);
   const float d  = max(dist, 0.0);
-  const float E  = d*h/pow(d*d+h*h,2.0);
+  const float dx = max(abs(along) - max(W, 0.1)*0.5, 0.0);
+  const float r2 = d*d + dx*dx + h*h;
+  const float E  = d*h/(r2*r2);
   const float Ep = 9.0/(16.0*sqrt(3.0)*h*h);
   const float near = smoothstep(-0.02, 0.02, dist);
-  const float a = clamp(abs(along)/max(W,0.1)*2.0, 0.0, 2.0);
-  const float lateral = 1.0-smoothstep(0.75, 1.35, a); // fades a little beyond the window's sides
+  // Cone-shaped spread: starts around the window's width and fans out sideways with forward distance.
+  const float halfSpan = max(W, 0.1)*0.5 + d*0.55;
+  const float lateral = 1.0-smoothstep(0.60, 1.15, abs(along)/halfSpan);
 
   // Colour along the window, softly averaged across neighbouring bands
   const float u = clamp(along/max(W,0.1)+0.5, 0.0, 1.0);

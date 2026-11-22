@@ -20,32 +20,27 @@ $ErrorActionPreference = 'Stop'
 $questSerial = & (Join-Path $PSScriptRoot 'install-quest.ps1') -GetQuestSerial
 
 # Hero setups for the later-chapter saves (startup commands: give, equip, guild, talent, attr)
-$paladin = 'chapter 3;guild 1;attr str 120;attr dex 60;attr hp 450;fight 2 75;fight 4 50;' +
-           'equip ITAR_PAL_M;equip ITMW_2H_PAL_SWORD;equip ITRW_CROSSBOW_H_02;give ITRW_BOLT 200;give ITPO_HEALTH_03 10'
+$paladin = 'chapter 3;guild 1;attr str 150;attr dex 80;attr hp 450;fight 2 75;fight 4 50;' +
+           'equip ITAR_PAL_M;equip ITMW_2H_PAL_SWORD;equip ITRW_CROSSBOW_H_02;give ITRW_BOLT 200;' +
+           'give ITPO_HEALTH_03 10;give ITMI_GOLD 1500;give ITFO_CHEESE 5;give ITLSTORCH 5'
 $mage    = 'chapter 4;guild 4;talent 7 6;attr mana 320;attr hp 320;fight 1 40;equip ITAR_KDF_H;' +
            'equip ITRU_FIREBOLT;equip ITRU_INSTANTFIREBALL;equip ITRU_ICEBOLT;equip ITRU_LIGHTNINGFLASH;' +
            'equip ITRU_FIRESTORM;equip ITRU_ICEWAVE;equip ITRU_FIRERAIN;equip ITRU_SUMDEMON;equip ITRU_LIGHTHEAL;' +
-           'give ITPO_MANA_03 20;give ITPO_HEALTH_03 10'
+           'give ITPO_MANA_03 20;give ITPO_HEALTH_03 10;give ITMI_GOLD 2000;give ITFO_WINE 5'
 $hunter  = 'chapter 5;guild 6;attr str 160;attr dex 160;attr hp 650;fight 1 80;fight 3 75;' +
-           'equip ITAR_DJG_H;equip ITMW_1H_SPECIAL_03;equip ITRW_BOW_H_04;give ITRW_ARROW 300;give ITPO_HEALTH_03 10'
+           'equip ITAR_DJG_H;equip ITMW_1H_SPECIAL_03;equip ITRW_BOW_H_04;give ITRW_ARROW 300;' +
+           'give ITPO_HEALTH_03 10;give ITMI_GOLD 3000;give ITFOMUTTON 5;give ITLSTORCH 5'
 
 # slot, name, waypoint, time, extra console commands
 $places = @(
-  @(5,  'Chapter 3: paladin, two-hander, crossbow', 'NW_CITY_UPTOWNPARADE_03', '12 0',  $paladin),
-  @(6,  'Chapter 4: fire mage, runes up to circle 6', 'NW_MONASTERY_PLACE_01', '10 0', $mage),
-  @(7,  'Chapter 5: dragon hunter, sword and bow',  'NW_PASS_01',              '15 0',  $hunter),
-  @(8,  'Fight: fire mage vs skeletons (night)',   'NW_TAVERNE',              '22 0',  "$mage;insert SKELETON;insert SKELETON;insert SKELETONMAGE"),
-  @(9,  'Fight: paladin vs orcs',                  'NW_PASS_01',              '13 0',  "$paladin;insert ORCWARRIOR_ROAM;insert ORCWARRIOR_ROAM;insert WOLF"),
-  @(10, 'Khorinis: main street (noon)',      'NW_CITY_MAINSTREET_02',      '12 0',  ''),
-  @(11, 'Khorinis: merchant quarter (noon)', 'NW_CITY_MERCHANT_PATH_02',   '12 0',  ''),
-  @(12, 'Khorinis: upper quarter (noon)',    'NW_CITY_UPTOWNPARADE_03',    '12 0',  ''),
-  @(13, 'Khorinis: harbour (evening)',       'NW_CITY_HABOUR_03',          '19 30', ''),
-  @(14, 'Khorinis: main street (night)',     'NW_CITY_MAINSTREET_02',      '23 0',  ''),
-  @(15, 'Dead Harpy tavern (noon)',          'NW_TAVERNE',                 '12 0',  ''),
-  @(16, 'Onar''s farm (afternoon)',          'NW_BIGFARM_HOUSE_01',        '15 0',  ''),
-  @(17, 'Monastery (morning)',               'NW_MONASTERY_PLACE_01',      '9 0',   ''),
-  @(18, 'Xardas'' tower (dusk)',             'NW_XARDAS_START',            '20 0',  ''),
-  @(19, 'Fight: wolves at the tavern',       'NW_TAVERNE',                 '12 0',  'insert WOLF;insert WOLF;insert WOLF')
+  @(5,  'Ch.3 Paladin (Upper Quarter)',  'NW_CITY_UPTOWNPARADE_03', '12 0',  $paladin),
+  @(6,  'Ch.4 Fire Mage (Monastery)',    'NW_MONASTERY_PLACE_01',   '10 0',  $mage),
+  @(7,  'Ch.5 Dragon Hunter (Pass)',     'NW_PASS_01',              '15 0',  $hunter),
+  @(8,  'Fight: Mage vs Skeletons',      'NW_TAVERNE',              '22 0',  "$mage;insert SKELETON;insert SKELETON;insert SKELETONMAGE"),
+  @(9,  'Fight: Paladin vs Orcs',        'NW_PASS_01',              '13 0',  "$paladin;insert ORCWARRIOR_ROAM;insert ORCWARRIOR_ROAM;insert WOLF"),
+  @(10, 'Khorinis: Main Street (Noon)',  'NW_CITY_MAINSTREET_02',   '12 0',  ''),
+  @(11, 'Khorinis: Harbour (Evening)',   'NW_CITY_HABOUR_03',       '19 30', ''),
+  @(12, 'Dead Harpy Tavern (Noon)',      'NW_TAVERNE',              '12 0',  '')
 )
 
 function Run-Place($p) {

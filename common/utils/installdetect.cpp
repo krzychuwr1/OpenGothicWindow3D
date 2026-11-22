@@ -42,15 +42,23 @@ std::u16string InstallDetect::detectG2() {
     return !dir.empty() && FileUtil::exists(FileUtil::nestedPath(dir, {u"Data"}, Tempest::Dir::FT_Dir));
     };
   auto path = Tempest::AndroidApi::externalDataPath().u16string();
+  const auto internal = Tempest::AndroidApi::internalDataPath().u16string();
+  const bool polishPkg = path.find(u".pl/")!=std::u16string::npos || internal.find(u".pl/")!=std::u16string::npos;
+  const char16_t* subdir = polishPkg ? u"gothic2_pl" : u"gothic2";
   if(!path.empty()) {
-    auto dir = FileUtil::nestedPath(path + u"/", {u"gothic2"}, Tempest::Dir::FT_Dir);
+    auto dir = FileUtil::nestedPath(path + u"/", {subdir}, Tempest::Dir::FT_Dir);
     if(hasData(dir))
       return dir;
     }
-  auto shared = FileUtil::nestedPath(u"/storage/emulated/0/OpenGothic/", {u"gothic2"}, Tempest::Dir::FT_Dir);
+  auto shared = FileUtil::nestedPath(u"/storage/emulated/0/OpenGothic/", {subdir}, Tempest::Dir::FT_Dir);
   if(hasData(shared))
     return shared;
-  return path.empty() ? u"" : FileUtil::nestedPath(path + u"/", {u"gothic2"}, Tempest::Dir::FT_Dir);
+  if(polishPkg) {
+    auto fallback = FileUtil::nestedPath(u"/storage/emulated/0/OpenGothic/", {u"gothic2"}, Tempest::Dir::FT_Dir);
+    if(hasData(fallback))
+      return fallback;
+    }
+  return path.empty() ? u"" : FileUtil::nestedPath(path + u"/", {subdir}, Tempest::Dir::FT_Dir);
 #else
   return u"";
 #endif

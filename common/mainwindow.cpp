@@ -1570,8 +1570,12 @@ bool MainWindow::runHeroCommand(std::string_view cmd) {
     }
   if(arg[0]=="fight" && arg.size()>=3)
     return world->script().devRaiseFightTalent(*hero, num(1,0), num(2,0));
-  if(arg[0]=="chapter" && arg.size()>=2)
-    return world->script().devChangeChapter(num(1,1));
+  if(arg[0]=="chapter" && arg.size()>=2) {
+    const bool ok = world->script().devChangeChapter(*hero, num(1,1));
+    if(chapter.isActive())
+      chapter.close();
+    return ok;
+    }
   if(arg[0]=="talent" && arg.size()>=3) {
     hero->setTalentSkill(Talent(num(1,0)), num(2,0));
     return true;
@@ -1618,6 +1622,10 @@ void MainWindow::runStartupCommands() {
   // "savegame SLOT NAME" from -exec: saved a few seconds later, once the scene has been drawn
   if(!pendingSaveSlot.empty() && Application::tickCount()>=pendingSaveAt &&
      Gothic::inst().checkLoading()==Gothic::LoadState::Idle) {
+    if(chapter.isActive())
+      chapter.close();
+    if(dialogs.isActive())
+      dialogs.onWorldChanged();
     Log::i("startup save: ", pendingSaveSlot, " \"", pendingSaveName, "\"");
     Gothic::inst().save(pendingSaveSlot, pendingSaveName);
     pendingSaveSlot.clear();
@@ -1634,8 +1642,13 @@ void MainWindow::runStartupCommands() {
   if(++startupFrames<60)
     return;
   startupDone = true;
-  // A new game opens with a conversation; end it so the camera follows the hero again
+  // A new game opens with Xardas's conversation; run its real intro completion scripts
+  // (journal entries, story flags) and cleanly clear ZS_Talk + AIV_INVINCIBLE on hero & NPCs.
   dialogs.onWorldChanged();
+  if(auto* world = Gothic::inst().world()) {
+    if(auto* hero = Gothic::inst().player())
+      world->script().devFinishIntro(*hero);
+    }
   Marvin marvin;
   size_t at = 0;
   while(at<=cmds.size()) {
@@ -1990,6 +2003,8 @@ void MainWindow::renderFrame(bool xr) {
           XrWindow::inst()->drawWindowEdges(enc);
         }
       }
+    if(xr)
+      XrWindow::inst()->drawInventoryItem(enc, uint8_t(view), inventory.selectedItem());
     if(xr)
       XrWindow::inst()->drawHands(enc, uint8_t(view), uint8_t(cmdId));
 #endif
