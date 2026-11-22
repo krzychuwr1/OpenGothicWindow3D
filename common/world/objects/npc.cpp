@@ -4816,7 +4816,8 @@ void Npc::updateArmTracking(uint64_t dt) {
   {
     Vec3 anchor;
     auto* vr = XrWindow::inst();
-    visual.setHeadHidden(isPlayer() && vr!=nullptr && vr->vrEyeAnchor(anchor));
+    // also over the second half of the passage, where the gliding camera nears the head
+    visual.setHeadHidden(isPlayer() && vr!=nullptr && (vr->vrEyeAnchor(anchor) || vr->vrTransition()>0.5f));
   }
   // The hero's arms follow the user's tracked hands while nothing else needs them; else they fade out
   Pose::ArmTarget arm[2];

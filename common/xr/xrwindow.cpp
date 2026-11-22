@@ -455,6 +455,29 @@ struct XrWindow::Impl {
   void updateVrToggles();
   void toggleVrMode(const char* source);
 
+  // Passage between the window and the VR view: the window flies to the face and grows until it
+  // covers the eyes while the game camera glides into the hero's head (and back the same way).
+  // vrProgress runs 0 (window) .. 1 (VR) in time; the VR view itself starts only at 1.
+  float                    vrProgress     = 0.f;
+  float                    vrProgressRate = 1.f/0.7f; // per second
+  bool                     vrWanted       = false;
+  bool                     vrModeSeen     = false;
+  XrTime                   vrProgressTime = 0;
+  // This frame shows the window moved and resized for the passage (beginFrame() .. next waitFrame());
+  // the placed window is kept in vrPlaced* meanwhile, and input always sees the placed window
+  bool                     vrAnimating    = false;
+  float                    vrAnimWeight   = 0.f;    // eased progress of the frame shown
+  XrPosef                  vrPlacedPose   = {};
+  float                    vrPlacedWidth  = 0.f, vrPlacedHeight = 0.f;
+  mutable float            vrUiScale      = 0.f;    // interface scale held during the passage
+  // At the end of the passage the window plane sits this far ahead of the eyes (metres)
+  static constexpr float   VrFillDistance = 0.15f;
+  static constexpr float   VrPassageManual = 0.7f, VrPassageAuto = 0.4f; // seconds
+  bool vrPassage() const { return vrProgress>0.f && !vrActive; }
+  static float vrEase(float t) { t = std::clamp(t,0.f,1.f); return t*t*(3.f-2.f*t); }
+  void beginWindowAnimation();
+  void endWindowAnimation();
+
   ~Impl();
 
   bool createInstance();
@@ -498,7 +521,7 @@ struct XrWindow::Impl {
   V3   environmentCenter() const  { return buttonCenter() + V3{ 0.275f*chromeScale(),0,0}; }
   V3   vrModeCenter() const       { return buttonCenter() + V3{ 0.385f*chromeScale(),0,0}; }
   V3   sliderCenter() const       { return buttonCenter() + V3{0,-0.07f*chromeScale(),0}; }
-  bool isCurved() const { return curved && curveRadius>0.f && sceneShown && !vrActive; }
+  bool isCurved() const { return curved && curveRadius>0.f && sceneShown && !vrActive && !vrAnimating; }
   // The arc is centred on the viewer at the moment the window is placed or curved
   // Slight: the arc centred on the viewer. Strong: a tighter arc (the viewer stays inside it).
   void updateCurveRadius() {
@@ -2020,7 +2043,7 @@ void XrWindow::Impl::updateInput() {
 
   // Pointing at or touching the frame parts: the handle moves the window, the corners resize it.
   // The game image itself is never a grab target, so playing never moves the window by accident.
-  const bool canManipulate = frame.shouldRender && placed && headValid && !vrActive; // no window in VR
+  const bool canManipulate = frame.shouldRender && placed && headValid && !vrActive && vrProgress<=0.f; // no window in VR or the passage
   const int64_t steadyNow = std::chrono::duration_cast<std::chrono::nanoseconds>(
                               std::chrono::steady_clock::now().time_since_epoch()).count();
   const bool gameInputRecent = steadyNow-lastGameInput.load() < 1000000000;
@@ -2369,7 +2392,7 @@ void XrWindow::Impl::updateInput() {
         bone(XR_HAND_JOINT_RING_PROXIMAL_EXT, XR_HAND_JOINT_LITTLE_PROXIMAL_EXT);
         }
       // The ray, only towards the window and its controls (or the 3D item handle)
-      if(h.aimValid && !vrActive) {
+      if(h.aimValid && !vrActive && vrProgress<=0.f) {
         if(h.hover==Grip::ItemHandle) {
           const V3 tint{1.f,0.88f,0.55f};
           capsule(h.aim.position, toXr(h.hit), 0.0012f, 0.7f*fade, tint, true);
@@ -2570,6 +2593,74 @@ void XrWindow::Impl::updateArmTargets() {
     }
   }
 
+void XrWindow::Impl::beginWindowAnimation() {
+  if(vrAnimating || !vrPassage() || !placed)
+    return;
+  const float b = vrEase(vrProgress);
+  vrPlacedPose      = windowPose;
+  vrPlacedWidth     = windowWidth;
+  vrPlacedHeight    = physicalHeight;
+  vrAnimating       = true;
+  vrAnimWeight      = b;
+  skipExtrapolation = true; // the window moves: no frame to extrapolate from
+
+  // The end of the passage: head-locked in the VR camera's frame (head yaw and pitch, no roll),
+  // just ahead of the eyes and wide enough to cover both eyes' fields of view at any head roll
+  float reach = 0.f;
+  for(const auto& v:eyeViews) {
+    const auto& f  = v.fov;
+    const float tx = std::max(-std::tan(f.angleLeft), std::tan(f.angleRight));
+    const float ty = std::max(-std::tan(f.angleDown), std::tan(f.angleUp));
+    const float r  = std::hypot(tx, ty);
+    if(std::isfinite(r))
+      reach = std::max(reach, r);
+    }
+  if(!(reach>0.5f && reach<8.f))
+    reach = 2.f;
+  const float D       = VrFillDistance;
+  const float endHalf = D*reach + 0.05f; // and the eyes' offset from the head's centre
+  const V3    endPos  = vrBasePos + rotate(vrBase, V3{0,0,-D});
+
+  // Yaw and pitch turn from the placed window to the head's (the camera turns the same way, so
+  // turning the head meanwhile does not drag the world); a roll of the placed window fades out
+  auto yawPitch = [](const XrQuaternionf& q, float& yaw, float& pitch) {
+    const V3 f = rotate(q, V3{0,0,-1});
+    yaw   = std::atan2(-f.x, -f.z);
+    pitch = std::asin(std::clamp(f.y, -1.f, 1.f));
+    };
+  float yaw0 = 0, pitch0 = 0, yaw1 = 0, pitch1 = 0;
+  yawPitch(vrPlacedPose.orientation, yaw0, pitch0);
+  yawPitch(vrBase, yaw1, pitch1);
+  XrQuaternionf roll = mul(conjugate(mul(aroundY(yaw0), aroundX(pitch0))), vrPlacedPose.orientation);
+  if(roll.w<0.f)
+    roll = {-roll.x, -roll.y, -roll.z, -roll.w};
+  roll = {roll.x*(1.f-b), roll.y*(1.f-b), roll.z*(1.f-b), roll.w*(1.f-b)+b};
+  const float rl = std::sqrt(roll.x*roll.x + roll.y*roll.y + roll.z*roll.z + roll.w*roll.w);
+  roll = rl>0.f ? XrQuaternionf{roll.x/rl, roll.y/rl, roll.z/rl, roll.w/rl} : XrQuaternionf{0,0,0,1};
+  const float yaw   = yaw0 + std::remainder(yaw1-yaw0, 2.f*float(M_PI))*b;
+  const float pitch = pitch0 + (pitch1-pitch0)*b;
+  windowPose.orientation = mul(mul(aroundY(yaw), aroundX(pitch)), roll);
+  const V3 p0 = toV3(vrPlacedPose.position);
+  windowPose.position = toXr(p0 + (endPos-p0)*b);
+
+  // The size grows evenly in angle as seen from the head: from the placed window's extent to
+  // the end's, at the window's distance in front of the head
+  const float d0 = std::max(dot(headPos-p0, rotate(vrPlacedPose.orientation, V3{0,0,1})), D);
+  const float d  = std::max(dot(headPos-toV3(windowPose.position), rotate(windowPose.orientation, V3{0,0,1})), D);
+  const float tw = vrPlacedWidth *0.5f/d0, th = vrPlacedHeight*0.5f/d0, te = endHalf/D;
+  windowWidth    = 2.f*d*(tw + (te-tw)*b);
+  physicalHeight = 2.f*d*(th + (te-th)*b);
+  }
+
+void XrWindow::Impl::endWindowAnimation() {
+  if(!vrAnimating)
+    return;
+  windowPose     = vrPlacedPose;
+  windowWidth    = vrPlacedWidth;
+  physicalHeight = vrPlacedHeight;
+  vrAnimating    = false;
+  }
+
 void XrWindow::Impl::locateEyes() {
   const bool scale = Gothic::settingsGetI("INTERNAL","xrResizeMode")==0;
   skipExtrapolation |= scale!=scalePicture;
@@ -2616,7 +2707,7 @@ void XrWindow::Impl::locateEyes() {
   // The same view as a projection layer: from the eye, facing the window plane, with an
   // asymmetric field of view that frames exactly the window rectangle (used with SpaceWarp)
   const float halfW = windowWidth*0.5f, halfH = windowHeight()*0.5f;
-  if(curved && curveRadius<=0.f && headValid)
+  if(curved && curveRadius<=0.f && headValid && !vrAnimating)
     updateCurveRadius();
   for(int i=0; i<2; ++i) {
     V3 e = eyeInWindow[i];
@@ -2710,12 +2801,18 @@ bool XrWindow::eyeView(uint8_t eye, float verticalFovDeg, Camera::EyeView& out) 
     }
   // Scale picture: one scale for both axes, chosen so the 2.4 x 1.35 m reference view always
   // fits; a wider window shows more to the sides, a taller one more above and below.
-  const float fit    = std::max(2.4f/s.windowWidth, 1.35f/s.windowHeight());
-  const float unitsX = s.scalePicture ? units*fit : units;
+  // The passage to or from VR: the picture scale (of the placed window) and the game window's
+  // distance ahead of the camera blend to life size at the eyes. With the window head-locked just
+  // ahead of the eyes and the camera at the VR pose, each eye then sees exactly the VR view.
+  const float b      = s.vrAnimating ? s.vrAnimWeight : 0.f;
+  const float fitW   = s.vrAnimating ? s.vrPlacedWidth  : s.windowWidth;
+  const float fitH   = s.vrAnimating ? s.vrPlacedHeight : s.windowHeight();
+  const float fit    = std::max(2.4f/fitW, 1.35f/fitH);
+  const float unitsX = s.scalePicture ? units*(fit + (1.f-fit)*b) : units;
   const float unitsY = unitsX;
   const float halfW = s.windowWidth*0.5f*unitsX;
   const float halfH = s.windowHeight()*0.5f*unitsY;
-  const float plane = Impl::portalDistance(verticalFovDeg)*units;
+  const float plane = (Impl::portalDistance(verticalFovDeg)*(1.f-b) + Impl::VrFillDistance*b)*units;
 
   V3 e = s.eyeInWindow[eye];
   e.z  = std::max(e.z, 0.05f);   // behind or inside the window: hold the eye just in front of it
@@ -2762,7 +2859,7 @@ void XrWindow::Impl::saveItemOffset() {
 
 void XrWindow::drawInventoryItem(Encoder<CommandBuffer>& cmd, uint8_t eye, const Item* item) {
   auto& s = *impl;
-  if(eye>1 || s.itemTargets[eye].empty() || !s.eyesValid || !s.placed) {
+  if(eye>1 || s.itemTargets[eye].empty() || !s.eyesValid || !s.placed || s.vrAnimating) {
     if(eye==0)
       s.itemPreviewActive = false;
     return;
@@ -3039,6 +3136,32 @@ Tempest::Rect XrWindow::uiViewport(uint8_t eye) const {
     const int x0 = px(-halfW), x1 = px(halfW), y0 = py(halfH-drop), y1 = py(-halfH-drop);
     return Tempest::Rect(x0, y0, std::max(1,x1-x0), std::max(1,y1-y0));
     }
+  if(s.vrAnimating && s.eyesValid && eye<2 && s.width>0 && s.height>0) {
+    // The passage: the interface goes from filling the placed window to the VR panel ahead of the
+    // head, as a rectangle parallel to the moving window (window space), drawn where each eye
+    // sees it through the window plane, so it keeps its depth instead of riding on the window
+    const auto& r = s.eyeRect[eye];
+    if(!(r[1]>r[0] && r[3]>r[2]))
+      return Tempest::Rect();
+    const float b        = s.vrAnimWeight;
+    const V3    head     = toLocal(s.windowPose, s.vrBasePos);
+    const float endHalfW = Impl::VrPanelHalf*Impl::VrPanelDistance;
+    const float endHalfH = endHalfW*float(s.height)/float(s.width);
+    const float halfW    = s.vrPlacedWidth*0.5f  + (endHalfW-s.vrPlacedWidth*0.5f)*b;
+    const float halfH    = s.vrPlacedHeight*0.5f + (endHalfH-s.vrPlacedHeight*0.5f)*b;
+    const V3    c        = V3{head.x, head.y-Impl::VrPanelDrop*Impl::VrPanelDistance, head.z-Impl::VrPanelDistance}*b;
+    V3 e = s.eyeInWindow[eye];
+    e.z = std::max(e.z, 0.05f);
+    const float k = e.z/(e.z-std::min(c.z, 0.f));
+    auto px = [&](float x) { return (e.x+(x-e.x)*k-r[0])/(r[1]-r[0])*float(s.width); };
+    auto py = [&](float y) { return (r[3]-(e.y+(y-e.y)*k))/(r[3]-r[2])*float(s.height); };
+    const int W = int(s.width), H = int(s.height);
+    const int x0 = std::clamp(int(std::lround(px(c.x-halfW))), 0, W-1);
+    const int y0 = std::clamp(int(std::lround(py(c.y+halfH))), 0, H-1);
+    const int x1 = std::clamp(int(std::lround(px(c.x+halfW))), x0+1, W);
+    const int y1 = std::clamp(int(std::lround(py(c.y-halfH))), y0+1, H);
+    return Tempest::Rect(x0, y0, x1-x0, y1-y0);
+    }
   if(!s.isCurved() || eye>1 || s.width==0 || s.height==0)
     return Tempest::Rect();
   const auto& r = s.eyeRect[eye];
@@ -3064,7 +3187,7 @@ bool XrWindow::isFoveationSupported() const {
 void XrWindow::prepareLightingRate(Encoder<CommandBuffer>& cmd, uint8_t slot, uint8_t eye, uint32_t w, uint32_t h) {
   auto& s = *impl;
   if(!isFoveationSupported() || !s.placed || !s.headValid || !s.eyesValid || eye>=2 || slot>=Resources::MaxFramesInFlight ||
-     s.vrActive) // the rate map follows the window
+     s.vrActive || s.vrAnimating) // the rate map follows the placed window
     return;
   const auto e = s.eyeInWindow[eye];
   if(!(e.z>0.f) || w==0 || h==0 || s.frame.predictedDisplayTime<s.retryRateAfter)
@@ -3123,7 +3246,7 @@ void XrWindow::Impl::updateSurface() {
              " focused=",int(focused));
       }
     }
-  if(!placed || !headValid || moving || !focused || !frame.shouldRender || vrActive) {
+  if(!placed || !headValid || moving || !focused || !frame.shouldRender || vrActive || vrProgress>0.f) {
     invalidateSurface();
     return;
     }
@@ -3221,6 +3344,8 @@ void XrWindow::Impl::applyRefreshRate() {
 
 bool XrWindow::waitFrame() {
   auto& s = *impl;
+  // Input and placement always work on the placed window, never on the passage's moving one
+  s.endWindowAnimation();
   if(!s.running || s.state==XR_SESSION_STATE_STOPPING) {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     return false;
@@ -3279,6 +3404,7 @@ bool XrWindow::beginFrame() {
   s.frameBegun = true;
 
   if(isVisible() && s.frame.shouldRender) {
+    s.beginWindowAnimation();
     s.locateEyes();
     return true;
     }
@@ -4113,7 +4239,7 @@ bool XrWindow::submit(bool rendered) {
     }
 
   const XrCompositionLayerQuad* spill = nullptr;
-  if(hasImage && !vrView && s.lightEnabled && s.environmentDepth.surface()) {
+  if(hasImage && !vrView && !s.vrAnimating && s.lightEnabled && s.environmentDepth.surface()) {
     const auto& surface = *s.environmentDepth.surface();
     spill = s.surfaceLight.layer(s.localSpace,surface.pose,surface.size,s.hasAlphaBlend);
     if(spill)
@@ -4195,7 +4321,7 @@ bool XrWindow::submit(bool rendered) {
   XrCompositionLayerColorScaleBiasKHR fade = {XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR};
   fade.colorScale = {1.f,1.f,1.f,reveal};
   const void* fadeNext = s.hasColorScale && reveal<1.f ? &fade : nullptr;
-  const bool showButtons = hasImage && reveal>0.f && !vrView;
+  const bool showButtons = hasImage && reveal>0.f && !vrView && !s.vrAnimating;
   XrCompositionLayerQuad chromePanel = {XR_TYPE_COMPOSITION_LAYER_QUAD};
   if(s.chromeReady && showButtons) {
     const bool showEnv          = s.buttonReady && s.roomAvailable();
@@ -4225,7 +4351,7 @@ bool XrWindow::submit(bool rendered) {
     }
   XrCompositionLayerQuad handle = {XR_TYPE_COMPOSITION_LAYER_QUAD};
   std::array<XrCompositionLayerQuad,2> corners;
-  if(s.handleReady && hasImage && !vrView) {
+  if(s.handleReady && hasImage && !vrView && !s.vrAnimating) {
     const bool hoverHandle = s.hands[0].hover==Grip::Handle || s.hands[1].hover==Grip::Handle;
 
     handle.layerFlags                = chromeFlags;
@@ -4240,7 +4366,7 @@ bool XrWindow::submit(bool rendered) {
     addLayer(handle);
     }
 
-  if(s.cornersReady && hasImage && !vrView) {
+  if(s.cornersReady && hasImage && !vrView && !s.vrAnimating) {
     const float halfW = s.windowWidth*0.5f, halfH = s.windowHeight()*0.5f, sz = 0.10f*s.chromeScale();
     for(int c=0; c<2; ++c) {
       const auto corner = c==0 ? Grip::CornerLeft : Grip::CornerRight;
@@ -4291,7 +4417,7 @@ bool XrWindow::submit(bool rendered) {
     itemLayer.viewCount  = 2;
     itemLayer.views      = itemView;
     addLayer(itemLayer);
-    if(s.handleReady && layerCount<layers.size()) {
+    if(s.handleReady && !s.vrAnimating && layerCount<layers.size()) {
       const bool hoverItem = s.hands[0].hover==Grip::ItemHandle || s.hands[1].hover==Grip::ItemHandle;
       itemHandle.layerFlags               = chromeFlags;
       itemHandle.space                    = s.localSpace;
@@ -4368,7 +4494,9 @@ Size XrWindow::resolution() const {
 
 Size XrWindow::desiredResolution() const {
   const auto& s = *impl;
-  if(!s.eyesValid)
+  // The passage keeps the image it started with: no reallocation midway, and the moving window
+  // says nothing about the image size it will need
+  if(!s.eyesValid || s.vrPassage())
     return resolution();
   if(s.vrActive) {
     // VR: the runtime's recommended eye image, within a GPU budget, shaped like the field of view
@@ -4505,15 +4633,18 @@ float XrWindow::densityUiScale() const {
   const auto& s = *impl;
   if(!s.eyesValid)
     return uiScale();
+  // The passage keeps the interface laid out as it was (the moving window would rescale it every frame)
+  if(s.vrPassage() && s.vrUiScale>0.f)
+    return s.vrUiScale;
   if(s.vrActive && s.width>0) {
     // The VR panel: interface elements about as large to the eye as in the window at its sweet spot
     const float panelDeg = 2.f*std::atan(Impl::VrPanelHalf*float(s.height)/float(s.width))*180.f/float(M_PI);
     const float scale    = uiScale()*(float(s.height)/900.f)*(s.verticalFov/panelDeg);
-    return std::clamp(std::round(scale*8.f)/8.f,0.5f,3.f);
+    return s.vrUiScale = std::clamp(std::round(scale*8.f)/8.f,0.5f,3.f);
     }
   const float z = std::max(0.05f,(s.eyeInWindow[0].z+s.eyeInWindow[1].z)*0.5f);
   const float scale = uiScale()*(float(s.height)/900.f)*(1.35f/s.windowHeight())*(z/Impl::portalDistance(s.verticalFov));
-  return std::clamp(std::round(scale*8.f)/8.f,0.5f,3.f);
+  return s.vrUiScale = std::clamp(std::round(scale*8.f)/8.f,0.5f,3.f);
   }
 
 std::string XrWindow::timingReport() {
@@ -4534,6 +4665,11 @@ PadState XrWindow::pad() const {
 
 bool XrWindow::isVrMode() const {
   return impl->vrMode;
+  }
+
+float XrWindow::vrTransition() const {
+  const auto& s = *impl;
+  return s.vrActive ? 1.f : Impl::vrEase(s.vrProgress);
   }
 
 void XrWindow::setVrMode(bool vr) {
@@ -4608,23 +4744,48 @@ void XrWindow::Impl::updateVrToggles() {
 bool XrWindow::updateVrView(bool allowed, float heroYaw, Tempest::Vec3& spin, Tempest::Vec3& offset) {
   auto& s = *impl;
   s.vrMode = Gothic::settingsGetI("INTERNAL","xrVrMode")!=0;
-  const bool active = s.vrMode && allowed && s.headValid;
+  const bool want = s.vrMode && allowed && s.headValid;
+
+  // The passage between window and VR: the wearer's own switch takes its time, the automatic
+  // ones (dialogs, inventory, menus, cutscenes) are quicker. A new switch midway turns back
+  // from where the passage is.
+  const XrTime now = s.frame.predictedDisplayTime;
+  const float  dt  = (s.vrProgressTime!=0 && now>s.vrProgressTime) ? std::min(float(now-s.vrProgressTime)*1e-9f, 0.1f) : 0.f;
+  s.vrProgressTime = now;
+  if(want!=s.vrWanted) {
+    s.vrWanted       = want;
+    s.vrProgressRate = 1.f/(s.vrMode!=s.vrModeSeen ? Impl::VrPassageManual : Impl::VrPassageAuto);
+    }
+  s.vrModeSeen = s.vrMode;
+  const float goal         = want ? 1.f : 0.f;
+  const float prevProgress = s.vrProgress;
+  if(!s.headValid || !s.placed)
+    s.vrProgress = goal; // nothing to animate from or to
+  else if(s.vrProgress<goal)
+    s.vrProgress = std::min(goal, s.vrProgress + dt*s.vrProgressRate);
+  else
+    s.vrProgress = std::max(goal, s.vrProgress - dt*s.vrProgressRate);
+  if(prevProgress<=0.f && s.vrProgress>0.f) {
+    // Setting out from the window: it stops being a grab target, and where the wearer looks
+    // now is where the hero faces, for the whole passage and the VR view after it
+    if(s.grabbed==Grip::ItemHandle)
+      s.saveItemOffset();
+    s.grabbedBy  = -1;
+    s.grabbed    = Grip::None;
+    s.vrRefValid = false;
+    }
+
+  const bool active = want && s.vrProgress>=1.f;
   if(active!=s.vrActive) {
-    // Nothing of the room shows in VR: pause the passthrough feed meanwhile
+    // Nothing of the room shows in VR: pause the passthrough feed meanwhile (the room stays
+    // around the window throughout the passage)
     if(s.passthrough!=XR_NULL_HANDLE && !s.immersive)
       ok(active ? s.xrPausePassthrough(s.passthrough) : s.xrStartPassthrough(s.passthrough), "switch passthrough");
-    if(active && s.grabbed==Grip::ItemHandle)
-      s.saveItemOffset();
-    if(active) {
-      s.grabbedBy = -1;
-      s.grabbed   = Grip::None;
-      }
     s.vrActive          = active;
-    s.vrRefValid        = false;
     s.skipExtrapolation = true;
     Log::i("OpenXR: ", active ? "VR view" : "window view");
     }
-  if(!active)
+  if(s.vrProgress<=0.f)
     return false;
 
   // Head yaw and pitch become the camera angles; roll and each eye's own pose stay in eyeView()
@@ -4761,6 +4922,7 @@ bool      XrWindow::eyeView(uint8_t, float, Camera::EyeView&) const { return fal
 bool      XrWindow::isVrMode() const { return false; }
 void      XrWindow::setVrMode(bool) {}
 bool      XrWindow::updateVrView(bool, float, Tempest::Vec3&, Tempest::Vec3&) { return false; }
+float     XrWindow::vrTransition() const { return 0.f; }
 void      XrWindow::setVerticalFov(float) {}
 std::string XrWindow::timingReport() { return ""; }
 PadState  XrWindow::pad() const { return {}; }

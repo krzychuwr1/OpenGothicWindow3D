@@ -103,10 +103,14 @@ class XrWindow final {
     bool              isVrMode() const;
     void              setVrMode(bool vr);
     // Once per game update: whether the game allows the VR view now (otherwise the window shows).
-    // True when this frame renders VR. Then `spin` holds the camera angles in degrees (pitch down,
-    // yaw, 0) and `offset` the head motion since the view started, in game units in world space,
-    // both for a body facing heroYaw (degrees).
+    // True when this frame needs the VR camera pose: it renders VR, or the passage between window
+    // and VR is under way (see vrTransition()). Then `spin` holds the camera angles in degrees
+    // (pitch down, yaw, 0) and `offset` the head motion since the view started, in game units in
+    // world space, both for a body facing heroYaw (degrees).
     bool              updateVrView(bool allowed, float heroYaw, Tempest::Vec3& spin, Tempest::Vec3& offset);
+    // How far the camera is from the game camera (0) to the VR pose (1), eased: between the two
+    // the window flies to the eyes and grows (or shrinks back) while the camera glides along
+    float             vrTransition() const;
 
     // Controller state of the XR controllers (empty while the window is grabbed or the app is unfocused).
     PadState          pad() const;

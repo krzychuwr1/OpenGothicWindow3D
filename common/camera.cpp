@@ -159,10 +159,12 @@ bool Camera::takeCameraCut() {
   return cut;
   }
 
-void Camera::setVrPose(bool active, const Tempest::Vec3& pos, const Tempest::Vec3& spin) {
-  cameraCut |= active!=vrPose;
+void Camera::setVrPose(bool active, const Tempest::Vec3& pos, const Tempest::Vec3& spin, float blend) {
+  restoreVrBlend();
+  const bool full = active && blend>=1.f;
+  cameraCut |= full!=vrPose;
   const Vec3 prev = origin;
-  if(active) {
+  if(full) {
     origin = pos;
     angles = spin;
     }
@@ -170,8 +172,35 @@ void Camera::setVrPose(bool active, const Tempest::Vec3& pos, const Tempest::Vec
     // Back behind the hero without sweeping out of his head
     tickThirdPerson(-1.f);
     }
-  vrPose = active;
+  vrPose = full;
+  if(active && !full && blend>0.f) {
+    // The passage: on the way between the game camera and the VR pose, without roll; yaw takes
+    // the shorter way round. The game camera itself comes back at the next tick.
+    vrBlend.applied = true;
+    vrBlend.origin  = origin;
+    vrBlend.angles  = angles;
+    origin   = origin + (pos-origin)*blend;
+    angles.x = angles.x + (spin.x-angles.x)*blend;
+    angles.y = angles.y + angleMod(spin.y-angles.y)*blend;
+    angles.z = angles.z*(1.f-blend);
+    vrBlend.shownOrigin = origin;
+    vrBlend.shownAngles = angles;
+    }
   // tick() tracks the water medium by the surfaces the camera crosses: count this jump too
+  if(auto* world = Gothic::inst().world(); world!=nullptr && prev!=origin)
+    inWater ^= (world->physic()->cameraRay(prev,origin).waterCol%2)!=0;
+  }
+
+void Camera::restoreVrBlend() {
+  if(!vrBlend.applied)
+    return;
+  vrBlend.applied = false;
+  // Unless something else has placed the camera since (a cutscene, a dialog shot)
+  if(origin!=vrBlend.shownOrigin || angles!=vrBlend.shownAngles)
+    return;
+  const Vec3 prev = origin;
+  origin = vrBlend.origin;
+  angles = vrBlend.angles;
   if(auto* world = Gothic::inst().world(); world!=nullptr && prev!=origin)
     inWater ^= (world->physic()->cameraRay(prev,origin).waterCol%2)!=0;
   }
@@ -799,6 +828,10 @@ void Camera::followAng(float& ang, float dest, float speed, float dtF) {
   }
 
 void Camera::tick(uint64_t dt) {
+#if defined(OPENGOTHIC_XR)
+  // The game camera moves on from where it was, not from where the passage to VR showed it
+  restoreVrBlend();
+#endif
   if(Gothic::inst().isPause() || (camMarvinMod==M_Freeze && camMod!=Dialog))
     return;
 
@@ -1132,6 +1165,9 @@ float Camera::azimuth() const {
   // In VR the head turns the camera, not the game: no lag behind the hero to lean the run into
   if(vrPose)
     return 0.f;
+  // The passage to or from VR shows the camera elsewhere; the game reads its own camera
+  if(vrBlend.applied)
+    return angleMod(state.spin.y-vrBlend.angles.y);
 #endif
   return angleMod(state.spin.y-angles.y);
   }
