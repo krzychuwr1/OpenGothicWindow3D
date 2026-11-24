@@ -120,6 +120,9 @@ cd OpenGothicWindow3D
 ./tools/build-quest.ps1 -Install -GameDir 'E:\Games\Gothic II'
 ```
 
+Without `-Install`, `-GameDir` or `-Launch`, `build-quest.ps1` only builds the APK and needs no
+headset connected.
+
 `fetch-quest-deps.ps1` downloads the Vulkan headers (KhronosGroup on GitHub) and the
 `org.khronos.openxr:openxr_loader_for_android` AAR (Maven Central) into `toolchain/`, which git
 ignores. `build-quest.ps1` builds the native library, packages and signs the APK with the debug
@@ -139,6 +142,30 @@ the command line (`adb` on `PATH` or in a `platform-tools` folder next to the sc
 ./tools/install-quest.ps1 -Apk build\quest\OpenGothicWindow3D.apk
 ./tools/install-quest.ps1 -Apk build\quest\OpenGothicWindow3D.apk -SkipGameFiles   # update the app only
 ```
+
+### Other Android headsets
+
+By default the scripts and the installer use exactly one connected Quest. For other Android
+OpenXR headsets (untested), `install-quest.ps1`, `push-game-data.ps1` and `build-quest.ps1` take:
+
+- `-AnyDevice` to use the only authorized adb device, or `-Serial <serial>` (as listed by
+  `adb devices`) to pick one. `ANDROID_SERIAL` still has to name a Quest unless `-AnyDevice` is
+  given.
+- `-GameTarget Shared` (default): game files go to `/sdcard/OpenGothic/<subdir>` and the app gets
+  all-files access through `appops`. `-GameTarget App`: they go to
+  `/sdcard/Android/data/<package>/files/<subdir>`, which the app reads first and which needs no
+  permission. Meta Quest keeps files that adb pushes there unreadable to the app, so use `Shared`
+  on Quest.
+- `install-quest.ps1 -SkipApp` copies only the game files.
+
+```powershell
+./tools/build-quest.ps1 -Install -AnyDevice -GameTarget App -GameDir 'E:\Games\Gothic II'
+./tools/install-quest.ps1 -Serial 192.168.1.20:37045 -GameTarget App
+```
+
+The installer's **Advanced (other headsets)** option does the same in the GUI: pick any adb
+device, pair and connect over wireless adb, choose where the game files go, copy game files
+without installing the app, and save the APK without a headset connected.
 
 ## Developer options
 

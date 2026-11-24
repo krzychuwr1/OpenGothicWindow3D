@@ -65,6 +65,26 @@ Apps from outside the Meta store need developer mode. It is free.
 On the headset open the **Library**, switch the filter to **Unknown Sources** and start
 **OpenGothic Window3D**. Or click **Launch on Quest** in the installer.
 
+### Other Android OpenXR headsets (advanced)
+
+The app is made and tested on Meta Quest. Other standalone Android headsets with an OpenXR
+runtime and Vulkan may work, but are untested. Tick **Advanced (other headsets)** in the
+installer to get:
+
+- **Device:** any Android device that adb sees, not only a Quest.
+- **Wireless adb:** for headsets without USB debugging. In the headset's wireless debugging
+  settings, choose to pair with a code, enter that address and code and click **Pair**. Then
+  enter the address shown on the wireless debugging screen itself and click **Connect**.
+- **Game files to:** the shared `/sdcard/OpenGothic` folder, which needs all-files access (the
+  installer grants it over adb), or the app's own folder, which needs no permission but is
+  deleted with the app. Meta Quest only works with the shared folder.
+- **Install the app:** untick it to copy only the game files, for example after installing
+  the APK another way.
+- **Save APK...:** saves `OpenGothicWindow3D.apk` with no headset connected, for installing with
+  the headset's own tools. Then copy `Data`, `_work` and `System` from your Gothic II folder to
+  `/sdcard/OpenGothic/Gothic2` (and allow the app *All files access* in the headset's settings), or
+  to `/sdcard/Android/data/org.opengothic.window3d/files/Gothic2`.
+
 ## Setting up
 
 **Controls.** Pair a Bluetooth keyboard and mouse or gamepad in the headset's
@@ -111,8 +131,10 @@ the edges of your view).
 
 - **The installer says "No Quest detected".** Check that developer mode is on, try another USB
   cable or port, and look in the headset for the *Allow USB debugging* prompt.
-- **"Quest detected — put on your headset...".** The headset is waiting for you to allow USB
-  debugging. Put it on and choose **Allow**.
+- **"Headset detected — put it on and allow USB debugging".** The headset is waiting for you to
+  allow USB debugging. Put it on and choose **Allow**.
+- **"An Android device is connected, but no Quest".** The simple mode only installs to a Quest.
+  For another headset, tick **Advanced (other headsets)**.
 - **Gothic II is not found.** Click **Browse...** and select the game folder, the one that contains
   `Data`, `_work` and `System`. The original *Gothic II* without *Night of the Raven* is not
   enough: you need the Gold Edition.

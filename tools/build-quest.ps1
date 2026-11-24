@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
   Builds the Meta Quest APK (OpenXR window mode) without Gradle and optionally installs it.
+  Without -Install, -GameDir or -Launch it only builds the APK and needs no device connected.
 
 .DESCRIPTION
   Needs the Android SDK (build-tools 35, platform 34+), an NDK, CMake, Ninja, Python,
@@ -11,6 +12,7 @@
   ./tools/build-quest.ps1 -Install
   ./tools/build-quest.ps1 -Install -GameDir 'E:\Games\Gothic II'
   ./tools/build-quest.ps1 -Variant pl    # Polish package, reads /sdcard/OpenGothic/gothic2_pl
+  ./tools/build-quest.ps1 -Install -AnyDevice -GameTarget App -GameDir 'E:\Games\Gothic II'   # another headset
 #>
 param(
   [string]$AndroidSdk    = $(if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { "$env:LOCALAPPDATA\Android\Sdk" }),
@@ -23,7 +25,12 @@ param(
   [string]$Variant       = 'en',
   [switch]$Install,
   [string]$GameDir       = '',
-  [switch]$Launch
+  [switch]$Launch,
+  # Device selection and game file location for -Install / -GameDir: see tools/install-quest.ps1
+  [string]$Serial        = '',
+  [switch]$AnyDevice,
+  [ValidateSet('Shared','App')]
+  [string]$GameTarget    = 'Shared'
 )
 $ErrorActionPreference = 'Stop'
 $root    = (Resolve-Path "$PSScriptRoot\..").Path
@@ -92,18 +99,14 @@ if (-not (Test-Path $keystore)) { throw "Debug keystore not found: $keystore (cr
 if ($LASTEXITCODE) { throw 'apksigner failed' }
 Write-Host "APK: $apk"
 
-if ($Install -or $Launch) {
-  $questSerial = & (Join-Path $PSScriptRoot 'install-quest.ps1') -GetQuestSerial
-}
-if ($Install) {
-  adb -s $questSerial install -r $apk
-  if ($LASTEXITCODE) { throw 'adb install failed' }
-  # Read access to the shared game folder (/sdcard/OpenGothic)
-  adb -s $questSerial shell appops set $package MANAGE_EXTERNAL_STORAGE allow
-}
-if ($GameDir) {
-  & "$PSScriptRoot\push-game-data.ps1" -GameDir $GameDir
+if ($Install -or $GameDir) {
+  $installArgs = @{ Apk = $apk; Package = $package; Serial = $Serial; AnyDevice = $AnyDevice; GameTarget = $GameTarget
+                    Subdir = $(if ($Variant -eq 'pl') { 'gothic2_pl' } else { 'Gothic2' }) }
+  if ($GameDir) { $installArgs.GameDir = $GameDir } else { $installArgs.SkipGameFiles = $true }
+  if (-not $Install) { $installArgs.SkipApp = $true }
+  & (Join-Path $PSScriptRoot 'install-quest.ps1') @installArgs
 }
 if ($Launch) {
-  adb -s $questSerial shell am start -n "$package/android.app.NativeActivity"
+  $deviceSerial = & (Join-Path $PSScriptRoot 'install-quest.ps1') -GetQuestSerial -Serial $Serial -AnyDevice:$AnyDevice
+  adb -s $deviceSerial shell am start -n "$package/android.app.NativeActivity"
 }

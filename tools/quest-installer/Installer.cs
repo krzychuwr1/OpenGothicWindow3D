@@ -30,6 +30,8 @@ namespace OpenGothicQuestInstaller
     {
         private const string PackageName = "org.opengothic.window3d";
         private const string RemoteGameDir = "/sdcard/OpenGothic/Gothic2";
+        // The app looks here first; needs no permission, but Meta Quest keeps adb-pushed files unreadable
+        private const string AppGameDir    = "/sdcard/Android/data/" + PackageName + "/files/Gothic2";
 
         // Dark palette
         private static readonly Color BgColor      = Color.FromArgb(20, 22, 28);
@@ -56,17 +58,46 @@ namespace OpenGothicQuestInstaller
         private readonly Button       btnLaunch;
         private readonly System.Windows.Forms.Timer pollTimer;
 
+        // Advanced mode: any adb device, wireless adb, game file location, APK export
+        private readonly CheckBox     chkAdvanced;
+        private readonly Label        lblDeviceTitle;
+        private readonly Panel        cardQuest;
+        private readonly Panel        cardAdvanced;
+        private readonly ComboBox     cmbDevice;
+        private readonly TextBox      txtAddress;
+        private readonly TextBox      txtPairCode;
+        private readonly Button       btnConnect;
+        private readonly RadioButton  rbShared;
+        private readonly RadioButton  rbApp;
+        private readonly CheckBox     chkInstallApp;
+        private readonly Button       btnSaveApk;
+        private readonly List<Control> belowAdvanced = new List<Control>();
+
+        private sealed class DeviceInfo
+        {
+            public string Serial;
+            public string Model;
+            public bool   IsQuest;
+            public override string ToString()
+            {
+                string name = string.IsNullOrEmpty(Model) ? "Android device" : Model;
+                return string.Format("{0} ({1}){2}", name, Serial, IsQuest ? "" : "  — not a Quest");
+            }
+        }
+
         private string adbPath;
         private string apkPath;
-        private string questSerial;
-        private string questModel;
-        private bool   questUnauthorized;
+        private List<DeviceInfo> devices = new List<DeviceInfo>();
+        private bool   anyUnauthorized;
         private bool   isInstalling;
         private bool   isPolling;
+        private bool   installedOnce;
+
+        private bool Advanced { get { return chkAdvanced.Checked; } }
 
         public InstallerForm()
         {
-            Text = "OpenGothic Window3D — Meta Quest Installer";
+            Text = "OpenGothic Window3D Installer";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
@@ -96,6 +127,15 @@ namespace OpenGothicQuestInstaller
                 Location = new Point(pad, y)
             };
             Controls.Add(lblTitle);
+
+            chkAdvanced = new CheckBox
+            {
+                Text = "Advanced (other headsets)",
+                AutoSize = true,
+                ForeColor = TextMuted,
+                Location = new Point(pad + contentW - 182, y + 8)
+            };
+            Controls.Add(chkAdvanced);
             y += 32;
 
             var lblSub = new Label
@@ -146,7 +186,7 @@ namespace OpenGothicQuestInstaller
 
             chkSkipFiles = new CheckBox
             {
-                Text = "Update app only (skip copying ~3.3 GB game files if already on Quest)",
+                Text = "Update app only (skip copying ~3.3 GB game files if already on the headset)",
                 Location = new Point(14, 98),
                 AutoSize = true,
                 ForeColor = TextMuted
@@ -157,17 +197,18 @@ namespace OpenGothicQuestInstaller
             y += cardGame.Height + 14;
 
             // Card 2: Meta Quest connection
-            var cardQuest = MakeCard(pad, y, contentW, 78);
+            cardQuest = MakeCard(pad, y, contentW, 78);
             Controls.Add(cardQuest);
 
-            cardQuest.Controls.Add(new Label
+            lblDeviceTitle = new Label
             {
                 Text = "2. Meta Quest Headset (USB + Developer Mode)",
                 Font = new Font("Segoe UI Semibold", 10.5f, FontStyle.Bold),
                 ForeColor = TextPrimary,
                 AutoSize = true,
                 Location = new Point(14, 12)
-            });
+            };
+            cardQuest.Controls.Add(lblDeviceTitle);
 
             lblQuestStatus = new Label
             {
@@ -179,6 +220,110 @@ namespace OpenGothicQuestInstaller
             cardQuest.Controls.Add(lblQuestStatus);
 
             y += cardQuest.Height + 14;
+
+            // Card 3 (advanced only): any adb device, wireless adb, file location, APK export
+            cardAdvanced = MakeCard(pad, y, contentW, 196);
+            cardAdvanced.Visible = false;
+            Controls.Add(cardAdvanced);
+
+            cardAdvanced.Controls.Add(new Label
+            {
+                Text = "3. Advanced",
+                Font = new Font("Segoe UI Semibold", 10.5f, FontStyle.Bold),
+                ForeColor = TextPrimary,
+                AutoSize = true,
+                Location = new Point(14, 12)
+            });
+
+            int labelW = 96;
+            int fieldX = 14 + labelW;
+            int fieldW = contentW - fieldX - 14;
+
+            cardAdvanced.Controls.Add(MakeFieldLabel("Device:", 14, 43));
+            cmbDevice = new ComboBox
+            {
+                Location = new Point(fieldX, 40),
+                Width = fieldW,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = InputBg,
+                ForeColor = TextPrimary
+            };
+            cmbDevice.SelectedIndexChanged += (s, e) => { UpdateDeviceStatus(); UpdateInstallButton(); };
+            cardAdvanced.Controls.Add(cmbDevice);
+
+            cardAdvanced.Controls.Add(MakeFieldLabel("Wireless adb:", 14, 75));
+            txtAddress = new TextBox
+            {
+                Location = new Point(fieldX, 72),
+                Width = fieldW - 90 - 8 - 92 - 8,
+                BackColor = InputBg,
+                ForeColor = TextPrimary,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            txtPairCode = new TextBox
+            {
+                Location = new Point(txtAddress.Right + 8, 72),
+                Width = 92,
+                BackColor = InputBg,
+                ForeColor = TextPrimary,
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            btnConnect = MakeSecondaryButton("Connect", fieldX + fieldW - 90, 70, 90, 27);
+            btnConnect.Click += OnConnectClick;
+            txtPairCode.TextChanged += (s, e) =>
+                btnConnect.Text = txtPairCode.Text.Trim().Length > 0 ? "Pair" : "Connect";
+            cardAdvanced.Controls.Add(txtAddress);
+            cardAdvanced.Controls.Add(txtPairCode);
+            cardAdvanced.Controls.Add(btnConnect);
+            var tips = new ToolTip();
+            tips.SetToolTip(txtAddress, "IP address and port shown in the headset's wireless debugging settings, e.g. 192.168.1.20:37045");
+            tips.SetToolTip(txtPairCode, "Pairing code: fill it in with the pairing address to pair first, leave empty to connect");
+            cardAdvanced.Controls.Add(new Label
+            {
+                Text = "address:port            pairing code (optional)",
+                Location = new Point(fieldX, 98),
+                AutoSize = true,
+                ForeColor = TextMuted,
+                Font = new Font("Segoe UI", 8f)
+            });
+
+            cardAdvanced.Controls.Add(MakeFieldLabel("Game files to:", 14, 120));
+            rbShared = new RadioButton
+            {
+                Text = "/sdcard/OpenGothic — shared folder, needs all-files access (Quest)",
+                Location = new Point(fieldX, 118),
+                AutoSize = true,
+                ForeColor = TextMuted,
+                Checked = true
+            };
+            rbApp = new RadioButton
+            {
+                Text = "The app's own folder — no permission, removed with the app",
+                Location = new Point(fieldX, 140),
+                AutoSize = true,
+                ForeColor = TextMuted
+            };
+            cardAdvanced.Controls.Add(rbShared);
+            cardAdvanced.Controls.Add(rbApp);
+
+            chkInstallApp = new CheckBox
+            {
+                Text = "Install the app (untick to copy game files only)",
+                Location = new Point(14, 166),
+                AutoSize = true,
+                ForeColor = TextMuted,
+                Checked = true
+            };
+            chkInstallApp.CheckedChanged += (s, e) => UpdateInstallButton();
+            cardAdvanced.Controls.Add(chkInstallApp);
+
+            btnSaveApk = MakeSecondaryButton("Save APK...", contentW - 14 - 110, 162, 110, 27);
+            btnSaveApk.Click += OnSaveApkClick;
+            tips.SetToolTip(btnSaveApk, "Save OpenGothicWindow3D.apk to install it some other way. No headset needed.");
+            cardAdvanced.Controls.Add(btnSaveApk);
+
+            chkAdvanced.CheckedChanged += (s, e) => OnAdvancedChanged();
 
             // Progress + Log
             lblStepStatus = new Label
@@ -241,6 +386,8 @@ namespace OpenGothicQuestInstaller
             btnLaunch.Click += OnLaunchClick;
             Controls.Add(btnLaunch);
 
+            belowAdvanced.AddRange(new Control[] { lblStepStatus, progressBar, txtLog, btnInstall, btnLaunch });
+
             // Locate prerequisites and auto-detect Gothic II
             LocatePrerequisites();
             string detected = FindGothic2();
@@ -271,6 +418,36 @@ namespace OpenGothicQuestInstaller
                     e.Graphics.DrawRectangle(pen, 0, 0, p.Width - 1, p.Height - 1);
             };
             return p;
+        }
+
+        private Label MakeFieldLabel(string text, int x, int y)
+        {
+            return new Label { Text = text, Location = new Point(x, y), AutoSize = true, ForeColor = TextMuted };
+        }
+
+        private void OnAdvancedChanged()
+        {
+            bool adv = Advanced;
+            // Measured from the laid-out controls, so it stays right after DPI scaling
+            int shift = cardAdvanced.Height + (cardAdvanced.Top - cardQuest.Bottom);
+            SuspendLayout();
+            cardAdvanced.Visible = adv;
+            foreach (var c in belowAdvanced)
+                c.Top += adv ? shift : -shift;
+            ClientSize = new Size(ClientSize.Width, ClientSize.Height + (adv ? shift : -shift));
+            ResumeLayout();
+
+            lblDeviceTitle.Text = adv ? "2. Headset (any Android device over adb)" : "2. Meta Quest Headset (USB + Developer Mode)";
+            btnInstall.Text = adv ? "Install to Headset" : "Install to Quest";
+            btnLaunch.Text  = adv ? "Launch on Headset" : "Launch on Quest";
+            if (!adv)
+            {
+                // The simple flow always installs the app and uses the shared folder
+                chkInstallApp.Checked = true;
+                rbShared.Checked = true;
+            }
+            UpdateDeviceStatus();
+            UpdateInstallButton();
         }
 
         private Button MakeSecondaryButton(string text, int x, int y, int w, int h)
@@ -498,46 +675,35 @@ namespace OpenGothicQuestInstaller
             try
             {
                 var result = await RunProcessAsync(adbPath, "devices -l", null);
-                string foundSerial = null;
-                string foundModel = null;
+                var found = new List<DeviceInfo>();
                 bool unauth = false;
 
                 foreach (string raw in result.StdOut.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
                 {
                     string line = raw.Trim();
                     if (line.StartsWith("List of devices")) continue;
-                    var mAuth = Regex.Match(line, @"^(\S+)\s+device\s+.*\bmodel:((?:Meta_)?Quest(?:_\S+)?)(?:\s|$)");
-                    if (mAuth.Success)
+                    var m = Regex.Match(line, @"^(\S+)\s+device(?:\s|$)");
+                    if (m.Success)
                     {
-                        foundSerial = mAuth.Groups[1].Value;
-                        foundModel = mAuth.Groups[2].Value.Replace('_', ' ');
-                        break;
+                        var mm = Regex.Match(line, @"\bmodel:(\S+)");
+                        string model = mm.Success ? mm.Groups[1].Value : "";
+                        found.Add(new DeviceInfo
+                        {
+                            Serial  = m.Groups[1].Value,
+                            Model   = model.Replace('_', ' '),
+                            IsQuest = Regex.IsMatch(model, @"^(?:Meta_)?Quest(?:_\S+)?$")
+                        });
                     }
-                    if (Regex.IsMatch(line, @"^\S+\s+unauthorized\b"))
+                    else if (Regex.IsMatch(line, @"^\S+\s+unauthorized\b"))
                     {
                         unauth = true;
                     }
                 }
 
-                questSerial = foundSerial;
-                questModel = foundModel;
-                questUnauthorized = unauth;
-
-                if (!string.IsNullOrEmpty(questSerial))
-                {
-                    lblQuestStatus.Text = string.Format("Connected: {0} ({1})", questModel, questSerial);
-                    lblQuestStatus.ForeColor = OkColor;
-                }
-                else if (questUnauthorized)
-                {
-                    lblQuestStatus.Text = "Quest detected — put on your headset and click 'Allow USB debugging'.";
-                    lblQuestStatus.ForeColor = WarnColor;
-                }
-                else
-                {
-                    lblQuestStatus.Text = "No Quest detected. Connect via USB cable with Developer Mode enabled.";
-                    lblQuestStatus.ForeColor = TextMuted;
-                }
+                devices = found;
+                anyUnauthorized = unauth;
+                RefreshDeviceList();
+                UpdateDeviceStatus();
                 UpdateInstallButton();
             }
             catch
@@ -551,53 +717,134 @@ namespace OpenGothicQuestInstaller
             }
         }
 
+        // Keeps the advanced device list in step with adb without losing the user's choice
+        private void RefreshDeviceList()
+        {
+            var current = cmbDevice.SelectedItem as DeviceInfo;
+            var shown = cmbDevice.Items.Cast<DeviceInfo>().Select(d => d.Serial + "|" + d.Model);
+            var now = devices.Select(d => d.Serial + "|" + d.Model);
+            if (shown.SequenceEqual(now)) return;
+
+            cmbDevice.BeginUpdate();
+            cmbDevice.Items.Clear();
+            foreach (var d in devices) cmbDevice.Items.Add(d);
+            int keep = current == null ? -1 : devices.FindIndex(d => d.Serial == current.Serial);
+            if (keep < 0) keep = devices.FindIndex(d => d.IsQuest);
+            if (keep < 0 && devices.Count > 0) keep = 0;
+            cmbDevice.SelectedIndex = keep;
+            cmbDevice.EndUpdate();
+        }
+
+        // Simple mode: the first connected Quest. Advanced mode: whatever is picked in the list.
+        private DeviceInfo SelectedDevice()
+        {
+            if (Advanced)
+                return cmbDevice.SelectedItem as DeviceInfo;
+            return devices.FirstOrDefault(d => d.IsQuest);
+        }
+
+        private void UpdateDeviceStatus()
+        {
+            var dev = SelectedDevice();
+            if (dev != null)
+            {
+                string name = string.IsNullOrEmpty(dev.Model) ? "Android device" : dev.Model;
+                lblQuestStatus.Text = string.Format("Connected: {0} ({1})", name, dev.Serial);
+                lblQuestStatus.ForeColor = OkColor;
+                if (Advanced && !dev.IsQuest)
+                    lblQuestStatus.Text += " — not a Quest; compatibility is untested";
+            }
+            else if (anyUnauthorized)
+            {
+                lblQuestStatus.Text = "Headset detected — put it on and allow USB debugging.";
+                lblQuestStatus.ForeColor = WarnColor;
+            }
+            else if (!Advanced && devices.Count > 0)
+            {
+                lblQuestStatus.Text = "An Android device is connected, but no Quest. For other headsets tick Advanced.";
+                lblQuestStatus.ForeColor = WarnColor;
+            }
+            else
+            {
+                lblQuestStatus.Text = Advanced
+                    ? "No device. Connect over USB with USB debugging allowed, or use wireless adb below."
+                    : "No Quest detected. Connect via USB cable with Developer Mode enabled.";
+                lblQuestStatus.ForeColor = TextMuted;
+            }
+        }
+
         private void UpdateInstallButton()
         {
-            bool hasQuest = !string.IsNullOrEmpty(questSerial);
-            bool hasPrereqs = !string.IsNullOrEmpty(adbPath) && !string.IsNullOrEmpty(apkPath);
+            bool hasDevice = SelectedDevice() != null;
+            bool installApp = chkInstallApp.Checked;
+            bool hasPrereqs = !string.IsNullOrEmpty(adbPath) && (!installApp || !string.IsNullOrEmpty(apkPath));
             bool hasGame = chkSkipFiles.Checked || IsValidGothicDir(txtGameDir.Text);
+            bool hasWork = installApp || !chkSkipFiles.Checked;
 
-            btnInstall.Enabled = !isInstalling && hasQuest && hasPrereqs && hasGame;
+            btnInstall.Enabled = !isInstalling && hasDevice && hasPrereqs && hasGame && hasWork;
             btnInstall.BackColor = btnInstall.Enabled ? AccentColor : Color.FromArgb(52, 57, 72);
             btnBrowse.Enabled = !isInstalling;
             chkSkipFiles.Enabled = !isInstalling;
-            if (!isInstalling && hasQuest && btnLaunch.Tag != null)
-                btnLaunch.Enabled = true;
+            chkAdvanced.Enabled = !isInstalling;
+            cardAdvanced.Enabled = !isInstalling;
+            btnSaveApk.Enabled = !string.IsNullOrEmpty(apkPath);
+            btnLaunch.Enabled = !isInstalling && hasDevice && (installedOnce || Advanced);
         }
 
         private async void OnInstallClick(object sender, EventArgs e)
         {
-            if (isInstalling) return;
+            var dev = SelectedDevice();
+            if (isInstalling || dev == null) return;
             isInstalling = true;
-            btnLaunch.Enabled = false;
             UpdateInstallButton();
             txtLog.Clear();
             progressBar.Value = 0;
 
-            string serial = questSerial;
+            string serial = dev.Serial;
+            string deviceName = string.IsNullOrEmpty(dev.Model) ? serial : dev.Model;
             string gameDir = txtGameDir.Text;
             bool skipFiles = chkSkipFiles.Checked;
+            bool installApp = chkInstallApp.Checked;
+            bool sharedTarget = rbShared.Checked;
+            string remoteDir = sharedTarget ? RemoteGameDir : AppGameDir;
 
             try
             {
-                SetStep("Installing OpenGothicWindow3D.apk...", 5);
-                AppendLog("Installing app onto " + questModel + "...");
-                var rInstall = await RunProcessAsync(adbPath,
-                    string.Format("-s {0} install -r \"{1}\"", serial, apkPath),
-                    line => AppendLog(line));
-                if (rInstall.ExitCode != 0)
-                    throw new Exception("APK install failed:\n" + rInstall.StdErr);
+                if (installApp)
+                {
+                    SetStep("Installing OpenGothicWindow3D.apk...", 5);
+                    AppendLog("Installing app onto " + deviceName + "...");
+                    var rInstall = await RunProcessAsync(adbPath,
+                        string.Format("-s {0} install -r \"{1}\"", serial, apkPath),
+                        line => AppendLog(line));
+                    if (rInstall.ExitCode != 0)
+                        throw new Exception("APK install failed:\n" + rInstall.StdErr);
+                }
 
-                SetStep("Granting storage permission...", 12);
-                await RunProcessAsync(adbPath,
-                    string.Format("-s {0} shell appops set {1} MANAGE_EXTERNAL_STORAGE allow", serial, PackageName),
-                    null);
+                if (sharedTarget)
+                {
+                    SetStep("Granting storage permission...", 12);
+                    var rPerm = await RunProcessAsync(adbPath,
+                        string.Format("-s {0} shell appops set {1} MANAGE_EXTERNAL_STORAGE allow", serial, PackageName),
+                        null);
+                    if (rPerm.ExitCode != 0)
+                        AppendLog("WARNING: could not grant all-files access (" + rPerm.StdErr.Trim() +
+                                  "). Allow it for the app in the headset's settings, or copy to the app's own folder (Advanced).");
+                }
+                else if (dev.IsQuest)
+                {
+                    AppendLog("WARNING: on Meta Quest the app cannot read files copied into its own folder; use the shared folder.");
+                }
 
                 if (!skipFiles)
                 {
-                    await RunProcessAsync(adbPath,
-                        string.Format("-s {0} shell mkdir -p {1}", serial, RemoteGameDir),
+                    if (!installApp && !sharedTarget)
+                        AppendLog("Note: the app must already be installed, so that its folder belongs to it.");
+                    var rMkdir = await RunProcessAsync(adbPath,
+                        string.Format("-s {0} shell mkdir -p {1}", serial, remoteDir),
                         null);
+                    if (rMkdir.ExitCode != 0)
+                        throw new Exception("Could not create " + remoteDir + " on the device:\n" + rMkdir.StdErr);
 
                     var folders = new[]
                     {
@@ -609,13 +856,13 @@ namespace OpenGothicQuestInstaller
                     foreach (var f in folders)
                     {
                         string localSub = Path.Combine(gameDir, f.Name);
-                        SetStep(string.Format("Copying {0} to Quest...", f.Name), f.Start);
-                        AppendLog(string.Format("Copying {0} (this may take a couple of minutes)...", f.Name));
+                        SetStep(string.Format("Copying {0} to {1}...", f.Name, deviceName), f.Start);
+                        AppendLog(string.Format("Copying {0} to {1} (this may take a couple of minutes)...", f.Name, remoteDir));
 
                         int startPct = f.Start;
                         int spanPct = f.End - f.Start;
                         var rPush = await RunProcessAsync(adbPath,
-                            string.Format("-s {0} push --sync \"{1}\" \"{2}/\"", serial, localSub, RemoteGameDir),
+                            string.Format("-s {0} push --sync \"{1}\" \"{2}/\"", serial, localSub, remoteDir),
                             line =>
                             {
                                 var m = Regex.Match(line, @"\[\s*(\d+)%\]");
@@ -638,11 +885,13 @@ namespace OpenGothicQuestInstaller
                     }
                 }
 
-                SetStep("Done! Open Library -> Unknown Sources -> OpenGothic Window3D on Quest.", 100);
+                if (dev.IsQuest)
+                    SetStep("Done! Open Library -> Unknown Sources -> OpenGothic Window3D on Quest.", 100);
+                else
+                    SetStep("Done! Start OpenGothic Window3D from the headset's app library.", 100);
                 AppendLog("");
-                AppendLog("Installation complete! You can now unplug your Quest or click 'Launch on Quest'.");
-                btnLaunch.Tag = true;
-                btnLaunch.Enabled = true;
+                AppendLog("Installation complete! You can now unplug the headset or click '" + btnLaunch.Text + "'.");
+                installedOnce = true;
             }
             catch (Exception ex)
             {
@@ -659,11 +908,73 @@ namespace OpenGothicQuestInstaller
 
         private async void OnLaunchClick(object sender, EventArgs e)
         {
-            if (string.IsNullOrEmpty(questSerial) || string.IsNullOrEmpty(adbPath)) return;
-            AppendLog("Launching OpenGothic Window3D on Quest...");
+            var dev = SelectedDevice();
+            if (dev == null || string.IsNullOrEmpty(adbPath)) return;
+            AppendLog("Launching OpenGothic Window3D...");
             await RunProcessAsync(adbPath,
-                string.Format("-s {0} shell am start -n {1}/android.app.NativeActivity", questSerial, PackageName),
+                string.Format("-s {0} shell am start -n {1}/android.app.NativeActivity", dev.Serial, PackageName),
                 line => AppendLog(line));
+        }
+
+        private async void OnConnectClick(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(adbPath)) return;
+            string address = txtAddress.Text.Trim();
+            string code = txtPairCode.Text.Trim();
+            // Both go on the adb command line: allow only host:port and a numeric code
+            if (!Regex.IsMatch(address, @"^(?:[A-Za-z0-9.\-]+|\[[0-9A-Fa-f:]+\]):\d{1,5}$"))
+            {
+                AppendLog("Enter the address as shown on the headset, e.g. 192.168.1.20:37045");
+                return;
+            }
+            if (code.Length > 0 && !Regex.IsMatch(code, @"^\d{4,10}$"))
+            {
+                AppendLog("The pairing code is the number shown on the headset.");
+                return;
+            }
+            btnConnect.Enabled = false;
+            try
+            {
+                bool pairing = code.Length > 0;
+                string args = pairing ? string.Format("pair {0} {1}", address, code)
+                                      : string.Format("connect {0}", address);
+                AppendLog("adb " + (pairing ? "pair " : "connect ") + address + " ...");
+                var r = await RunProcessAsync(adbPath, args, line => AppendLog(line));
+                if (pairing && r.ExitCode == 0)
+                {
+                    txtPairCode.Clear();
+                    AppendLog("Now enter the address from the wireless debugging screen itself and click Connect.");
+                }
+            }
+            finally
+            {
+                btnConnect.Enabled = true;
+            }
+            await PollQuestAsync();
+        }
+
+        private void OnSaveApkClick(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(apkPath)) return;
+            using (var dlg = new SaveFileDialog())
+            {
+                dlg.FileName = "OpenGothicWindow3D.apk";
+                dlg.Filter = "Android package (*.apk)|*.apk";
+                dlg.OverwritePrompt = true;
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    File.Copy(apkPath, dlg.FileName, true);
+                    AppendLog("Saved " + dlg.FileName);
+                    AppendLog("After installing it another way, copy Data, _work and System from your Gothic II folder to");
+                    AppendLog("  " + RemoteGameDir + " (then allow the app all-files access), or to");
+                    AppendLog("  " + AppGameDir + " (no permission needed).");
+                }
+                catch (Exception ex)
+                {
+                    AppendLog("ERROR: could not save the APK: " + ex.Message);
+                }
+            }
         }
 
         private void SetStep(string text, int pct)
