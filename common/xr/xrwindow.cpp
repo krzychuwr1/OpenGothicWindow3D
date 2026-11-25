@@ -1699,6 +1699,8 @@ void XrWindow::Impl::createActions() {
 void XrWindow::Impl::stopSession() {
   state = XR_SESSION_STATE_EXITING;
   running = false;
+  frameWaited = false;
+  frameBegun = false;
   cancelInput();
   SystemApi::exit();
   }
@@ -1920,6 +1922,9 @@ void XrWindow::Impl::cancelInput() {
   padState = {};
   grabbedBy = -1;
   grabbed = Grip::None;
+  vrLastTap = 0;
+  vrGripSince = 0;
+  vrGripLatched = true;
   for(auto& h:hands) {
     h.hover = Grip::None;
     h.triggerHeld = h.grabHeld = true; // require release before a new grab
@@ -2361,9 +2366,11 @@ void XrWindow::Impl::updateInput() {
       const float y = tracked ? joints[i][XR_HAND_JOINT_PALM_EXT].pose.position.y
                               : (h.aimValid ? h.aim.position.y : -1e9f);
       const bool raised = headValid && y>headPos.y-0.45f;
-      // A controller in pointer mode always shows its ray, even with hands and rays off
-      const bool show = handsMode==2 || (handsMode==1 && quiet && raised) || (pointerMode && controllerHand[i]);
-      handsAlpha[i] = std::clamp(handsAlpha[i]+(show ? step : -step), 0.f, 1.f);
+      // A controller in pointer mode always shows its ray, even with hands and rays off.
+      // Hidden in VR mode and during the passage (no window to grab, and arm tracking draws the hero's hands).
+      const bool vrOrPassage = vrActive || vrProgress>0.f;
+      const bool show = !vrOrPassage && (handsMode==2 || (handsMode==1 && quiet && raised) || (pointerMode && controllerHand[i]));
+      handsAlpha[i] = vrActive ? 0.f : std::clamp(handsAlpha[i]+(show ? step : -step), 0.f, 1.f);
       if(handsAlpha[i]<=0.f || (!tracked && !h.aimValid))
         continue;
       const float fade = handsAlpha[i];
@@ -3133,8 +3140,12 @@ Tempest::Rect XrWindow::uiViewport(uint8_t eye) const {
       return Tempest::Rect();
     auto px = [&](float x) { return int(std::lround(((x-e.x)/z-tl)/(tr-tl)*float(s.width))); };
     auto py = [&](float y) { return int(std::lround((tu-(y-e.y)/z)/(tu-td)*float(s.height))); };
-    const int x0 = px(-halfW), x1 = px(halfW), y0 = py(halfH-drop), y1 = py(-halfH-drop);
-    return Tempest::Rect(x0, y0, std::max(1,x1-x0), std::max(1,y1-y0));
+    const int W = int(s.width), H = int(s.height);
+    const int x0 = std::clamp(px(-halfW), 0, W-1);
+    const int y0 = std::clamp(py(halfH-drop), 0, H-1);
+    const int x1 = std::clamp(px(halfW), x0+1, W);
+    const int y1 = std::clamp(py(-halfH-drop), y0+1, H);
+    return Tempest::Rect(x0, y0, x1-x0, y1-y0);
     }
   if(s.vrAnimating && s.eyesValid && eye<2 && s.width>0 && s.height>0) {
     // The passage: the interface goes from filling the placed window to the VR panel ahead of the
@@ -3350,30 +3361,38 @@ bool XrWindow::waitFrame() {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     return false;
     }
-  if(s.state==XR_SESSION_STATE_FOCUSED || s.state==XR_SESSION_STATE_VISIBLE)
-    s.applyRefreshRate();
-
-  XrFrameWaitInfo wait = {XR_TYPE_FRAME_WAIT_INFO};
-  s.frame = {XR_TYPE_FRAME_STATE};
-  if(!s.sessionResult(xrWaitFrame(s.session, &wait, &s.frame), "xrWaitFrame"))
-    return false;
-  s.frameWaited = true;
-
-  if(isVisible()) {
-    const int style = Gothic::settingsGetI("INTERNAL","xrWindowEdges");
-    const int nextStyle = (style==1 || style==2) ? style : 0;
-    const bool contourChanged = s.edgeStyle!=nextStyle;
-    s.edgeStyle = nextStyle;
-    s.placeWindow();
-    // No motion vector can describe an instantaneous change in source coverage.
-    s.skipExtrapolation |= contourChanged;
-    // A focused game keeps ticking even when the runtime requests zero layers.
-    // Refresh XR input for this frame before simulation runs.
-    s.updateInput();
-    s.updateArmTargets();
-    s.updateSurface();
-    if(s.frame.shouldRender)
+  if(s.frameWaited) {
+    // Re-entered from a modal dialog (save slot name, quest log, key edit) opened during
+    // updateFrame() between waitFrame() and beginFrame(). Calling xrWaitFrame() again before
+    // xrBeginFrame() deadlocks on OpenXR, so finish the already-waited frame instead.
+    if(isVisible() && s.frame.shouldRender)
       return true;
+    } else {
+    if(s.state==XR_SESSION_STATE_FOCUSED || s.state==XR_SESSION_STATE_VISIBLE)
+      s.applyRefreshRate();
+
+    XrFrameWaitInfo wait = {XR_TYPE_FRAME_WAIT_INFO};
+    s.frame = {XR_TYPE_FRAME_STATE};
+    if(!s.sessionResult(xrWaitFrame(s.session, &wait, &s.frame), "xrWaitFrame"))
+      return false;
+    s.frameWaited = true;
+
+    if(isVisible()) {
+      const int style = Gothic::settingsGetI("INTERNAL","xrWindowEdges");
+      const int nextStyle = (style==1 || style==2) ? style : 0;
+      const bool contourChanged = s.edgeStyle!=nextStyle;
+      s.edgeStyle = nextStyle;
+      s.placeWindow();
+      // No motion vector can describe an instantaneous change in source coverage.
+      s.skipExtrapolation |= contourChanged;
+      // A focused game keeps ticking even when the runtime requests zero layers.
+      // Refresh XR input for this frame before simulation runs.
+      s.updateInput();
+      s.updateArmTargets();
+      s.updateSurface();
+      if(s.frame.shouldRender)
+        return true;
+      }
     }
   // Not rendering: pair xrBeginFrame / xrEndFrame with zero layers immediately.
   {
@@ -4735,7 +4754,7 @@ void XrWindow::Impl::updateVrToggles() {
   else if(vrGripSince==0) {
     vrGripSince = now;
     }
-  else if(!vrGripLatched && now-vrGripSince>=1000000000) {
+  else if(!vrGripLatched && now-vrGripSince>=1000000000 && now>=vrToggleAfter) {
     vrGripLatched = true;
     toggleVrMode("both grips held");
     }
@@ -4770,6 +4789,8 @@ bool XrWindow::updateVrView(bool allowed, float heroYaw, Tempest::Vec3& spin, Te
     // now is where the hero faces, for the whole passage and the VR view after it
     if(s.grabbed==Grip::ItemHandle)
       s.saveItemOffset();
+    else if(s.grabbed==Grip::Dim)
+      s.saveDim();
     s.grabbedBy  = -1;
     s.grabbed    = Grip::None;
     s.vrRefValid = false;

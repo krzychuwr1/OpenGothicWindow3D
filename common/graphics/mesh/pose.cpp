@@ -538,10 +538,19 @@ void rotateAround(Matrix4x4& m, const Vec3& pivot, const Vec3& axis, float angle
 
 // Shortest rotation around `pivot` that turns direction `from` onto `to`
 void rotateOnto(Matrix4x4& m, const Vec3& pivot, const Vec3& from, const Vec3& to) {
+  const float len  = from.length()*to.length();
+  if(len<=1e-12f)
+    return;
   const Vec3  axis = Vec3::crossProduct(from,to);
   const float s    = axis.length();
-  if(s<=1e-6f*from.length()*to.length())
+  if(s<=1e-6f*len) {
+    if(Vec3::dotProduct(from,to)<0.f) {
+      const Vec3 f = from/from.length();
+      const Vec3 ref = std::abs(f.x)<0.9f ? Vec3(1,0,0) : Vec3(0,1,0);
+      rotateAround(m, pivot, Vec3::normalize(Vec3::crossProduct(f,ref)), float(M_PI));
+      }
     return;
+    }
   rotateAround(m, pivot, axis/s, std::atan2(s,Vec3::dotProduct(from,to)));
   }
 
@@ -671,7 +680,11 @@ void Pose::applyArmIk(const Matrix4x4& obj) {
     auto across = [&](const Vec3& v) { return v - dir*Vec3::dotProduct(v,dir); };
     const size_t clavicle = nodes[c.upper].parent;
     const Vec3   outward  = clavicle<nodes.size() ? Vec3::normalize(S-bonePos(tr[clavicle])) : Vec3();
-    const Vec3   pole     = Vec3::normalize(across(down + outward*0.5f));
+    Vec3         pole     = Vec3::normalize(across(down + outward*0.5f));
+    if(pole.quadLength()<0.5f)
+      pole = Vec3::normalize(across(-Vec3::normalize(boneAxis(obj,2))));
+    if(pole.quadLength()<0.5f)
+      pole = Vec3::normalize(Vec3::crossProduct(dir, std::abs(dir.x)<0.9f ? Vec3(1,0,0) : Vec3(0,1,0)));
     Vec3 bend = Vec3::normalize(across(Vec3::normalize(across(F-S))*(1.f-w) + pole*w));
     if(bend.quadLength()<0.5f)
       bend = pole;

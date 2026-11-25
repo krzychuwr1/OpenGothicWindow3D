@@ -818,7 +818,10 @@ namespace OpenGothicQuestInstaller
                         string.Format("-s {0} install -r \"{1}\"", serial, apkPath),
                         line => AppendLog(line));
                     if (rInstall.ExitCode != 0)
-                        throw new Exception("APK install failed:\n" + rInstall.StdErr);
+                    {
+                        string detail = string.IsNullOrWhiteSpace(rInstall.StdErr) ? rInstall.StdOut.Trim() : rInstall.StdErr.Trim();
+                        throw new Exception("APK install failed:\n" + detail);
+                    }
                 }
 
                 if (sharedTarget)
@@ -828,8 +831,12 @@ namespace OpenGothicQuestInstaller
                         string.Format("-s {0} shell appops set {1} MANAGE_EXTERNAL_STORAGE allow", serial, PackageName),
                         null);
                     if (rPerm.ExitCode != 0)
-                        AppendLog("WARNING: could not grant all-files access (" + rPerm.StdErr.Trim() +
-                                  "). Allow it for the app in the headset's settings, or copy to the app's own folder (Advanced).");
+                    {
+                        string detail = string.IsNullOrWhiteSpace(rPerm.StdErr) ? rPerm.StdOut.Trim() : rPerm.StdErr.Trim();
+                        AppendLog("WARNING: could not grant all-files access" +
+                                  (detail.Length > 0 ? " (" + detail + ")" : "") +
+                                  ". Allow it for the app in the headset's settings, or copy to the app's own folder (Advanced).");
+                    }
                 }
                 else if (dev.IsQuest)
                 {
@@ -844,7 +851,10 @@ namespace OpenGothicQuestInstaller
                         string.Format("-s {0} shell mkdir -p {1}", serial, remoteDir),
                         null);
                     if (rMkdir.ExitCode != 0)
-                        throw new Exception("Could not create " + remoteDir + " on the device:\n" + rMkdir.StdErr);
+                    {
+                        string detail = string.IsNullOrWhiteSpace(rMkdir.StdErr) ? rMkdir.StdOut.Trim() : rMkdir.StdErr.Trim();
+                        throw new Exception("Could not create " + remoteDir + " on the device:\n" + detail);
+                    }
 
                     var folders = new[]
                     {
