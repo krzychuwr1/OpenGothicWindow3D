@@ -71,6 +71,7 @@ namespace OpenGothicQuestInstaller
         private readonly RadioButton  rbApp;
         private readonly CheckBox     chkInstallApp;
         private readonly Button       btnSaveApk;
+        private readonly Button       btnSaveScript;
         private readonly List<Control> belowAdvanced = new List<Control>();
 
         private sealed class DeviceInfo
@@ -87,6 +88,7 @@ namespace OpenGothicQuestInstaller
 
         private string adbPath;
         private string apkPath;
+        private string lastExportDir;
         private List<DeviceInfo> devices = new List<DeviceInfo>();
         private bool   anyUnauthorized;
         private bool   isInstalling;
@@ -221,8 +223,8 @@ namespace OpenGothicQuestInstaller
 
             y += cardQuest.Height + 14;
 
-            // Card 3 (advanced only): any adb device, wireless adb, file location, APK export
-            cardAdvanced = MakeCard(pad, y, contentW, 196);
+            // Card 3 (advanced only): any adb device, wireless adb, file location, APK & script export
+            cardAdvanced = MakeCard(pad, y, contentW, 228);
             cardAdvanced.Visible = false;
             Controls.Add(cardAdvanced);
 
@@ -310,7 +312,7 @@ namespace OpenGothicQuestInstaller
             chkInstallApp = new CheckBox
             {
                 Text = "Install the app (untick to copy game files only)",
-                Location = new Point(14, 166),
+                Location = new Point(14, 164),
                 AutoSize = true,
                 ForeColor = TextMuted,
                 Checked = true
@@ -318,10 +320,16 @@ namespace OpenGothicQuestInstaller
             chkInstallApp.CheckedChanged += (s, e) => UpdateInstallButton();
             cardAdvanced.Controls.Add(chkInstallApp);
 
-            btnSaveApk = MakeSecondaryButton("Save APK...", contentW - 14 - 110, 162, 110, 27);
+            cardAdvanced.Controls.Add(MakeFieldLabel("Manual export:", 14, 195));
+            btnSaveApk = MakeSecondaryButton("Save APK...", fieldX, 190, 110, 27);
             btnSaveApk.Click += OnSaveApkClick;
             tips.SetToolTip(btnSaveApk, "Save OpenGothicWindow3D.apk to install it some other way. No headset needed.");
             cardAdvanced.Controls.Add(btnSaveApk);
+
+            btnSaveScript = MakeSecondaryButton("Save copy script...", fieldX + 118, 190, 146, 27);
+            btnSaveScript.Click += OnSaveScriptClick;
+            tips.SetToolTip(btnSaveScript, "Save copy-game-files.bat (Windows) and copy-game-files.sh (Linux/SteamOS) to push Data, _work and System over adb.");
+            cardAdvanced.Controls.Add(btnSaveScript);
 
             chkAdvanced.CheckedChanged += (s, e) => OnAdvancedChanged();
 
@@ -971,18 +979,146 @@ namespace OpenGothicQuestInstaller
                 dlg.FileName = "OpenGothicWindow3D.apk";
                 dlg.Filter = "Android package (*.apk)|*.apk";
                 dlg.OverwritePrompt = true;
+                if (!string.IsNullOrEmpty(lastExportDir) && Directory.Exists(lastExportDir))
+                    dlg.InitialDirectory = lastExportDir;
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
                 try
                 {
                     File.Copy(apkPath, dlg.FileName, true);
+                    lastExportDir = Path.GetDirectoryName(dlg.FileName);
                     AppendLog("Saved " + dlg.FileName);
                     AppendLog("After installing it another way, copy Data, _work and System from your Gothic II folder to");
                     AppendLog("  " + RemoteGameDir + " (then allow the app all-files access), or to");
                     AppendLog("  " + AppGameDir + " (no permission needed).");
+                    AppendLog("Or click 'Save copy script...' to generate ready-to-run .bat and .sh scripts.");
                 }
                 catch (Exception ex)
                 {
                     AppendLog("ERROR: could not save the APK: " + ex.Message);
+                }
+            }
+        }
+
+        private void OnSaveScriptClick(object sender, EventArgs e)
+        {
+            using (var dlg = new SaveFileDialog())
+            {
+                dlg.FileName = "copy-game-files.bat";
+                dlg.Filter = "Windows batch script (*.bat)|*.bat";
+                dlg.OverwritePrompt = true;
+                if (!string.IsNullOrEmpty(lastExportDir) && Directory.Exists(lastExportDir))
+                    dlg.InitialDirectory = lastExportDir;
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+                string dir = Path.GetDirectoryName(dlg.FileName);
+                string batPath = dlg.FileName;
+                string shPath = Path.Combine(dir, Path.GetFileNameWithoutExtension(dlg.FileName) + ".sh");
+                bool sharedTarget = rbShared.Checked;
+                string remoteDir = sharedTarget ? RemoteGameDir : AppGameDir;
+                string gameDir = IsValidGothicDir(txtGameDir.Text) ? txtGameDir.Text.Trim().TrimEnd('\\', '/') : "";
+                string batGameDir = gameDir.Replace("%", "%%");
+
+                var bat = new StringBuilder();
+                bat.AppendLine("@echo off");
+                bat.AppendLine("setlocal");
+                bat.AppendLine("rem Copies Gothic II game files (Data, _work, System) to an Android OpenXR headset over adb.");
+                bat.AppendLine("rem Usage: copy-game-files.bat [\"C:\\Path\\To\\Gothic II\"]   (set ANDROID_SERIAL to pick a device)");
+                bat.AppendLine("");
+                bat.AppendLine("set \"GAME_DIR=%~1\"");
+                if (batGameDir.Length > 0)
+                    bat.AppendLine("if \"%GAME_DIR%\"==\"\" set \"GAME_DIR=" + batGameDir + "\"");
+                bat.AppendLine("if \"%GAME_DIR%\"==\"\" (");
+                bat.AppendLine("  echo Usage: %~nx0 \"C:\\Path\\To\\Gothic II\"");
+                bat.AppendLine("  pause");
+                bat.AppendLine("  exit /b 1");
+                bat.AppendLine(")");
+                bat.AppendLine("");
+                bat.AppendLine("set \"ADB=adb\"");
+                bat.AppendLine("if exist \"%~dp0platform-tools\\adb.exe\" set \"ADB=%~dp0platform-tools\\adb.exe\"");
+                bat.AppendLine("where \"%ADB%\" >nul 2>nul || if not exist \"%ADB%\" (");
+                bat.AppendLine("  echo ERROR: adb not found on PATH or in platform-tools next to this script.");
+                bat.AppendLine("  pause");
+                bat.AppendLine("  exit /b 1");
+                bat.AppendLine(")");
+                bat.AppendLine("");
+                bat.AppendLine("for %%D in (Data _work System) do (");
+                bat.AppendLine("  if not exist \"%GAME_DIR%\\%%D\" (");
+                bat.AppendLine("    echo ERROR: Missing \"%GAME_DIR%\\%%D\" - select your Gothic II Gold / Night of the Raven folder.");
+                bat.AppendLine("    pause");
+                bat.AppendLine("    exit /b 1");
+                bat.AppendLine("  )");
+                bat.AppendLine(")");
+                bat.AppendLine("");
+                bat.AppendLine("set \"TARGET=" + remoteDir + "\"");
+                bat.AppendLine("echo Creating %TARGET% on headset...");
+                bat.AppendLine("\"%ADB%\" shell mkdir -p \"%TARGET%\" || goto :fail");
+                bat.AppendLine("for %%D in (Data _work System) do (");
+                bat.AppendLine("  echo Copying %%D to %TARGET%...");
+                bat.AppendLine("  \"%ADB%\" push --sync \"%GAME_DIR%\\%%D\" \"%TARGET%/\" || goto :fail");
+                bat.AppendLine(")");
+                if (sharedTarget)
+                {
+                    bat.AppendLine("echo Granting all-files access...");
+                    bat.AppendLine("\"%ADB%\" shell appops set " + PackageName + " MANAGE_EXTERNAL_STORAGE allow || echo WARNING: could not grant all-files access; allow it in the headset's app settings.");
+                }
+                bat.AppendLine("echo.");
+                bat.AppendLine("echo Done! Game files copied to %TARGET%.");
+                bat.AppendLine("pause");
+                bat.AppendLine("exit /b 0");
+                bat.AppendLine("");
+                bat.AppendLine(":fail");
+                bat.AppendLine("echo.");
+                bat.AppendLine("echo ERROR: Copy failed. Check that the headset is connected and USB debugging is allowed.");
+                bat.AppendLine("pause");
+                bat.AppendLine("exit /b 1");
+
+                var sh = new StringBuilder();
+                sh.Append("#!/usr/bin/env bash\n");
+                sh.Append("# Copies Gothic II game files (Data, _work, System) to an Android OpenXR headset over adb.\n");
+                sh.Append("# Usage: ./copy-game-files.sh /path/to/Gothic2   (set ANDROID_SERIAL to pick a device)\n");
+                sh.Append("set -euo pipefail\n\n");
+                sh.Append("GAME_DIR=\"${1:-}\"\n");
+                sh.Append("if [ -z \"$GAME_DIR\" ]; then\n");
+                sh.Append("  echo \"Usage: $0 /path/to/Gothic2\" >&2\n");
+                sh.Append("  exit 1\n");
+                sh.Append("fi\n\n");
+                sh.Append("if ! command -v adb >/dev/null 2>&1; then\n");
+                sh.Append("  echo \"ERROR: adb not found on PATH.\" >&2\n");
+                sh.Append("  exit 1\n");
+                sh.Append("fi\n\n");
+                sh.Append("for d in Data _work System; do\n");
+                sh.Append("  if [ ! -d \"$GAME_DIR/$d\" ]; then\n");
+                sh.Append("    echo \"ERROR: Missing $GAME_DIR/$d - point to your Gothic II Gold / Night of the Raven folder.\" >&2\n");
+                sh.Append("    exit 1\n");
+                sh.Append("  fi\n");
+                sh.Append("done\n\n");
+                sh.Append("TARGET=\"" + remoteDir + "\"\n");
+                sh.Append("echo \"Creating $TARGET on headset...\"\n");
+                sh.Append("adb shell mkdir -p \"$TARGET\"\n");
+                sh.Append("for d in Data _work System; do\n");
+                sh.Append("  echo \"Copying $d to $TARGET...\"\n");
+                sh.Append("  adb push --sync \"$GAME_DIR/$d\" \"$TARGET/\"\n");
+                sh.Append("done\n");
+                if (sharedTarget)
+                {
+                    sh.Append("echo \"Granting all-files access...\"\n");
+                    sh.Append("adb shell appops set " + PackageName + " MANAGE_EXTERNAL_STORAGE allow || echo \"WARNING: could not grant all-files access; allow it in the headset's app settings.\"\n");
+                }
+                sh.Append("echo \"Done! Game files copied to $TARGET.\"\n");
+
+                try
+                {
+                    var utf8NoBom = new UTF8Encoding(false);
+                    File.WriteAllText(batPath, bat.ToString(), utf8NoBom);
+                    File.WriteAllText(shPath, sh.ToString(), utf8NoBom);
+                    lastExportDir = dir;
+                    AppendLog("Saved " + batPath);
+                    AppendLog("Saved " + shPath);
+                    AppendLog("Target baked in: " + remoteDir + (sharedTarget ? " (with all-files access grant)" : " (app's own folder)"));
+                }
+                catch (Exception ex)
+                {
+                    AppendLog("ERROR: could not save the copy scripts: " + ex.Message);
                 }
             }
         }

@@ -84,6 +84,9 @@ installer to get:
   the headset's own tools. Then copy `Data`, `_work` and `System` from your Gothic II folder to
   `/sdcard/OpenGothic/Gothic2` (and allow the app *All files access* in the headset's settings), or
   to `/sdcard/Android/data/org.opengothic.window3d/files/Gothic2`.
+- **Save copy script...:** saves ready-to-run `copy-game-files.bat` (Windows) and
+  `copy-game-files.sh` (Linux/SteamOS) scripts with the selected game folder and target location
+  baked in, to push `Data`, `_work` and `System` over `adb` later.
 
 ## Setting up
 

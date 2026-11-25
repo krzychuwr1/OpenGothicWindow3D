@@ -165,7 +165,8 @@ OpenXR headsets (untested), `install-quest.ps1`, `push-game-data.ps1` and `build
 
 The installer's **Advanced (other headsets)** option does the same in the GUI: pick any adb
 device, pair and connect over wireless adb, choose where the game files go, copy game files
-without installing the app, and save the APK without a headset connected.
+without installing the app, save the APK, and generate ready-to-run `.bat`/`.sh` copy scripts with
+no headset connected.
 
 ## Developer options
 
